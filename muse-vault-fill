@@ -31,6 +31,7 @@ Idempotent: skips entries whose domain+username pair is already in the store.
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -73,6 +74,20 @@ def main():
             capture_output=True, text=True, timeout=timeout)
         return r.stdout + r.stderr
 
+    def activate_app():
+        """Bring Muse to the foreground.
+
+        `open -a` does not activate an already-running app — only
+        AppleScript activate reliably raises it over whatever window the
+        user (or another agent session) has in front.
+        """
+        if not shutil.which("osascript"):
+            return
+        subprocess.run(
+            ["osascript", "-e",
+             f'tell application "{args.app}" to activate'],
+            capture_output=True)
+
     def window_id():
         """CoreGraphics id of the Settings window, resolved fresh each call.
 
@@ -90,8 +105,15 @@ def main():
                 return w.get("window_id")
         return None
 
-    def see():
-        """Return (ui_elements, ui_map) for the Settings window, or (None, None)."""
+    win_top = {"y": 0}  # last seen window-top y, for relative thresholds
+
+    def see(refocused=False):
+        """Return (ui_elements, ui_map) for the Settings window, or (None, None).
+
+        Self-heals once per call: a failed or empty capture usually means the
+        Settings window lost focus (its WebKit AX tree only exists while
+        focused), so we focus it and retry once before giving up.
+        """
         wid = window_id()
         if wid is None:
             return None, None
@@ -101,37 +123,49 @@ def main():
             out = pb("see", "--app", args.app, "--window-id", str(wid),
                      "--json", "--timeout-seconds", "45", timeout=90)
         except subprocess.TimeoutExpired:
-            return None, None
+            out = ""
         try:
             data = json.loads(out)["data"]
         except (json.JSONDecodeError, KeyError):
-            print("see: json parse failed, head:", out[:200], file=sys.stderr)
-            return None, None
-        uimap_path = data.get("ui_map")
-        if not (isinstance(uimap_path, str) and os.path.exists(uimap_path)):
-            sid = data.get("snapshot_id")
-            uimap_path = os.path.expanduser(
-                f"~/.peekaboo/snapshots/{sid}/snapshot.json")
+            data = None
         snap = {}
-        try:
-            snap = json.load(open(uimap_path))
-            uimap = snap["uiMap"]
-        except (OSError, json.JSONDecodeError, KeyError):
-            uimap = {}
-        bounds = snap.get("windowBounds") if isinstance(snap, dict) else None
-        if bounds:
-            bx, by = bounds[0]
-            bw, bh = bounds[1]
-            uimap = {
-                k: e for k, e in uimap.items()
-                if in_bounds(e.get("frame"), bx, by, bw, bh)
-            }
-        if not uimap:
+        uimap = {}
+        els = []
+        if data:
+            els = data.get("ui_elements", [])
+            uimap_path = data.get("ui_map")
+            if not (isinstance(uimap_path, str) and os.path.exists(uimap_path)):
+                sid = data.get("snapshot_id")
+                uimap_path = os.path.expanduser(
+                    f"~/.peekaboo/snapshots/{sid}/snapshot.json")
+            try:
+                snap = json.load(open(uimap_path))
+                uimap = snap["uiMap"]
+            except (OSError, json.JSONDecodeError, KeyError):
+                uimap = {}
+            bounds = snap.get("windowBounds") if isinstance(snap, dict) else None
+            if bounds:
+                bx, by = bounds[0]
+                win_top["y"] = by
+                bw, bh = bounds[1]
+                uimap = {
+                    k: e for k, e in uimap.items()
+                    if in_bounds(e.get("frame"), bx, by, bw, bh)
+                }
+        if not uimap and not refocused:
             # The Settings window's WebKit AX tree only exists while the
-            # window is focused — an unfocused capture returns an empty
-            # map. Focus it and let the caller's retry re-see.
+            # window is focused — an unfocused/failed capture returns an
+            # empty map or success:false. Raise the app then focus the
+            # window, and retry once.
+            activate_app()
+            time.sleep(0.5)
             pb("window", "focus", "--window-id", str(wid))
-        return data.get("ui_elements", []), uimap
+            time.sleep(0.3)
+            return see(refocused=True)
+        if not uimap:
+            print(f"see: empty uimap (data={'ok' if data else 'none/err'}, "
+                  f"bounds={'yes' if bounds else 'no'})", file=sys.stderr)
+        return els, uimap
 
     def center(e):
         f = e["frame"]
@@ -139,11 +173,25 @@ def main():
 
     def click_el(e):
         x, y = center(e)
-        pb("click", "--coords", f"{x},{y}")
+        wid = window_id()
+        # --window-id makes peekaboo focus THAT window first — with only
+        # --app it raises the main window, which covers Settings and eats
+        # the click. The app itself still needs activate: clicks post to
+        # screen coordinates, and any other app in front takes them.
+        activate_app()
+        if wid is not None:
+            pb("window", "focus", "--window-id", str(wid))
+            pb("click", "--window-id", str(wid), "--coords", f"{x},{y}")
+        else:
+            pb("click", "--coords", f"{x},{y}")
         time.sleep(args.settle)
 
     def paste(text):
-        pb("paste", "--text", text)
+        wid = window_id()
+        if wid is not None:
+            pb("paste", "--window-id", str(wid), "--text", text)
+        else:
+            pb("paste", "--text", text)
         time.sleep(args.settle)
 
     def by_label(uimap, label, role=None):
@@ -186,12 +234,14 @@ def main():
         return out
 
     def open_settings():
-        subprocess.run(["open", "-a", args.app], capture_output=True)
+        activate_app()
         time.sleep(1.5)
         # re-verify before the menu click — a transient `list windows`
         # failure reports the window missing while it is open, and the
         # menu item toggles a live window CLOSED
         if window_id() is not None:
+            return
+        if not shutil.which("osascript"):
             return
         subprocess.run(
             ["osascript", "-e",
@@ -204,13 +254,17 @@ def main():
     def ensure_list():
         """Land on the Secure store list from wherever Settings sits."""
         for _ in range(10):
-            if window_id() is None:
+            wid0 = window_id()
+            if wid0 is None:
                 # window genuinely missing — Cmd+, would toggle a live
                 # window closed, so only reopen when it is truly gone
+                print("ensure_list: no window", file=sys.stderr)
                 open_settings()
                 time.sleep(1)
                 continue
             _, uimap = see()
+            print(f"ensure_list: wid={wid0} uimap={len(uimap or {})} "
+                  f"state={state(uimap) if uimap else '-'}", file=sys.stderr)
             if not uimap:
                 time.sleep(1)
                 continue
@@ -222,17 +276,23 @@ def main():
                 if b:
                     click_el(b)
                     continue
+            # detail or any other Settings page. From a detail view 'Go
+            # back' returns to the list. From another section, re-clicking
+            # the already-selected 'Secure store' sidebar item is a no-op,
+            # so hop via 'General' first — the sidebar layout is static,
+            # so the stale frame is still valid for the second click.
             if st == "detail":
                 b = by_label(uimap, "Go back", "AXButton")
                 if b:
                     click_el(b)
+                    time.sleep(0.8)
                     continue
-            b = by_label(uimap, "Secure store", "AXButton")
-            if b:
-                click_el(b)
-                time.sleep(0.8)
-                continue
-            return None
+            for lbl in ("General", "Secure store"):
+                b = by_label(uimap, lbl, "AXButton")
+                if b:
+                    click_el(b)
+                    time.sleep(0.6)
+            continue
         return None
 
     def usernames_for_domain(uimap, domain):
@@ -251,6 +311,14 @@ def main():
                 if b:
                     click_el(b)
                     time.sleep(0.5)
+                else:
+                    # 'Secure store' is a no-op from its own detail —
+                    # hop via another section
+                    for lbl in ("General", "Secure store"):
+                        s = by_label(dm, lbl, "AXButton")
+                        if s:
+                            click_el(s)
+                            time.sleep(0.5)
         return users
 
     def open_dialog():
@@ -270,17 +338,23 @@ def main():
             if st != "list":
                 # drifted onto a detail/other page — navigate back like
                 # ensure_list does, then retry
-                b = by_label(uimap, "Go back", "AXButton") or \
-                    by_label(uimap, "Secure store", "AXButton")
+                b = by_label(uimap, "Go back", "AXButton") \
+                    if st == "detail" else None
                 if b is None:
-                    return None
+                    for lbl in ("General", "Secure store"):
+                        b = by_label(uimap, lbl, "AXButton")
+                        if b:
+                            click_el(b)
+                            time.sleep(0.6)
+                    continue
                 click_el(b)
                 time.sleep(0.8)
                 continue
             add = None
             for e in uimap.values():
                 if (e.get("label") or e.get("title")) == "Add" and \
-                        e.get("role") == "AXButton" and e["frame"][0][1] < 330:
+                        e.get("role") == "AXButton" and \
+                        e["frame"][0][1] - win_top["y"] < 150:
                     add = e
             if add is None:
                 return None
@@ -302,7 +376,8 @@ def main():
         add = None
         for e in uimap.values():
             if (e.get("label") or e.get("title")) == "Add" and \
-                    e.get("role") == "AXButton" and e["frame"][0][1] > 400:
+                    e.get("role") == "AXButton" and \
+                    e["frame"][0][1] - win_top["y"] > 200:
                 add = e
         if add is None:
             return "dialog Add button missing"

@@ -48,6 +48,12 @@ printf '{"data":{"snapshot_id":"stub","ui_map":"%s/%s.uimap.json","ui_elements":
 exit 0
 S
 chmod +x "$TMP/stub/peekaboo"
+# stub osascript too — activate_app would otherwise launch the real Muse
+cat > "$TMP/stub/osascript" <<'S'
+#!/bin/bash
+exit 0
+S
+chmod +x "$TMP/stub/osascript"
 
 uimap() { # $1 file  $2 json-body
   cat > "$TMP/stub/$1.uimap.json" <<J
