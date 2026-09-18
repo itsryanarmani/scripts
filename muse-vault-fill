@@ -64,8 +64,9 @@ def main():
                     help="seconds to wait after each click/paste")
     args = ap.parse_args()
 
-    entries = json.load(open(os.path.expanduser(args.entries)))
-    log_path = args.entries + ".fill.log"
+    entries_path = os.path.expanduser(args.entries)
+    entries = json.load(open(entries_path))
+    log_path = entries_path + ".fill.log"
 
     def pb(*cmd, timeout=60):
         r = subprocess.run(
@@ -246,9 +247,9 @@ def main():
             return
         subprocess.run(
             ["osascript", "-e",
-             'tell application "System Events" to tell process "Muse" to '
-             'click menu item "Settings" of menu "Muse" of menu bar item '
-             '"Muse" of menu bar 1'],
+             f'tell application "System Events" to tell process "{args.app}" to '
+             f'click menu item "Settings" of menu "{args.app}" of menu bar item '
+             f'"{args.app}" of menu bar 1'],
             capture_output=True)
         time.sleep(1.5)
 
@@ -306,7 +307,7 @@ def main():
             if dm and state(dm) == "detail":
                 for e in dm.values():
                     lbl = e.get("label") or e.get("title") or ""
-                    if lbl:
+                    if lbl and lbl not in NON_LOGIN_LABELS:
                         users.add(lbl)
                 b = by_label(dm, "Go back", "AXButton")
                 if b:
