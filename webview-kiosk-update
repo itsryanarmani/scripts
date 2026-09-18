@@ -24,6 +24,7 @@ PKG="${2:?missing package name}"
 DEV="${3:-}"
 ADB=(adb); [ -n "$DEV" ] && ADB+=( -s "$DEV" )
 
+[[ "$PKG" =~ ^[A-Za-z0-9._]+$ ]] || { echo "invalid package name: $PKG" >&2; exit 1; }
 [ -d "$SRC" ] || { echo "no such dir: $SRC" >&2; exit 1; }
 
 echo "== push -> /data/local/tmp/kiosk-push"
@@ -32,6 +33,7 @@ echo "== push -> /data/local/tmp/kiosk-push"
 
 echo "== run-as copy into files/kiosk"
 "${ADB[@]}" shell "run-as $PKG sh -c 'rm -rf files/kiosk && mkdir -p files && cp -r /data/local/tmp/kiosk-push files/kiosk'"
+"${ADB[@]}" shell rm -rf /data/local/tmp/kiosk-push
 
 echo "== reload intent (in-place, no process kill)"
 "${ADB[@]}" logcat -c 2>/dev/null || true

@@ -10,6 +10,7 @@
 #   <app-dir>/assets/…               (web content: index.html etc.)
 #   <app-dir>/src/<pkg-path>/*.java  (e.g. src/com/example/kiosk/MainActivity.java)
 #   <app-dir>/<name>.keystore        (created on first build, then reused)
+#   <app-dir>/<name>.keystore.pass   (random password, created alongside it)
 #
 # USAGE:
 #   webview-kiosk-build <app-dir> [package.name] [keystore-name]
@@ -17,7 +18,7 @@
 #
 # WARNING: the keystore is the identity of the install. If the app is a device
 # owner, a lost or regenerated keystore freezes the on-device build forever —
-# keep the keystore outside any directory you ever `rm -rf`.
+# keep the keystore (and its .pass file) outside any directory you ever `rm -rf`.
 set -euo pipefail
 
 APP_DIR="${1:?usage: webview-kiosk-build <app-dir> [package.name] [keystore-name]}"
@@ -51,12 +52,14 @@ rm -rf build && mkdir -p build/gen build/obj "build/apk"
 (cd build/apk && zip -u base.apk classes.dex)
 "$BT/zipalign" -f 4 build/apk/base.apk build/apk/aligned.apk
 
+KS_PASS_FILE="$KS_NAME.pass"
 if [ ! -f "$KS_NAME" ]; then
+  [ -f "$KS_PASS_FILE" ] || { openssl rand -base64 24 > "$KS_PASS_FILE"; chmod 600 "$KS_PASS_FILE"; }
   "$JAVA_HOME/bin/keytool" -genkeypair -keystore "$KS_NAME" -alias kiosk \
     -keyalg RSA -keysize 2048 -validity 10000 \
-    -storepass android -keypass android -dname "CN=$PKG"
+    -storepass:file "$KS_PASS_FILE" -keypass:file "$KS_PASS_FILE" -dname "CN=$PKG"
 fi
-"$BT/apksigner" sign --ks "$KS_NAME" --ks-pass pass:android \
+"$BT/apksigner" sign --ks "$KS_NAME" --ks-pass file:"$KS_PASS_FILE" \
   --out build/kiosk.apk build/apk/aligned.apk
 
-echo "OK: $(stat -f%z build/kiosk.apk 2>/dev/null || stat -c%s build/kiosk.apk) bytes -> $APP_DIR/build/kiosk.apk"
+echo "OK: $(wc -c < build/kiosk.apk | tr -d ' ') bytes -> $APP_DIR/build/kiosk.apk"
