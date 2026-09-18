@@ -131,6 +131,7 @@ def main():
         snap = {}
         uimap = {}
         els = []
+        bounds = None
         if data:
             els = data.get("ui_elements", [])
             uimap_path = data.get("ui_map")
