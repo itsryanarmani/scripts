@@ -28,6 +28,7 @@ Never prints secret values. Idempotent: skips domains already stored.
 """
 
 import argparse
+import atexit
 import json
 import os
 import shutil
@@ -77,6 +78,13 @@ def main():
     entries = json.load(open(entries_path))
     log_path = entries_path + ".fill.log"
 
+    # hold display+user-activity assertions for the run — windows on a
+    # sleeping display capture as "not on any available display"
+    caf = subprocess.Popen(["caffeinate", "-du"]) \
+        if shutil.which("caffeinate") else None
+    if caf:
+        atexit.register(caf.terminate)
+
     def pb(*cmd, timeout=60):
         r = subprocess.run(
             ["peekaboo", *cmd, "--app", args.app] if cmd[0] != "see" else
@@ -85,8 +93,7 @@ def main():
         return r.stdout + r.stderr
 
     def activate_app():
-        # `open -a` does not activate an already-running app — only
-        # AppleScript activate reliably raises it over whatever is in front.
+        # `open -a` does not raise a running app — AppleScript activate does.
         if shutil.which("osascript"):
             subprocess.run(
                 ["osascript", "-e",
@@ -94,9 +101,8 @@ def main():
                 capture_output=True)
 
     def window_id():
-        # CoreGraphics id of the Settings window, resolved fresh each call —
-        # --window-title matching is flaky (lands on the main window), ids
-        # are stable for a run and cheap to look up.
+        # Settings window's CG id, resolved fresh — --window-title matching
+        # is flaky and ids rotate when the window is recreated.
         try:
             wins = json.loads(pb("list", "windows", "--json", timeout=30)
                               )["data"]["windows"]
@@ -117,8 +123,7 @@ def main():
         if wid is None:
             return None
         try:
-            # the AX scan of this WebKit window is slow — give peekaboo's
-            # detection pass more than its 20s default
+            # the AX scan of this WebKit window is slow — 45s, not the 20s default
             out = pb("see", "--app", args.app, "--window-id", str(wid),
                      "--json", "--timeout-seconds", "45", "--path",
                      "/tmp/muse-see.png", timeout=90)
@@ -176,9 +181,8 @@ def main():
         x, y = center(e)
         wid = window_id()
         # --window-id focuses THAT window first — with only --app the main
-        # window raises, covers Settings, and eats the click. The app still
-        # needs activate: clicks post to screen coordinates and any other
-        # app in front takes them.
+        # window raises, covers Settings, and eats the click. The app needs
+        # activate: clicks post to screen coords, frontmost app takes them.
         activate_app()
         if wid is not None:
             pb("window", "focus", "--window-id", str(wid),
@@ -227,9 +231,8 @@ def main():
         return [l for _, l in sorted(out)]
 
     def merge_ordered(ordered, vis):
-        # Extend `ordered` with rows newly revealed at the bottom. The list
-        # is sorted, so the visible slice overlaps the known tail — align
-        # on the largest suffix/prefix overlap and append the rest.
+        # Append rows newly revealed at the bottom — the list is sorted,
+        # so align the visible slice on the known tail's largest overlap.
         # Returns the number of new rows learned.
         if not ordered:
             ordered.extend(vis)
@@ -255,8 +258,7 @@ def main():
                 break
             vis = row_labels(m)
             merge_ordered(ordered, vis)
-            # first visible row is the global first → top reached;
-            # an empty list has nothing to scroll through
+            # first visible row is the global first → top reached
             if not vis or vis[0] == ordered[0]:
                 break
         stall = 0
@@ -306,9 +308,8 @@ def main():
     def open_settings():
         activate_app()
         time.sleep(1.5)
-        # re-verify before the menu click — a transient `list windows`
-        # failure reports the window missing while it is open, and the
-        # menu item toggles a live window CLOSED
+        # re-verify before the menu click — it toggles a live window
+        # CLOSED, and a transient `list windows` miss reports it gone
         if window_id() is not None or not shutil.which("osascript"):
             return
         subprocess.run(
@@ -321,10 +322,9 @@ def main():
 
     def nav_back(uimap, st):
         """One step toward the list from a detail/other Settings page."""
-        # 'Go back' on a detail view returns to the list. From another
-        # section the already-selected 'Secure store' sidebar item is a
-        # no-op, so hop via 'General' first — the sidebar layout is static,
-        # so the stale frame is still valid for the second click.
+        # 'Go back' on a detail view returns to the list. Elsewhere the
+        # selected 'Secure store' sidebar item is a no-op, so hop via
+        # 'General' — the sidebar frame stays valid for the second click.
         if st == "detail":
             b = by_label(uimap, "Go back", "AXButton")
             if b:
