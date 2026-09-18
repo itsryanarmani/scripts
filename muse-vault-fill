@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""muse-vault-fill — seed login entries into the Muse Secure credentials store.
+
+Drives the Muse macOS app (Settings → Secure store) through Peekaboo's
+accessibility driver: `peekaboo see` for the element map, coordinate clicks
+for every press, and `peekaboo paste` (clipboard) for field input.
+
+Reads an entries file kept OUTSIDE the repo:
+  entries.json = [{"name": "Costco", "url": "https://signin.costco.com/",
+                   "username": "...", "password": "..."}]
+
+Traps this encodes, all learned the hard way:
+  * `--on` element clicks silently no-op on this app — it is a WebKit/SwiftUI
+    hybrid and AXPress does nothing. Every click goes through the element's
+    frame-center coordinates instead.
+  * the Add dialog renders its fields asynchronously — the opener retries
+    until the URL/Username/Password textfields exist rather than sleeping a
+    fixed time.
+  * the store lists entries by DOMAIN only, so a multi-account domain needs
+    the row's detail view (which shows the username) for a correct skip.
+  * field values go through the clipboard, so keystroke layout never touches
+    a password's special characters — and secrets never hit argv beyond the
+    one `paste` call.
+
+Usage:
+  muse-vault-fill entries.json [--app Muse] [--window Settings]
+The script never prints secret values; the log records names + results only.
+Idempotent: skips entries whose domain+username pair is already in the store.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from urllib.parse import urlparse
+
+NON_LOGIN_LABELS = {"Add", "Cancel", "Save", "Go back", "Edit", "Delete",
+                    "Close", "Secure store", "Passwords", "Get started"}
+
+
+def in_bounds(frame, bx, by, bw, bh):
+    """True when an element's frame overlaps the window rect.
+
+    The snapshot uimap also carries the whole app MENU tree — menu-bar
+    menus sit at y≈0 and menu items at (0, screenH) with zero size. State
+    detection must see window content only, or a stray 'Edit'/'Delete'
+    menu entry reads as a detail view that is not there.
+    """
+    if not frame:
+        return False
+    (x, y), (w, h) = frame
+    return x < bx + bw and x + w > bx and y < by + bh and y + h > by
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("entries", help="path to entries.json")
+    ap.add_argument("--app", default="Muse")
+    ap.add_argument("--window", default="Settings")
+    ap.add_argument("--settle", type=float, default=0.4,
+                    help="seconds to wait after each click/paste")
+    args = ap.parse_args()
+
+    entries = json.load(open(os.path.expanduser(args.entries)))
+    log_path = args.entries + ".fill.log"
+
+    def pb(*cmd, timeout=60):
+        r = subprocess.run(
+            ["peekaboo", *cmd, "--app", args.app] if cmd[0] != "see" else
+            ["peekaboo", *cmd],
+            capture_output=True, text=True, timeout=timeout)
+        return r.stdout + r.stderr
+
+    def window_id():
+        """CoreGraphics id of the Settings window, resolved fresh each call.
+
+        --window-title matching is flaky here: peekaboo sometimes lands on
+        the main Muse window instead. The id is stable for a run and cheap
+        to look up (~0.3s against a multi-second see).
+        """
+        try:
+            out = pb("list", "windows", "--json", timeout=30)
+            wins = json.loads(out)["data"]["windows"]
+        except (json.JSONDecodeError, KeyError, subprocess.TimeoutExpired):
+            return None
+        for w in wins:
+            if w.get("title") == args.window:
+                return w.get("window_id")
+        return None
+
+    def see():
+        """Return (ui_elements, ui_map) for the Settings window, or (None, None)."""
+        wid = window_id()
+        if wid is None:
+            return None, None
+        try:
+            # the AX scan of this WebKit window is slow — give peekaboo's
+            # own detection pass more than its 20s default
+            out = pb("see", "--app", args.app, "--window-id", str(wid),
+                     "--json", "--timeout-seconds", "45", timeout=90)
+        except subprocess.TimeoutExpired:
+            return None, None
+        try:
+            data = json.loads(out)["data"]
+        except (json.JSONDecodeError, KeyError):
+            print("see: json parse failed, head:", out[:200], file=sys.stderr)
+            return None, None
+        uimap_path = data.get("ui_map")
+        if not (isinstance(uimap_path, str) and os.path.exists(uimap_path)):
+            sid = data.get("snapshot_id")
+            uimap_path = os.path.expanduser(
+                f"~/.peekaboo/snapshots/{sid}/snapshot.json")
+        snap = {}
+        try:
+            snap = json.load(open(uimap_path))
+            uimap = snap["uiMap"]
+        except (OSError, json.JSONDecodeError, KeyError):
+            uimap = {}
+        bounds = snap.get("windowBounds") if isinstance(snap, dict) else None
+        if bounds:
+            bx, by = bounds[0]
+            bw, bh = bounds[1]
+            uimap = {
+                k: e for k, e in uimap.items()
+                if in_bounds(e.get("frame"), bx, by, bw, bh)
+            }
+        if not uimap:
+            # The Settings window's WebKit AX tree only exists while the
+            # window is focused — an unfocused capture returns an empty
+            # map. Focus it and let the caller's retry re-see.
+            pb("window", "focus", "--window-id", str(wid))
+        return data.get("ui_elements", []), uimap
+
+    def center(e):
+        f = e["frame"]
+        return int(f[0][0] + f[1][0] / 2), int(f[0][1] + f[1][1] / 2)
+
+    def click_el(e):
+        x, y = center(e)
+        pb("click", "--coords", f"{x},{y}")
+        time.sleep(args.settle)
+
+    def paste(text):
+        pb("paste", "--text", text)
+        time.sleep(args.settle)
+
+    def by_label(uimap, label, role=None):
+        for e in uimap.values():
+            if (e.get("label") or e.get("title")) == label and (
+                    role is None or e.get("role") == role):
+                return e
+        return None
+
+    def state(uimap):
+        labels = {(e.get("label") or e.get("title")) for e in uimap.values()}
+        if {"URL", "Username", "Password"} <= labels and \
+                any(e.get("role") == "AXTextField" and
+                    (e.get("label") or e.get("title")) == "URL"
+                    for e in uimap.values()):
+            return "dialog"
+        if "Edit" in labels or "Delete" in labels:
+            return "detail"
+        if "Add" in labels:
+            return "list"
+        return "other"
+
+    def domain_of(entry):
+        h = urlparse(entry["url"]).netloc or entry["url"]
+        # Muse labels a row by the registrable domain, not the full host:
+        # https://app.bchydro.com/... lists as "bchydro.com". The seed set
+        # uses single-label public suffixes only, so last-two-labels is
+        # the registrable form here.
+        parts = h.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else h
+
+    def domain_rows(uimap, domain):
+        out = []
+        for e in uimap.values():
+            lbl = e.get("label") or e.get("title") or ""
+            if e.get("role") != "AXButton" or lbl in NON_LOGIN_LABELS:
+                continue
+            if lbl == domain or lbl == "www." + domain:
+                out.append(e)
+        return out
+
+    def open_settings():
+        subprocess.run(["open", "-a", args.app], capture_output=True)
+        time.sleep(1.5)
+        # re-verify before the menu click — a transient `list windows`
+        # failure reports the window missing while it is open, and the
+        # menu item toggles a live window CLOSED
+        if window_id() is not None:
+            return
+        subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to tell process "Muse" to '
+             'click menu item "Settings" of menu "Muse" of menu bar item '
+             '"Muse" of menu bar 1'],
+            capture_output=True)
+        time.sleep(1.5)
+
+    def ensure_list():
+        """Land on the Secure store list from wherever Settings sits."""
+        for _ in range(10):
+            if window_id() is None:
+                # window genuinely missing — Cmd+, would toggle a live
+                # window closed, so only reopen when it is truly gone
+                open_settings()
+                time.sleep(1)
+                continue
+            _, uimap = see()
+            if not uimap:
+                time.sleep(1)
+                continue
+            st = state(uimap)
+            if st == "list":
+                return uimap
+            if st == "dialog":
+                b = by_label(uimap, "Cancel", "AXButton")
+                if b:
+                    click_el(b)
+                    continue
+            if st == "detail":
+                b = by_label(uimap, "Go back", "AXButton")
+                if b:
+                    click_el(b)
+                    continue
+            b = by_label(uimap, "Secure store", "AXButton")
+            if b:
+                click_el(b)
+                time.sleep(0.8)
+                continue
+            return None
+        return None
+
+    def usernames_for_domain(uimap, domain):
+        """Open each row of `domain` and collect the usernames it shows."""
+        users = set()
+        for row in domain_rows(uimap, domain):
+            click_el(row)
+            time.sleep(0.6)
+            _, dm = see()
+            if dm and state(dm) == "detail":
+                for e in dm.values():
+                    lbl = e.get("label") or e.get("title") or ""
+                    if lbl:
+                        users.add(lbl)
+                b = by_label(dm, "Go back", "AXButton")
+                if b:
+                    click_el(b)
+                    time.sleep(0.5)
+        return users
+
+    def open_dialog():
+        for _ in range(10):
+            _, uimap = see()
+            if not uimap:
+                time.sleep(1)
+                continue
+            st = state(uimap)
+            if st == "dialog":
+                fields = [by_label(uimap, l, "AXTextField")
+                          for l in ("URL", "Username", "Password")]
+                if all(fields):
+                    return uimap
+                time.sleep(0.6)
+                continue
+            if st != "list":
+                # drifted onto a detail/other page — navigate back like
+                # ensure_list does, then retry
+                b = by_label(uimap, "Go back", "AXButton") or \
+                    by_label(uimap, "Secure store", "AXButton")
+                if b is None:
+                    return None
+                click_el(b)
+                time.sleep(0.8)
+                continue
+            add = None
+            for e in uimap.values():
+                if (e.get("label") or e.get("title")) == "Add" and \
+                        e.get("role") == "AXButton" and e["frame"][0][1] < 330:
+                    add = e
+            if add is None:
+                return None
+            click_el(add)
+            time.sleep(1.2)
+        return None
+
+    def fill_entry(entry):
+        uimap = open_dialog()
+        if uimap is None:
+            return "dialog never rendered"
+        for label, key in (("URL", "url"), ("Username", "username"),
+                           ("Password", "password")):
+            f = by_label(uimap, label, "AXTextField")
+            if f is None:
+                return f"{label} field missing"
+            click_el(f)
+            paste(entry[key])
+        add = None
+        for e in uimap.values():
+            if (e.get("label") or e.get("title")) == "Add" and \
+                    e.get("role") == "AXButton" and e["frame"][0][1] > 400:
+                add = e
+        if add is None:
+            return "dialog Add button missing"
+        click_el(add)
+        time.sleep(1.5)
+        dom = domain_of(entry)
+        for _ in range(10):
+            _, um2 = see()
+            if um2 and state(um2) == "list" and domain_rows(um2, dom):
+                return "ok"
+            time.sleep(1)
+        return "not in list after save"
+
+    log = open(log_path, "a")
+
+    def emit(msg):
+        log.write(msg + "\n")
+        log.flush()
+        print(msg)
+
+    uimap = ensure_list()
+    if uimap is None:
+        emit("FATAL: could not reach the Secure store list")
+        sys.exit(1)
+
+    ok = fail = skip = 0
+    for i, e in enumerate(entries):
+        dom = domain_of(e)
+        _, cur = see()
+        if cur is None or state(cur) != "list":
+            # window died or the UI drifted off the list — land back on it
+            cur = ensure_list()
+            if cur is None:
+                fail += 1
+                emit(f"[{i}] {e['name']}: no secure store view")
+                continue
+        if domain_rows(cur, dom):
+            users = usernames_for_domain(cur, dom)
+            if e["username"] in users:
+                skip += 1
+                emit(f"[{i}] {e['name']}: already in store")
+                continue
+            _, cur = see()
+        try:
+            res = fill_entry(e)
+        except Exception as ex:
+            res = f"exception {ex.__class__.__name__}"
+        ok += res == "ok"
+        fail += res != "ok"
+        emit(f"[{i}] {e['name']}: {res}")
+    emit(f"DONE ok={ok} fail={fail} skip={skip}")
+    sys.exit(1 if fail else 0)
+
+
+if __name__ == "__main__":
+    main()
