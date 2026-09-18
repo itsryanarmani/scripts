@@ -32,7 +32,7 @@ echo "== push -> /data/local/tmp/kiosk-push"
 "${ADB[@]}" push "$SRC" /data/local/tmp/kiosk-push >/dev/null
 
 echo "== run-as copy into files/kiosk"
-"${ADB[@]}" shell "run-as $PKG sh -c 'rm -rf files/kiosk && mkdir -p files && cp -r /data/local/tmp/kiosk-push files/kiosk'"
+"${ADB[@]}" shell "run-as $PKG sh -c 'rm -rf files/kiosk.new && mkdir -p files && cp -r /data/local/tmp/kiosk-push files/kiosk.new && rm -rf files/kiosk && mv files/kiosk.new files/kiosk'"
 "${ADB[@]}" shell rm -rf /data/local/tmp/kiosk-push
 
 echo "== reload intent (in-place, no process kill)"
