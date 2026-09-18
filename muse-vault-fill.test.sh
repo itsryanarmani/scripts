@@ -75,18 +75,21 @@ uimap detail '{"b":{"id":"b","role":"AXButton","label":"Go back","title":"Go bac
 # fixture: Add dialog with three fields
 uimap dialog '{"fu":{"id":"fu","role":"AXTextField","label":"URL","title":"URL","frame":[[923,272],[256,36]],"isActionable":true},"fn":{"id":"fn","role":"AXTextField","label":"Username","title":"Username","frame":[[923,325],[256,36]],"isActionable":true},"fp":{"id":"fp","role":"AXTextField","label":"Password","title":"Password","frame":[[923,378],[256,36]],"isActionable":true},"c":{"id":"c","role":"AXButton","label":"Cancel","title":"Cancel","frame":[[1061,440],[74,36]],"isActionable":true},"a":{"id":"a","role":"AXButton","label":"Add","title":"Add","frame":[[1142,440],[56,36]],"isActionable":true}}'
 
-# 4. skip path: store already holds example.com + testuser@example.com
-#    see#1 = ensure_list, see#2 = loop re-check, see#3 = row detail view
-printf 'list_with_row\nlist_with_row\ndetail\nlist_with_row\n' > "$TMP/stub/order"
+# 4. skip path: store already holds example.com — scan_rows consumes a few
+#    sees scrolling, then the loop sees the list and stored_username opens
+#    the row detail (fixture #6) to read the stored username.
+printf 'list_with_row\nlist_with_row\nlist_with_row\nlist_with_row\nlist_with_row\ndetail\nlist_with_row\n' > "$TMP/stub/order"
 cat > "$TMP/entries.json" <<'J'
 [{"name":"Example","url":"https://example.com/","username":"testuser@example.com","password":"p"}]
 J
 out=$(STUB_DIR="$TMP/stub" PATH="$TMP/stub:$PATH" python3 "$SCRIPT_DIR/muse-vault-fill" "$TMP/entries.json" --settle 0 2>&1)
 echo "$out" | grep -q 'DONE ok=0 fail=0 skip=1'
 check "entry already in store is skipped, not refilled" $?
+echo "$out" | grep -q 'already in store (user: testuser@example.com)'
+check "skip reports the stored username" $?
 
 # 5. add path: empty list -> Add -> dialog -> list shows the new row
-printf 'list_empty\nlist_empty\ndialog\nlist_with_row\n' > "$TMP/stub/order"
+printf 'list_empty\nlist_empty\nlist_empty\nlist_empty\ndialog\nlist_with_row\n' > "$TMP/stub/order"
 rm -f "$TMP/stub/count"
 out=$(STUB_DIR="$TMP/stub" PATH="$TMP/stub:$PATH" python3 "$SCRIPT_DIR/muse-vault-fill" "$TMP/entries.json" --settle 0 2>&1)
 echo "$out" | grep -q 'DONE ok=1 fail=0 skip=0'

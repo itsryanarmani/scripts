@@ -16,8 +16,16 @@ Traps this encodes, all learned the hard way:
   * the Add dialog renders its fields asynchronously — the opener retries
     until the URL/Username/Password textfields exist rather than sleeping a
     fixed time.
-  * the store lists entries by DOMAIN only, so a multi-account domain needs
-    the row's detail view (which shows the username) for a correct skip.
+  * the store holds ONE credential per domain — a second save for the same
+    domain overwrites the first. The entries file should carry a single
+    chosen account per domain; dedup here is by domain label.
+  * the row list is virtualized — only ~12 rows exist in the AX tree at
+    once, and the Add button scrolls away with them. Row detection scans
+    while scrolling; a list with no visible Add is still a list.
+  * clicks post to screen coordinates, so the app must be frontmost —
+    `open -a` does not raise an already-running app, only AppleScript
+    `activate` does. `peekaboo window focus` then raises Settings above
+    the main window inside the app.
   * field values go through the clipboard, so keystroke layout never touches
     a password's special characters — and secrets never hit argv beyond the
     one `paste` call.
@@ -25,7 +33,7 @@ Traps this encodes, all learned the hard way:
 Usage:
   muse-vault-fill entries.json [--app Muse] [--window Settings]
 The script never prints secret values; the log records names + results only.
-Idempotent: skips entries whose domain+username pair is already in the store.
+Idempotent: skips entries whose domain is already in the store.
 """
 
 import argparse
@@ -39,6 +47,20 @@ from urllib.parse import urlparse
 
 NON_LOGIN_LABELS = {"Add", "Cancel", "Save", "Go back", "Edit", "Delete",
                     "Close", "Secure store", "Passwords", "Get started"}
+
+# Detail-view chrome — the username value sits among these static
+# strings; anything else on a detail page is the stored username.
+STATIC_DETAIL_LABELS = NON_LOGIN_LABELS | {
+    "Settings", "Password", "New Password", "Login details", "Username",
+    "scroll area", "HTML content", "Password saved", "Agent permissions",
+    "Use this login automatically", "Always ask before using this login",
+    "Secure credentials store website logins", "group", "main",
+    "Securely store passwords for your agent to use.",
+    "close button", "zoom button", "minimize button",
+    "General", "Connectors", "File system access", "Dictation", "Wallet",
+    "Permissions", "Messaging channels", "Devices", "Data controls",
+    "Help & support", "Legal info", "Log out", "Notifications alt+T",
+}
 
 
 def in_bounds(frame, bx, by, bw, bh):
@@ -107,6 +129,7 @@ def main():
         return None
 
     win_top = {"y": 0}  # last seen window-top y, for relative thresholds
+    last_snap = {"sid": None, "scroll_el": None}
 
     def see(refocused=False):
         """Return (ui_elements, ui_map) for the Settings window, or (None, None).
@@ -134,6 +157,7 @@ def main():
         els = []
         bounds = None
         if data:
+            last_snap["sid"] = data.get("snapshot_id")
             els = data.get("ui_elements", [])
             uimap_path = data.get("ui_map")
             if not (isinstance(uimap_path, str) and os.path.exists(uimap_path)):
@@ -154,6 +178,12 @@ def main():
                     k: e for k, e in uimap.items()
                     if in_bounds(e.get("frame"), bx, by, bw, bh)
                 }
+            # the list's wheel-scroll target — `scroll --on <id>` needs the
+            # element id from THIS snapshot (ids are per-snapshot)
+            for k, e in uimap.items():
+                if (e.get("label") or e.get("title")) == "scroll area":
+                    last_snap["scroll_el"] = k
+                    break
         if not uimap and not refocused:
             # The Settings window's WebKit AX tree only exists while the
             # window is focused — an unfocused/failed capture returns an
@@ -161,7 +191,10 @@ def main():
             # window, and retry once.
             activate_app()
             time.sleep(0.5)
-            pb("window", "focus", "--window-id", str(wid))
+            # bring-to-current-space: the window can sit on a Space the
+            # user is not looking at — clicks then land on the desktop
+            pb("window", "focus", "--window-id", str(wid),
+               "--bring-to-current-space")
             time.sleep(0.3)
             return see(refocused=True)
         if not uimap:
@@ -182,7 +215,8 @@ def main():
         # screen coordinates, and any other app in front takes them.
         activate_app()
         if wid is not None:
-            pb("window", "focus", "--window-id", str(wid))
+            pb("window", "focus", "--window-id", str(wid),
+               "--bring-to-current-space")
             pb("click", "--window-id", str(wid), "--coords", f"{x},{y}")
         else:
             pb("click", "--coords", f"{x},{y}")
@@ -203,6 +237,84 @@ def main():
                 return e
         return None
 
+    def scroll_list(direction, amount=5):
+        """Wheel-scroll the row list via its scroll-area element.
+
+        Bare `scroll` does not reach the inner list — the event must land
+        on the 'scroll area' element from the current snapshot.
+        """
+        cmd = ["scroll", "--direction", direction, "--amount", str(amount)]
+        wid = window_id()
+        if wid is not None:
+            cmd += ["--window-id", str(wid)]
+        if last_snap["scroll_el"] and last_snap["sid"]:
+            cmd += ["--on", last_snap["scroll_el"],
+                    "--snapshot", last_snap["sid"]]
+        pb(*cmd)
+        time.sleep(0.4)
+
+    def row_labels(uimap):
+        """Domain row labels currently on screen, top to bottom."""
+        out = []
+        for e in uimap.values():
+            l = e.get("label") or e.get("title") or ""
+            if e.get("role") == "AXButton" and "." in l and \
+                    l not in NON_LOGIN_LABELS:
+                out.append((e["frame"][0][1], l))
+        return [l for _, l in sorted(out)]
+
+    def merge_ordered(ordered, vis):
+        """Extend `ordered` with rows newly revealed at the bottom.
+
+        The list is sorted, so the visible slice overlaps the known tail —
+        align on the largest suffix/prefix overlap and append the rest.
+        Returns the number of new rows learned.
+        """
+        if not ordered:
+            ordered.extend(vis)
+            return len(vis)
+        mx = min(len(ordered), len(vis))
+        k = 0
+        for kk in range(mx, 0, -1):
+            if ordered[-kk:] == vis[:kk]:
+                k = kk
+                break
+        ordered.extend(vis[k:])
+        return len(vis) - k
+
+    def scan_rows(uimap):
+        """Ordered label list for the WHOLE store — the list virtualizes,
+        so scroll from the top and merge each visible slice."""
+        ordered = []
+        merge_ordered(ordered, row_labels(uimap))
+        m = uimap
+        for _ in range(6):  # reach the top first
+            scroll_list("up", 10)
+            _, m = see()
+            if not m or state(m) != "list":
+                break
+            vis = row_labels(m)
+            merge_ordered(ordered, vis)
+            # first visible row is the global first → top reached;
+            # an empty list has nothing to scroll through
+            if not vis or vis[0] == ordered[0]:
+                break
+        stall = 0
+        for _ in range(40):
+            if not ordered:
+                break
+            scroll_list("down", 5)
+            _, m = see()
+            if not m or state(m) != "list":
+                break
+            if merge_ordered(ordered, row_labels(m)) == 0:
+                stall += 1
+                if stall >= 2:
+                    break
+            else:
+                stall = 0
+        return ordered
+
     def state(uimap):
         labels = {(e.get("label") or e.get("title")) for e in uimap.values()}
         if {"URL", "Username", "Password"} <= labels and \
@@ -212,7 +324,9 @@ def main():
             return "dialog"
         if "Edit" in labels or "Delete" in labels:
             return "detail"
-        if "Add" in labels:
+        # a scrolled list has no visible Add — the domain rows are the tell.
+        # Detail views show the domain as AXUnknown text, never AXButton.
+        if "Add" in labels or row_labels(uimap):
             return "list"
         return "other"
 
@@ -297,31 +411,39 @@ def main():
             continue
         return None
 
-    def usernames_for_domain(uimap, domain):
-        """Open each row of `domain` and collect the usernames it shows."""
-        users = set()
-        for row in domain_rows(uimap, domain):
-            click_el(row)
-            time.sleep(0.6)
-            _, dm = see()
-            if dm and state(dm) == "detail":
-                for e in dm.values():
-                    lbl = e.get("label") or e.get("title") or ""
-                    if lbl and lbl not in NON_LOGIN_LABELS:
-                        users.add(lbl)
+    def stored_username(uimap, domain):
+        """Open the row for `domain` (scrolling until visible) and return
+        the username its detail view shows. One row exists per domain —
+        a second save overwrites, never duplicates."""
+        for _ in range(15):
+            rows = domain_rows(uimap, domain)
+            if rows:
+                click_el(rows[0])
+                time.sleep(0.8)
+                _, dm = see()
+                if not (dm and state(dm) == "detail"):
+                    return ""
+                vals = [e.get("label") or e.get("title") or ""
+                        for e in dm.values()]
+                user = next((v for v in vals
+                             if v and v not in STATIC_DETAIL_LABELS
+                             and v != domain), "")
                 b = by_label(dm, "Go back", "AXButton")
                 if b:
                     click_el(b)
                     time.sleep(0.5)
                 else:
-                    # 'Secure store' is a no-op from its own detail —
-                    # hop via another section
                     for lbl in ("General", "Secure store"):
                         s = by_label(dm, lbl, "AXButton")
                         if s:
                             click_el(s)
                             time.sleep(0.5)
-        return users
+                return user
+            scroll_list("down", 5)
+            _, uimap = see()
+            if not uimap or state(uimap) != "list":
+                return ""
+        return ""
 
     def open_dialog():
         for _ in range(10):
@@ -359,7 +481,9 @@ def main():
                         e["frame"][0][1] - win_top["y"] < 150:
                     add = e
             if add is None:
-                return None
+                # the Add button scrolls away with the list — go back up
+                scroll_list("up", 10)
+                continue
             click_el(add)
             time.sleep(1.2)
         return None
@@ -391,6 +515,11 @@ def main():
             if um2 and state(um2) == "list" and domain_rows(um2, dom):
                 return "ok"
             time.sleep(1)
+        # the row may be saved but scrolled off-screen — full scan before
+        # declaring failure (the list virtualizes ~12 rows at a time)
+        _, um3 = see()
+        if um3 and state(um3) == "list" and dom in scan_rows(um3):
+            return "ok"
         return "not in list after save"
 
     log = open(log_path, "a")
@@ -404,6 +533,8 @@ def main():
     if uimap is None:
         emit("FATAL: could not reach the Secure store list")
         sys.exit(1)
+    store = scan_rows(uimap)
+    emit(f"store scan: {len(store)} rows")
 
     ok = fail = skip = 0
     for i, e in enumerate(entries):
@@ -416,17 +547,18 @@ def main():
                 fail += 1
                 emit(f"[{i}] {e['name']}: no secure store view")
                 continue
-        if domain_rows(cur, dom):
-            users = usernames_for_domain(cur, dom)
-            if e["username"] in users:
-                skip += 1
-                emit(f"[{i}] {e['name']}: already in store")
-                continue
-            _, cur = see()
+        if dom in store:
+            user = stored_username(cur, dom)
+            skip += 1
+            emit(f"[{i}] {e['name']}: already in store"
+                 + (f" (user: {user})" if user else ""))
+            continue
         try:
             res = fill_entry(e)
         except Exception as ex:
             res = f"exception {ex.__class__.__name__}"
+        if res == "ok":
+            store.append(dom)
         ok += res == "ok"
         fail += res != "ok"
         emit(f"[{i}] {e['name']}: {res}")
