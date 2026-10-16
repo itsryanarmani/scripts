@@ -84,8 +84,6 @@ services arrive seconds later. See
 Wait for each dependency with a bounded wait. Then run the heavy work.
 
 ```bash
-boat exec "$ID" --timeout 120 "until docker info >/dev/null 2>&1; do sleep 1; done"
-boat exec "$ID" --timeout 120 "until systemctl is-active --quiet my-app; do sleep 1; done"
 # Requires Bash, jq, and a client-side timeout command.
 # On macOS, install coreutils and replace timeout with gtimeout.
 deadline=$((SECONDS + 300))
@@ -94,13 +92,17 @@ while (( SECONDS < deadline )); do
   info=$(timeout 15 boat info "$ID" --json) || exit 1
   jq -e '.sandbox.state == "ready" or .sandbox.state == "idle" or
          .sandbox.state == "running"' <<<"$info" >/dev/null || exit 1
-  jq -e '.sandbox.health == "ok"' <<<"$info" >/dev/null || exit 1
-  if jq -e '.sandbox.hydrated == true' <<<"$info" >/dev/null; then
+  if jq -e '.sandbox.health == "degraded"' <<<"$info" >/dev/null; then
+    exit 1
+  fi
+  if jq -e '.sandbox.health == "ok" and .sandbox.hydrated == true' \
+      <<<"$info" >/dev/null; then
     break
   fi
   sleep 2
 done
-jq -e '.sandbox.hydrated == true' <<<"$info" >/dev/null || exit 1
+jq -e '.sandbox.health == "ok" and .sandbox.hydrated == true' \
+  <<<"$info" >/dev/null || exit 1
 ```
 
 Do not write job output into a restored tree before `hydrated` is
@@ -116,15 +118,21 @@ optional, separate image-training procedure.
 
 Check degraded health through the [webhook contract](https://docs.boat.dev/webhooks).
 The loop above requires healthy status and has a five-minute polling budget.
-Each CLI request has a separate timeout. Docker and service checks are optional;
-run them only when the job needs those dependencies.
+Each CLI request has a separate timeout. Missing health keeps polling;
+only an explicitly healthy, hydrated response opens the gate.
+Then run bounded, read-only Docker or service probes when the job needs them.
+A failed probe stops setup. Do not retry the workload itself.
 
-A `409 sandbox_starting` answer means the sandbox still starts after 60
-seconds. Retry every few seconds. A `502` with message
-`sandbox_restoring` means the files still mount. Retry after 1 to 3
-seconds. Retry only these infrastructure answers, with a bound. Never
-retry a failed test command as infrastructure. The test exit code is
-the verdict.
+For machine calls such as `boat exec`, match the live error body before
+retrying. The [API prose](https://docs.boat.dev/api-v1) uses
+`sandbox_starting` and `sandbox_restoring`. The
+[OpenAPI command description](https://docs.boat.dev/openapi/boat-v1.yaml)
+still uses `boat_starting` and `boat_direct_failed`.
+Only retry a response that explicitly establishes that the command did not
+run. Bound the retry count and elapsed time. An ambiguous 502 can mean the
+command already ran; reconcile it instead of repeating a mutation.
+`boat info` is a control-plane read, not that command retry path.
+Never retry a failed test command as infrastructure. Its exit code is the verdict.
 
 ## Keep snapshots minimal
 
@@ -166,8 +174,9 @@ Each Box runs one lease at a time.
 
 The service runs as `user` with a fixed `RUNNER_DIR` at
 `/home/user/actions-runner`. Cleanup is sparse by design: it removes
-only containers, `/tmp` entries, and workspaces created during the
-lease. It retains `_work/_tool`, Bun, Playwright, and Docker images.
+containers and new `/tmp` entries using lease metadata. Workspace deletion
+is wider: it removes every non-tool `_work` entry, including older jobs.
+It retains `_work/_tool`, Bun, Playwright, and Docker images.
 Docker image pruning runs once a day.
 
 Set an explicit locale and noninteractive apt in every provisioning
