@@ -161,3 +161,5 @@ if __name__ == "__main__":
         raise SystemExit(main(sys.argv))
     except (IndexError, ValueError) as err:
         sys.exit(f"bad arguments: {err}")
+    except OSError as err:
+        sys.exit(f"hidagent unreachable at {BASE}: {err}")
