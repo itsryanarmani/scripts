@@ -44,3 +44,6 @@ next lease. Older lease files without cleanup metadata skip temporary/container
 cleanup. Cleanup retains `_work/_tool`, Bun, Playwright and Docker images.
 Docker image pruning runs once a day.
 Broker/GitHub outages delay work until lease cleanup is acknowledged.
+
+The [pool cost proposal](boat-pool-cost-plan.md) describes a disabled demand
+policy, its cost worksheet, and the drain safety requirements before activation.
