@@ -127,6 +127,9 @@ def main(argv):
         show(code, raw)
         return 0
     if command == "key":
+        if not confirm:
+            sys.stderr.write("key needs --confirm\n")
+            return 2
         code, raw = call("POST", "/api/key", {"text": args[0]})
         show(code, raw)
         return 0
