@@ -124,7 +124,7 @@ Then run bounded, read-only Docker or service probes when the job needs them.
 A failed probe stops setup. Do not retry the workload itself.
 
 For machine calls such as `boat exec`, match the live error body before
-retrying. The [API prose](https://docs.boat.dev/api-v1) uses
+retrying. The [API prose](https://docs.boat.dev/api/v1) uses
 `sandbox_starting` and `sandbox_restoring`. The
 [OpenAPI command description](https://docs.boat.dev/openapi/boat-v1.yaml)
 still uses `boat_starting` and `boat_direct_failed`.
