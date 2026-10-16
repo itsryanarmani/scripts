@@ -61,6 +61,12 @@ prints the cost, and deletes the sandbox. It exits with the command exit
 code. A cancelled job also deletes the sandbox. See
 [CI with Boat](https://docs.boat.dev/ci.md).
 
+Before `--push .`, exclude secret files or push a staging directory that
+contains only approved files. In a Git checkout, Boat also uploads new
+files that `.gitignore` does not exclude. Outside Git, it uploads every
+file except `.git`. Check for `.env` files and credentials before upload.
+See [`boat push`](https://docs.boat.dev/cli-reference#boat-push-id-dir).
+
 Model B keeps a pool of Boxes for each label. It uses `boat-pool`,
 `boat-runner-agent`, and the broker in
 [workers/boat-runners](workers/boat-runners/README.md). Use it for steady
