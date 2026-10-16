@@ -152,6 +152,7 @@ needs both.
 | `box-guard` | Give every Box a deadline. `box new --no-auto-stop` leaves `archiveAfter: null` and nothing will ever stop it. Repairs state hourly with `box extend --ttl`; never stops anything |
 | `iphone-wda` | Drive a USB iPhone through WebDriverAgent: `up` builds and starts it with the go-ios tunnel, then open, tree, tap, find, drag and shot. Never unlocks the phone |
 | `private-repo-32ef` | Run the Phone Farm iOS stack (kevs-ios-agents): `up`, `down`, `status`, `register <udid>`, `run-now` and `stop`. Waits out a busy registration, sends `Origin` equal to `Host`, and removes a stale `ios forward 8100` (`iphone-wda up` leaves one). `--dry-run` prints the commands |
+| `iphone-agent` | Send one named action to a local hidagent. Fractions are 0 to 1. The pointer stays visible |
 | `box-reap-cron` + `com.pooriaarab.box-reap.plist` | Runs `box-reap` hourly under launchd. Installs to `~/.local/bin` because macOS TCC blocks a launchd agent from reading `~/Documents` |
 | `gpu-vm` | Run local LLMs on a rented spot GPU VM on Google Cloud. `up` builds llama.cpp with CUDA, copies GGUF files and serves them on loopback. `tunnel` reaches them through IAP. `stop` and `down` end the billing. `--dry-run` prints every command |
 | `turbo-remote-cache/` | Deployable Cloudflare Worker: a Turborepo remote cache backed by R2 |
