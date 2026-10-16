@@ -50,6 +50,8 @@ policy, its cost worksheet, and the drain safety requirements before activation.
 
 ## Two models: one sandbox per job, or one pool Box per label
 
+## Choose one sandbox per job or a JIT pool
+
 Use one model per workload. Do not mix them in one job.
 
 Model A runs one sandbox per CI job. It needs no pool code. Use it for
@@ -59,7 +61,7 @@ prints the cost, and deletes the sandbox. It exits with the command exit
 code. A cancelled job also deletes the sandbox. See
 [CI with Boat](https://docs.boat.dev/ci.md).
 
-Model B keeps one pool Box per label. It uses `boat-pool`,
+Model B keeps a pool of Boxes for each label. It uses `boat-pool`,
 `boat-runner-agent`, and the broker in
 [workers/boat-runners](workers/boat-runners/README.md). Use it for steady
 CI load on private `pooriaarab` repos. Each Box serves one lease at a time.
@@ -84,16 +86,38 @@ Wait for each dependency with a bounded wait. Then run the heavy work.
 ```bash
 boat exec "$ID" --timeout 120 "until docker info >/dev/null 2>&1; do sleep 1; done"
 boat exec "$ID" --timeout 120 "until systemctl is-active --quiet my-app; do sleep 1; done"
-until [ "$(boat info "$ID" --json | jq -r .sandbox.hydrated)" = "true" ]; do sleep 2; done
+# Requires Bash, jq, and a client-side timeout command.
+# On macOS, install coreutils and replace timeout with gtimeout.
+deadline=$((SECONDS + 300))
+info='{}'
+while (( SECONDS < deadline )); do
+  info=$(timeout 15 boat info "$ID" --json) || exit 1
+  jq -e '.sandbox.state == "ready" or .sandbox.state == "idle" or
+         .sandbox.state == "running"' <<<"$info" >/dev/null || exit 1
+  jq -e '.sandbox.health == "ok"' <<<"$info" >/dev/null || exit 1
+  if jq -e '.sandbox.hydrated == true' <<<"$info" >/dev/null; then
+    break
+  fi
+  sleep 2
+done
+jq -e '.sandbox.hydrated == true' <<<"$info" >/dev/null || exit 1
 ```
 
 Do not write job output into a restored tree before `hydrated` is
 `true`. Reads wait for their own file, but early writes race the
 background download. After hydration, do one targeted pass over the hot
-paths. Boat records the first files the app opens in
-`~/.ascii/playbook.json` (first 5,000 paths) and fetches them first at
-the next start. Then save the named snapshot. A save before hydration
-ends misses the run.
+paths to warm the OS page cache. Count this pass in the measured time.
+This differs from Boat's startup playbook. The playbook records reads
+only during restoration, before hydration completes. To train it, start
+from a snapshot and read the intended startup files during restoration.
+Wait for hydration before saving that trained snapshot. Keep heavy CI
+work behind the hydration gate. See the readiness source for this
+optional, separate image-training procedure.
+
+Check degraded health through the [webhook contract](https://docs.boat.dev/webhooks).
+The loop above requires healthy status and has a five-minute polling budget.
+Each CLI request has a separate timeout. Docker and service checks are optional;
+run them only when the job needs those dependencies.
 
 A `409 sandbox_starting` answer means the sandbox still starts after 60
 seconds. Retry every few seconds. A `502` with message
@@ -125,8 +149,10 @@ of `~/.bashrc`. Do not tar a cache into the snapshot to skip hydration.
 That tarball downloads in full at every restore. Prefer `.boatignore`
 plus reinstall, or deps installed natively in a named snapshot.
 
-Measure cache locality before you add an Actions cache. A blanket cache
-that always misses costs a download and saves nothing. Compare matched
+Measure cache locality before you add an Actions cache. Include lookup,
+restore, extraction, upload, and fresh installation time. A miss can still
+incur upload cost. Compare machine-local or nearby object storage with
+GitHub storage; region and throughput need measurement. Compare matched
 medians across runs on the same label, not single runs and not mixed
 labels. Host speed varies.
 
@@ -147,7 +173,16 @@ Docker image pruning runs once a day.
 Set an explicit locale and noninteractive apt in every provisioning
 script (`LC_ALL=C.UTF-8`, `DEBIAN_FRONTEND=noninteractive`). Use a
 modern git. Pin the unit `PATH`. None of these are installed yet. See
-required future work below.
+required future work below. Explicitly set each test runner's worker count.
+CPU affinity can change `nproc` while Node or Python still sees every CPU.
+Start near four vCPUs per job, then measure memory and contention.
+
+Give concurrent jobs separate HOME directories and writable state. Keep
+checkout paths stable where compiler caches include absolute paths.
+Reset sparse-checkout before reuse. The existing job-start hook only
+marks the runner busy; it does not reset sparse-checkout. A new JIT
+runner does not clear shared machine state. Quarantine a machine when
+cleanup fails instead of dispatching another lease onto uncertain state.
 
 ## Bill idle and restore time honestly
 
@@ -156,8 +191,9 @@ deleted sandbox costs nothing more. Pool Boxes use `--no-auto-stop`
 with `archiveAfter=null`, verified at provision. They bill 24 hours a
 day, including idle time. Report idle cost as its own line. Add restore
 and download time to each job cost. A 6-minute `small` run costs about
-$0.002 at $0.018/h. Check `boat limits` before a batch and pace starts
-to the plan minute limit. A refused start does not count. A
+$0.002 at $0.018/h; verify the current rate before budgeting. Check
+`boat limits` before a batch. Pace creates, forks, and resumes against
+all account minute, hour, and day budgets. A refused start does not count. A
 `boat run --from <snapshot>` job that the runner host kills still stops
 by itself within 15 minutes.
 
@@ -174,9 +210,11 @@ item needs an issue before implementation.
 - Add a TTL tick and watchdog. Pool Boxes run with auto-stop off by
   design, so no TTL safeguard is enabled. `heal` replaces only inactive
   agents. Nothing reaps a wedged Box or ticks a deadline.
-- Deregister dead agents. `heal` provisions a replacement, then deletes
-  the old Box. It never deregisters the dead runner first. Replace
-  means deregister, then delete.
+- Recover lost runners. `heal` relies on `systemctl is-active`; a
+  transient systemd restart can produce a false loss. Check the actual
+  runner process or cgroup and lease before replacement. Deregister the
+  lost runner and reconcile its GitHub job. Retry only confirmed
+  infrastructure loss, with a bounded count. Preserve real test failures.
 - Pin locale, apt mode, git floor, and unit `PATH`. The provision
   script sets none of these. Add `LC_ALL=C.UTF-8`,
   `DEBIAN_FRONTEND=noninteractive`, a minimum git version, and an
@@ -188,3 +226,37 @@ item needs an issue before implementation.
   its persisted lease after a restart. Webhook dedupe and poll recovery
   live in [workers/boat-runners](workers/boat-runners/README.md) and
   are not audited here.
+
+- Quarantine failed cleanup. Current cleanup errors are logged without
+  blocking the next lease. Add a refusal test before changing that rule.
+- Isolate writable job state and reset sparse-checkout. Explicit worker
+  budgets belong in each workload, not inferred from host CPU count.
+
+## Qualify the control plane before rollout
+
+Use queue depth and healthy capacity to set pool size. Bound both maximum
+capacity and idle time. Keep a reserve in account start quotas.
+Test the TTL watchdog by stopping the controller. A TTL starts at creation or resume. Boat extends it for integrated
+agent activity, which does not establish activity tracking for an Actions
+runner. Refresh it before expiry without allowing busy jobs to expire
+during controller delays.
+Check the current API schema before implementing deadline updates.
+
+Poll queued GitHub work as well as processing webhooks. Deduplicate by
+job identity and reconcile each job before dispatch. Do not treat a
+webhook delivery as an exactly-once queue. Reconcile interrupted runs
+before retrying; never turn test failures into infrastructure retries.
+
+Record queue, restore, hydration, setup, build, test, export, and cleanup
+phases. Compare several matched runs on the same commit and machine size.
+Include idle pool time and failed capacity in total cost. The supplied
+October 2026 experience report describes other repositories; its timing,
+region, and bandwidth observations are not measurements of this pool.
+
+For a vendor defect, retain timestamps, machine IDs, command versions,
+raw results, and a minimal reproduction. Remove credentials from reports.
+Send the report only when the owner authorizes that external message.
+
+Sources checked on 2026-10-16. These instructions do not establish live
+qualification. A new controller or image needs a real restore and failure
+drill before the fleet depends on it.
