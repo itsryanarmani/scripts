@@ -228,8 +228,9 @@ item needs an issue before implementation.
   every 5 seconds with no cap. Cap retries and surface repeated
   failure. Never retry test failures.
 - Add a TTL tick and watchdog. Pool Boxes run with auto-stop off by
-  design, so no TTL safeguard is enabled. `heal` replaces only inactive
-  agents. Nothing reaps a wedged Box or ticks a deadline.
+  design, so no TTL safeguard is enabled. `heal` replaces any Box whose
+  `agent_state` is not exactly `active`. Nothing reaps a wedged Box or
+  ticks a deadline.
 - Recover lost runners. `heal` relies on `systemctl is-active`; a
   transient systemd restart can produce a false loss. Check the actual
   runner process or cgroup and lease before replacement. Deregister the
