@@ -16,8 +16,8 @@ those values. The service needs only the pool token, not the GitHub token.
   `archiveAfter` stops provisioning. A failed install reports the Box ID for
   inspection or deletion; it never silently creates another Box.
 - `./boat-pool status` reads pool Boxes, agent state and broker counts.
-- `./boat-pool heal --dry-run` inspects existing Boxes and plans replacements
-  for inactive agents. Omit dry-run to replace them, then remove the old Boxes.
+- `./boat-pool heal --dry-run` plans replacements whenever `agent_state`
+  is not exactly `active`. Omit dry-run to create replacements and remove old Boxes.
 - `./boat-pool down bx_<id>` stops and deletes only a named pool Box.
 - `./boat-pool hooks --dry-run` lists private, non-archived owner repos.
   Omit dry-run to create/update matching webhook URLs; this affects all listed
