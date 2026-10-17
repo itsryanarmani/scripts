@@ -160,8 +160,11 @@ printf 'node_modules/\n.next/\n' > .boatignore
 
 Keep one container per needed image, even if it never runs:
 `docker create --name keep-node node:22`. Install Playwright browsers
-outside `~/.cache` with `PLAYWRIGHT_BROWSERS_PATH` on the first line
-of `~/.bashrc`. Do not tar a cache into the snapshot to skip hydration.
+outside `~/.cache`. Use the same `PLAYWRIGHT_BROWSERS_PATH` for installation
+and the JIT runner service environment. `boat-pool install` does not set
+this variable. Setting it only in `~/.bashrc` is insufficient for job shells.
+Otherwise, reinstall browsers in each job. Do not tar a cache into the
+snapshot to skip hydration.
 That tarball downloads in full at every restore. Prefer `.boatignore`
 plus reinstall, or deps installed natively in a named snapshot.
 
