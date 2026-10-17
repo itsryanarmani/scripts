@@ -103,13 +103,13 @@ while (( SECONDS < deadline )); do
   if jq -e '.sandbox.health == "degraded"' <<<"$info" >/dev/null; then
     exit 1
   fi
-  if jq -e '.sandbox.health == "ok" and .sandbox.hydrated == true' \
+  if jq -e '.sandbox.hydrated == true and .sandbox.health != "degraded"' \
       <<<"$info" >/dev/null; then
     break
   fi
   sleep 2
 done
-jq -e '.sandbox.health == "ok" and .sandbox.hydrated == true' \
+jq -e '.sandbox.hydrated == true and .sandbox.health != "degraded"' \
   <<<"$info" >/dev/null || exit 1
 ```
 
@@ -125,9 +125,11 @@ work behind the hydration gate. See the readiness source for this
 optional, separate image-training procedure.
 
 Check degraded health through the [webhook contract](https://docs.boat.dev/webhooks).
-The loop above requires healthy status and has a five-minute polling budget.
-Each CLI request has a separate timeout. Missing health keeps polling;
-only an explicitly healthy, hydrated response opens the gate.
+The loop above checks readiness and has a five-minute polling budget.
+Each CLI request has a separate timeout. Health is optional in the
+[Sandbox schema](https://docs.boat.dev/openapi/boat-v1.yaml). Missing health
+does not block readiness. Explicit degraded health blocks the gate.
+Hydration must be explicitly true; missing hydration keeps polling.
 Then run bounded, read-only Docker or service probes when the job needs them.
 A failed probe stops setup. Do not retry the workload itself.
 
