@@ -92,6 +92,8 @@ Wait for each dependency with a bounded wait. Then run the heavy work.
 ```bash
 # Requires Bash, jq, and a client-side timeout command.
 # On macOS, install coreutils and replace timeout with gtimeout.
+# Set ID to the target sandbox ID before running this snippet.
+: "${ID:?Set ID to the target sandbox ID}"
 deadline=$((SECONDS + 300))
 info='{}'
 while (( SECONDS < deadline )); do
