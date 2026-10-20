@@ -39,7 +39,9 @@ def main():
     port = a.port or next(iter(sorted(glob.glob("/dev/cu.usbmodem*"))), None)
     if not port:
         sys.exit("no board found: plug in the ESP32-S3")
-    with open("/tmp/ble-bridge.lock", "w") as lock:
+    # O_NOFOLLOW and no O_TRUNC: a planted symlink in /tmp is refused, not truncated
+    lock = os.open(f"/tmp/ble-bridge-{os.getuid()}.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lock, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one command stream at a time
         fd = open_port(port)
         try:
