@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Send commands to the ESP32-S3 BLE mouse/keyboard board over USB serial.
+
+Usage: ble-bridge [-p PORT] "list" "@1 home" "@1 move 10 0" "@1 click"
+
+Each argument is one command line. The board answers "ok" or "err <why>".
+Firmware and protocol: pooriaarab/private-repo-32ef, docs/ble-bridge.md.
+
+The port opens without a DTR change. A DTR toggle resets the board and
+prints boot text in place of the reply.
+"""
+import argparse, fcntl, glob, os, select, sys, termios, time
+
+
+def open_port(path):
+    fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
+    a = termios.tcgetattr(fd)
+    a[4] = a[5] = termios.B115200
+    a[2] &= ~termios.HUPCL  # do not drop DTR on close
+    termios.tcsetattr(fd, termios.TCSANOW, a)
+    return fd
+
+
+def send(fd, line, timeout):
+    os.write(fd, (line + "\n").encode())
+    buf, end = b"", time.time() + timeout
+    while time.time() < end and not buf.endswith(b"\n"):
+        if select.select([fd], [], [], 0.2)[0]:
+            buf += os.read(fd, 512)
+    return buf.decode(errors="replace").strip() or "err no reply"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("-p", "--port", help="serial port (default: first /dev/cu.usbmodem*)")
+    ap.add_argument("-t", "--timeout", type=float, default=10)
+    ap.add_argument("commands", nargs="+")
+    a = ap.parse_args()
+    port = a.port or next(iter(sorted(glob.glob("/dev/cu.usbmodem*"))), None)
+    if not port:
+        sys.exit("no board found: plug in the ESP32-S3")
+    with open("/tmp/ble-bridge.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # one command stream at a time
+        fd = open_port(port)
+        try:
+            rc = 0
+            for c in a.commands:
+                r = send(fd, c, a.timeout)
+                print(f"{c} -> {r}")
+                rc |= r.startswith("err")
+        finally:
+            os.close(fd)
+    sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()
