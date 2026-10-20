@@ -9,7 +9,7 @@ Firmware and protocol: pooriaarab/private-repo-32ef, docs/ble-bridge.md.
 The port opens without a DTR change. A DTR toggle resets the board and
 prints boot text in place of the reply.
 """
-import argparse, fcntl, glob, os, select, sys, termios, time
+import argparse, fcntl, glob, os, select, stat, sys, termios, time
 
 
 def open_port(path):
@@ -40,7 +40,11 @@ def main():
     if not port:
         sys.exit("no board found: plug in the ESP32-S3")
     # O_NOFOLLOW and no O_TRUNC: a planted symlink in /tmp is refused, not truncated
-    lock = os.open(f"/tmp/ble-bridge-{os.getuid()}.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    # O_NONBLOCK: a FIFO planted at this path cannot hang the open
+    lock = os.open(f"/tmp/ble-bridge-{os.getuid()}.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    st = os.fstat(lock)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+        sys.exit("refusing lock file: not a regular file owned by you")
     with os.fdopen(lock, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one command stream at a time
         fd = open_port(port)
