@@ -15,19 +15,43 @@ import argparse, fcntl, glob, os, select, stat, sys, termios, time
 def open_port(path):
     fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
     a = termios.tcgetattr(fd)
+    # Raw mode: no ECHO (the host must not send board replies back as
+    # commands), no canonical mode, no newline translation.
+    a[0] = 0  # iflag
+    a[1] = 0  # oflag
+    a[2] = (a[2] & ~(termios.CSIZE | termios.PARENB | termios.CSTOPB | termios.HUPCL)) | termios.CS8 | termios.CLOCAL | termios.CREAD  # no HUPCL: keep DTR on close
+    a[3] = 0  # lflag
     a[4] = a[5] = termios.B115200
-    a[2] &= ~termios.HUPCL  # do not drop DTR on close
+    a[6][termios.VMIN], a[6][termios.VTIME] = 0, 0
     termios.tcsetattr(fd, termios.TCSANOW, a)
     return fd
 
 
+def drain(fd):
+    """Discard stale input (boot text, late replies) before a command."""
+    termios.tcflush(fd, termios.TCIFLUSH)
+    while select.select([fd], [], [], 0.05)[0]:
+        if not os.read(fd, 512):
+            break
+
+
 def send(fd, line, timeout):
+    """Return the board's ok/err reply, or None on timeout.
+
+    Lines that do not start with ok or err (boot text) are skipped.
+    """
+    drain(fd)
     os.write(fd, (line + "\n").encode())
     buf, end = b"", time.time() + timeout
-    while time.time() < end and not buf.endswith(b"\n"):
+    while time.time() < end:
         if select.select([fd], [], [], 0.2)[0]:
             buf += os.read(fd, 512)
-    return buf.decode(errors="replace").strip() or "err no reply"
+        *done, buf = buf.split(b"\n")
+        for raw in done:
+            t = raw.decode(errors="replace").strip()
+            if t == "ok" or t.startswith(("ok ", "err")):
+                return t
+    return None
 
 
 def main():
@@ -52,6 +76,12 @@ def main():
             rc = 0
             for c in a.commands:
                 r = send(fd, c, a.timeout)
+                if r is None:
+                    # The board may still answer late. Stop, so a late reply
+                    # cannot be read as the result of a later command.
+                    print(f"{c} -> err no reply (stopping)")
+                    rc = 1
+                    break
                 print(f"{c} -> {r}")
                 rc |= r.startswith("err")
         finally:
