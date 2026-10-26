@@ -298,3 +298,19 @@ it returns a stale value after a write that worked, so look at the screen.
 Send commands to the ESP32-S3 BLE mouse and keyboard board that controls iPhones.
 `./ble-bridge "list" "@1 home" "@1 click"`. Firmware, pairing and protocol are in
 [private-repo-32ef](https://github.com/pooriaarab/private-repo-32ef) `docs/ble-bridge.md`.
+
+## ESP32 voice device
+
+Three scripts for taking an ESP32-S3 voice board (XiaoZhi-family firmware) off the
+vendor cloud. The `self-hosted-esp32-voice-device` skill in `pooriaarab/skills`
+explains the order.
+
+| Script | What it does |
+|---|---|
+| `esp-flash-backup <port> [dir]` | Reads the whole flash and appends its SHA-256 to `SHA256SUMS`. Read-only. |
+| `esp-nvs-wifi-ota <port> [--dry-run]` | Writes the server URL and Wi-Fi login into the NVS partition, found from the device's own partition table. No rebuild. |
+| `say-tts-shim.py` | Serves `POST /v1/audio/speech` with the macOS `say` voice. Standard library only. |
+
+`esp-nvs-wifi-ota` reads `OTA_URL`, `ESP_WIFI_SSID` and `ESP_WIFI_PASSWORD` from
+the environment, so the password never appears in `ps` output. It replaces the
+whole NVS partition. Back up first. ESP32 radios use 2.4 GHz only.
