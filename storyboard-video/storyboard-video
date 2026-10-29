@@ -363,7 +363,7 @@ def cmd_verify(d):
          "pass": lufs is not None and abs(lufs - target) <= 1.5},
         {"name": "no black opening frame", "method": "ffmpeg blackdetect", "expected": "no black segment at 0 s",
          "actual": "scan failed" if black is None else ", ".join(black) or "none",
-         "pass": black is not None and not any(float(t) < 0.05 for t in black)},
+         "pass": black is not None and not any(float(t) < 1 / 48 for t in black)},  # only a black frame at 0 s fails
     ]
     record = {"checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "film": "out/film.mp4", "checks": checks}
     errs = validate(record, {"$ref": "#/$defs/verify"}, schema(), "verify")
