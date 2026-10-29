@@ -2,22 +2,21 @@
 """storyboard-video: turn one board.json into stills, a review board, Veo clips and an edited film.
 
 Usage:
-  storyboard-video check <dir>                       Validate <dir>/board.json
+  storyboard-video check <dir>                       Validate <dir>/board.json against video.schema.json
   storyboard-video stills <dir> [ids...]             Cast sheet, then one still per shot anchored on it
   storyboard-video board <dir> <out.html>            Review board: cast, story, stills (or clips) per shot
   storyboard-video veo <dir> --confirm-spend [ids]   Image-to-video for each still (bills at submit)
   storyboard-video cut <dir>                         Edit clips into out/film.mp4 with camera, transitions, ducked VO
 
-Environment: VERTEX_PROJECT (required for stills, veo, and voice-over), and optionally
-SV_IMAGE_MODEL, SV_VIDEO_MODEL, SV_VIDEO_LOCATION, SV_TTS_MODEL. gcloud supplies the token, so
-CLOUDSDK_CONFIG picks the account. Exit status: 0 ok, 1 failed check, 2 bad usage.
+Environment: VERTEX_PROJECT (required for stills, veo and voice-over). SV_IMAGE_MODEL,
+SV_VIDEO_MODEL, SV_VIDEO_LOCATION and SV_TTS_MODEL override the board's `models`. gcloud supplies
+the token, so CLOUDSDK_CONFIG picks the account. Exit status: 0 ok, 1 failed check, 2 bad usage.
 """
 import base64, concurrent.futures as cf, html, json, os, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
-IMAGE_MODEL = os.environ.get("SV_IMAGE_MODEL", "gemini-3-pro-image")
-VIDEO_MODEL = os.environ.get("SV_VIDEO_MODEL", "veo-3.1-fast-generate-001")
+HERE = os.path.dirname(os.path.realpath(__file__))
+DEFAULT_MODELS = {"image": "gemini-3-pro-image", "video": "veo-3.1-fast-generate-001", "tts": "gemini-3.1-flash-tts-preview"}
 VIDEO_LOCATION = os.environ.get("SV_VIDEO_LOCATION", "us-central1")
-TTS_MODEL = os.environ.get("SV_TTS_MODEL", "gemini-3.1-flash-tts-preview")
 # Rough USD per second of 720p video with audio. Third-party figures; check the Vertex AI price page.
 VEO_RATE = {"lite": 0.05, "fast": 0.12, "": 0.40}
 CLIP_SECONDS, W, H, FPS = 8, 1280, 720, 24
@@ -28,26 +27,69 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+def validate(value, schema, root, path="board"):
+    """The JSON Schema subset video.schema.json uses; returns a list of 'path: problem' strings."""
+    kinds = {"object": dict, "array": list, "string": str, "boolean": bool, "integer": int, "number": (int, float)}
+    want = schema.get("type")
+    if want and (not isinstance(value, kinds[want]) or (want in ("integer", "number") and isinstance(value, bool))):
+        return [f"{path}: expected {want}"]
+    errs = []
+    if "enum" in schema and value not in schema["enum"]:
+        errs.append(f"{path}: {value!r} is not one of {schema['enum']}")
+    if isinstance(value, str) and len(value) < schema.get("minLength", 0):
+        errs.append(f"{path}: is empty")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value < schema.get("minimum", value):
+            errs.append(f"{path}: below {schema['minimum']}")
+        if value > schema.get("maximum", value):
+            errs.append(f"{path}: above {schema['maximum']}")
+    if isinstance(value, list):
+        if not schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", len(value)):
+            errs.append(f"{path}: has {len(value)} items")
+        for i, item in enumerate(value):
+            errs += validate(item, schema.get("items", {}), root, f"{path}[{i}]")
+    if isinstance(value, dict):
+        props = schema.get("properties", {})
+        errs += [f"{path}.{k}: required" for k in schema.get("required", []) if k not in value]
+        if schema.get("additionalProperties") is False:
+            errs += [f"{path}.{k}: unknown field" for k in value if k not in props]
+        for k, v in value.items():
+            if k in props:
+                errs += validate(v, props[k], root, f"{path}.{k}")
+    return errs
+
+
+def schema():
+    return json.load(open(os.path.join(HERE, "video.schema.json")))
+
+
 def load(d):
     try:
         b = json.load(open(os.path.join(d, "board.json")))
     except (OSError, ValueError) as e:
         die(f"cannot read board.json: {e}")
-    for key in ("title", "theme", "cast", "shots"):
-        if not b.get(key):
-            die(f"board.json needs '{key}'")
-    seen = set()
-    for s in b["shots"]:
-        for key in ("id", "title", "image", "cut"):
-            if key not in s:
-                die(f"shot {s.get('id', '?')} needs '{key}'")
-        cut = s["cut"]
-        if not (isinstance(cut, list) and len(cut) == 2 and all(isinstance(x, (int, float)) and x >= 0 for x in cut) and cut[1] > 0):
-            die(f"shot {s['id']} cut must be [start, duration] with start >= 0 and duration > 0")
-        if s["id"] in seen:
-            die(f"duplicate shot id {s['id']}")
-        seen.add(s["id"])
+    errs = validate(b, schema(), schema())
+    if errs:  # report the schema paths before anything below can trip on a malformed shape
+        die("board.json does not match video.schema.json:\n  " + "\n  ".join(errs[:20]))
+    ids = [s["id"] for s in b["shots"]]
+    errs += [f"board.shots: duplicate shot id {i}" for i in sorted({i for i in ids if ids.count(i) > 1}, key=str)]
+    if errs:
+        die("board.json does not match video.schema.json:\n  " + "\n  ".join(errs[:20]))
     return b
+
+
+def model(b, kind):
+    return os.environ.get(f"SV_{kind.upper()}_MODEL") or b.get("models", {}).get(kind) or DEFAULT_MODELS[kind]
+
+
+def theme(b):
+    t = b["theme"]
+    extra = " ".join(f"{k.capitalize()}: {', '.join(t[k]) if isinstance(t[k], list) else t[k]}." for k in ("palette", "lighting", "lens", "motion") if t.get(k))
+    return f"{t['style']} {extra}".strip() + (f" Never show: {t['negative']}." if t.get("negative") else "")
+
+
+def cast(b):
+    return " ".join(f"{c['name']}: {c['anchor']}." for c in b["cast"])
 
 
 def save(path, data):
@@ -78,8 +120,8 @@ def call(url, body):
         raise RuntimeError(f"HTTP {e.code}: {e.read().decode()[:400]}")
 
 
-def gemini(model, parts, config):
-    url = f"https://aiplatform.googleapis.com/v1/projects/{project()}/locations/global/publishers/google/models/{model}:generateContent"
+def gemini(model_id, parts, config):
+    url = f"https://aiplatform.googleapis.com/v1/projects/{project()}/locations/global/publishers/google/models/{model_id}:generateContent"
     data = call(url, {"contents": [{"role": "user", "parts": parts}], "generationConfig": config})
     for p in data["candidates"][0]["content"]["parts"]:
         if "inlineData" in p:
@@ -109,19 +151,20 @@ def cmd_stills(d, ids):
     cast_path = os.path.join(img, "cast.png")
     if not os.path.exists(cast_path):
         prompt = (f"Character reference sheet on a plain background, every character full body, front view, side by side, "
-                  f"name label under each. Style: {b['theme']} Characters: {b['cast']}")
-        save(cast_path, gemini(IMAGE_MODEL, [{"text": prompt}], cfg))
+                  f"name label under each. Style: {theme(b)} Characters: {cast(b)}")
+        save(cast_path, gemini(model(b, "image"), [{"text": prompt}], cfg))
         print("cast ok", flush=True)
-    cast = {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(open(cast_path, "rb").read()).decode()}}
+    sheet = {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(open(cast_path, "rb").read()).decode()}}
 
     def one(s):
         # The scene leads and is repeated after the identity lock: with the sheet attached, a model
         # sometimes returns the sheet itself unless told plainly to draw one scene.
+        scene = s["prompts"]["still"]
         prompt = (f"Storyboard frame {s['id']} of a short launch film. Draw ONE cinematic scene, never a character lineup. "
-                  f"Scene: {s['image']} Use the EXACT characters from the reference sheet (same faces, hair, outfits, colours); "
-                  f"do not draw the sheet or name labels. Scene again: {s['image']} Style: {b['theme']} 16:9 film still, no captions.")
+                  f"Scene: {scene} Use the EXACT characters from the reference sheet (same faces, hair, outfits, colours); "
+                  f"do not draw the sheet or name labels. Scene again: {scene} Style: {theme(b)} 16:9 film still, no captions.")
         try:
-            save(os.path.join(img, name(s["id"], "png")), gemini(IMAGE_MODEL, [cast, {"text": prompt}], cfg))
+            save(os.path.join(img, name(s["id"], "png")), gemini(model(b, "image"), [sheet, {"text": prompt}], cfg))
             return f"shot {s['id']} ok"
         except Exception as e:
             return f"shot {s['id']} FAILED: {e}"
@@ -131,21 +174,21 @@ def cmd_stills(d, ids):
 
 def cmd_veo(d, args):
     b = load(d)
-    ids = [a for a in args if a != "--confirm-spend"]
-    shots = pick(b, ids)
-    tier = next((t for t in ("lite", "fast") if t in VIDEO_MODEL), "")
+    video = model(b, "video")
+    shots = pick(b, [a for a in args if a != "--confirm-spend"])
+    tier = next((t for t in ("lite", "fast") if t in video), "")
     cost = len(shots) * CLIP_SECONDS * VEO_RATE[tier]
     if "--confirm-spend" not in args:
-        die(f"{len(shots)} clips x {CLIP_SECONDS}s on {VIDEO_MODEL} is about {cost:.2f} USD, billed at submit even if you "
+        die(f"{len(shots)} clips x {CLIP_SECONDS}s on {video} is about {cost:.2f} USD, billed at submit even if you "
             f"stop polling. Review the stills first, then re-run with --confirm-spend.")
     base = (f"https://{VIDEO_LOCATION}-aiplatform.googleapis.com/v1/projects/{project()}/locations/{VIDEO_LOCATION}"
-            f"/publishers/google/models/{VIDEO_MODEL}")
+            f"/publishers/google/models/{video}")
     os.makedirs(os.path.join(d, "vid"), exist_ok=True)
 
     def one(s):
         still = os.path.join(d, "img", name(s["id"], "png"))
-        prompt = (f"Animate this exact frame; keep every character, prop and set identical. Action: {s.get('motion') or s.get('action', '')} "
-                  f"Style: {b['theme']} Audio: foley and sound effects plus any quoted line spoken in the scene; no narration, no music.")
+        prompt = (f"Animate this exact frame; keep every character, prop and set identical. Action: {s['prompts'].get('motion', s.get('action', ''))} "
+                  f"Style: {theme(b)} Audio: foley and sound effects plus any quoted line spoken in the scene; no narration, no music.")
         try:
             op = call(f"{base}:predictLongRunning", {
                 "instances": [{"prompt": prompt, "image": {"bytesBase64Encoded": base64.b64encode(open(still, "rb").read()).decode(), "mimeType": "image/png"}}],
@@ -178,12 +221,12 @@ def cmd_board(d, out):
         vo = f'<p class="vo">VO: {e(s["vo"])}</p>' if s.get("vo") else ""
         cards.append(f'<div class="shot">{media}<div class="b"><span class="st">{e(s.get("stage", ""))}</span>'
                      f'<h3>{s["id"]} · {e(s["title"])}</h3><p>{e(s.get("action", ""))}</p>{vo}</div></div>')
-    doc = (f'<!doctype html><meta charset="utf-8"><title>{e(b["title"])}</title><style>'
+    doc = (f'<!doctype html><meta charset="utf-8"><title>{e(b["meta"]["title"])}</title><style>'
            "body{font:14px system-ui;background:#111;color:#eee;margin:24px}.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}"
            ".shot{background:#1b1b1f;border:1px solid #333;border-radius:10px;overflow:hidden}.shot img,.shot video{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}"
            ".b{padding:10px}.st{font:700 10px monospace;background:#f2c14e;color:#111;padding:2px 6px;border-radius:4px}h3{margin:6px 0}.vo{color:#aaa;font-style:italic}"
-           f'.cast{{max-width:640px;width:100%;border-radius:10px}}</style><h1>{e(b["title"])}</h1>'
-           f'<img class="cast" src="{e(urllib.parse.quote(os.path.join(rel, "img/cast.png")))}" alt="Cast sheet"><p>{e(b["cast"])}</p><div class="g">{"".join(cards)}</div>')
+           f'.cast{{max-width:640px;width:100%;border-radius:10px}}</style><h1>{e(b["meta"]["title"])}</h1>'
+           f'<img class="cast" src="{e(urllib.parse.quote(os.path.join(rel, "img/cast.png")))}" alt="Cast sheet"><p>{e(b.get("story", {}).get("arc", cast(b)))}</p><div class="g">{"".join(cards)}</div>')
     open(out, "w").write(doc)
     print(out)
 
@@ -194,14 +237,14 @@ def seconds(path):
 
 def voice(b, sid, line, work):
     wav = os.path.join(work, name(sid, "wav").replace("shot", "vo"))
-    voice_name = b.get("edit", {}).get("voice", "Charon")
-    key, key_path = f"{voice_name}|{line}", wav + ".key"
+    vo = b.get("audio", {}).get("voiceOver", {})
+    key, key_path = f"{vo.get('voice', 'Charon')}|{vo.get('direction', '')}|{line}", wav + ".key"
     # A wav with no key file is a hand-recorded line: keep it. A generated one is redone when its text or voice changes.
     if os.path.exists(wav) and (not os.path.exists(key_path) or open(key_path).read() == key):
         return wav
-    pcm = gemini(TTS_MODEL, [{"text": f"Say in a warm, wry narrator voice, brisk pace: {line}"}], {
+    pcm = gemini(model(b, "tts"), [{"text": f"Say as a {vo.get('direction', 'warm narrator, brisk pace')}: {line}"}], {
         "responseModalities": ["AUDIO"],
-        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice_name}}}})
+        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": vo.get("voice", "Charon")}}}})
     save(wav + ".pcm", pcm)
     trim = "silenceremove=start_periods=1:start_threshold=-45dB,areverse"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", wav + ".pcm",
@@ -214,7 +257,10 @@ def cmd_cut(d):
     b = load(d)
     shots, work = b["shots"], os.path.join(d, "out", "work")
     os.makedirs(work, exist_ok=True)
-    default_vol = b.get("edit", {}).get("scene_volume", 0.7)
+    mix = b.get("audio", {}).get("mix", {})
+    duck = {"threshold": 0.02, "ratio": 10, "attackMs": 15, "releaseMs": 350, **mix.get("duck", {})}
+    fade = mix.get("cutFadeMs", 80) / 1000
+    max_speed = b.get("audio", {}).get("voiceOver", {}).get("maxSpeed", 1.2)
     inputs, chains = [], []
 
     def add(*args):
@@ -222,10 +268,11 @@ def cmd_cut(d):
         return inputs.count("-i") - 1
 
     for n, s in enumerate(shots):
-        start, dur = s["cut"]
+        ed = s["edit"]
+        start, dur = ed["window"]
         clip = add("-i", os.path.join(d, "vid", name(s["id"], "mp4")))
-        z = s.get("camera", "1")
-        if s.get("still_picture"):  # Veo drifted: keep the clip's sound, show the approved still
+        z = ed.get("zoom", "1")
+        if ed.get("useStill"):  # the video model drifted: keep the clip's sound, show the approved still
             k = add("-loop", "1", "-framerate", str(FPS), "-t", str(dur), "-i", os.path.join(d, "img", name(s["id"], "png")))
             src = f"[{k}:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
         else:
@@ -233,15 +280,15 @@ def cmd_cut(d):
         chains.append(f"{src}setpts=PTS-STARTPTS,fps={FPS},scale=w='trunc({W}*({z})/2)*2':h=-2:eval=frame,"
                       f"crop={W}:{H},setsar=1,format=yuv420p,settb=1/{FPS * 1000}[v{n}]")
         chains.append(f"[{clip}:a]atrim=start={start}:duration={dur},asetpts=PTS-STARTPTS,aresample=48000,"
-                      f"volume={s.get('scene_volume', default_vol)},afade=t=in:d=0.06,afade=t=out:st={dur - 0.08}:d=0.08[a{n}]")
+                      f"volume={ed.get('sceneVolume', mix.get('sceneVolume', 0.7))},afade=t=in:d={fade * 0.75},afade=t=out:st={dur - fade}:d={fade}[a{n}]")
 
-    vlab, alab, length, starts = "v0", "a0", shots[0]["cut"][1], [0.0]
+    vlab, alab, length, starts = "v0", "a0", shots[0]["edit"]["window"][1], [0.0]
     for n, s in enumerate(shots[1:], 1):
-        dur = s["cut"][1]
-        if s.get("transition"):
-            kind, td = s["transition"]
+        dur, tr = s["edit"]["window"][1], s["edit"].get("transition")
+        if tr:
+            td = tr["seconds"]
             starts.append(length - td)
-            chains.append(f"[{vlab}][v{n}]xfade=transition={kind}:duration={td}:offset={length - td}[vj{n}]")
+            chains.append(f"[{vlab}][v{n}]xfade=transition={tr['type']}:duration={td}:offset={length - td}[vj{n}]")
             chains.append(f"[{alab}][a{n}]acrossfade=d={td}[aj{n}]")
             length += dur - td
         else:
@@ -251,7 +298,7 @@ def cmd_cut(d):
             length += dur
         vlab, alab = f"vj{n}", f"aj{n}"
 
-    # Lines queue: each starts at its shot or after the previous line, and speeds up (max 1.2x)
+    # Lines queue: each starts at its shot or after the previous line, and speeds up (up to maxSpeed)
     # only to finish before the next shot; anything still too long is reported, never overlapped.
     vo, prev_end = [], 0.0
     for n, s in enumerate(shots):
@@ -261,7 +308,7 @@ def cmd_cut(d):
         begin = max(starts[n] + 0.12, prev_end + 0.12)
         deadline = starts[n + 1] + 0.25 if n + 1 < len(shots) else length - 0.35
         raw = seconds(wav)
-        speed = max(1.0, min(1.2, raw / max(deadline - begin, 0.1)))
+        speed = max(1.0, min(max_speed, raw / max(deadline - begin, 0.1)))
         prev_end = begin + raw / speed
         if prev_end > deadline + 0.05:
             print(f"warning: shot {s['id']} line runs {prev_end - deadline:.2f}s past its slot; shorten it or lengthen the shot", file=sys.stderr)
@@ -271,11 +318,12 @@ def cmd_cut(d):
 
     if vo:  # the narrator keys a sidechain that ducks the scene sound while they talk
         chains.append(f"{''.join(vo)}amix=inputs={len(vo)}:normalize=0,apad=whole_dur={length},asplit=2[vomix][vokey]")
-        chains.append(f"[{alab}][vokey]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350[bed]")
+        chains.append(f"[{alab}][vokey]sidechaincompress=threshold={duck['threshold']}:ratio={duck['ratio']}:"
+                      f"attack={duck['attackMs']}:release={duck['releaseMs']}[bed]")
         chains.append("[bed][vomix]amix=inputs=2:weights='1 1.15':normalize=0[mix]")
     else:
         chains.append(f"[{alab}]anull[mix]")
-    chains.append(f"[mix]afade=t=out:st={length - 0.5}:d=0.5,loudnorm=I=-16:TP=-1.5,aresample=48000[aout]")
+    chains.append(f"[mix]afade=t=out:st={length - 0.5}:d=0.5,loudnorm=I={mix.get('targetLufs', -16)}:TP={mix.get('truePeak', -1.5)},aresample=48000[aout]")
 
     out = os.path.join(d, "out", "film.mp4")
     # No -avoid_negative_ts: it shifts video by the AAC priming delay (0.021 s) and players show a black first frame.
@@ -295,7 +343,8 @@ def main():
         die(__doc__.strip(), 2)
     cmd, d, rest = a[0], a[1], a[2:]
     if cmd == "check":
-        print(json.dumps({"title": load(d)["title"], "shots": len(load(d)["shots"])}))
+        b = load(d)
+        print(json.dumps({"title": b["meta"]["title"], "shots": len(b["shots"])}))
     elif cmd == "stills":
         cmd_stills(d, rest)
     elif cmd == "veo":

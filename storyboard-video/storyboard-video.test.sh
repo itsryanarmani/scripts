@@ -13,14 +13,25 @@ expect_exit() { local want="$1"; shift; set +e; "$@" >"$tmp/out" 2>"$tmp/err"; l
 expect_exit 2 "$sv"
 expect_exit 2 "$sv" nonsense "$tmp"
 
-# 2. A board without a cast or with duplicate shot ids is rejected before any spend.
+# 2. The schema rejects a bad board before any spend, and names the failing path.
 mkdir -p "$tmp/bad"
-echo '{"title":"x","theme":"t","shots":[{"id":1}]}' >"$tmp/bad/board.json"
-expect_exit 1 "$sv" check "$tmp/bad"; grep -q cast "$tmp/err" || fail "missing-cast message"
-echo '{"title":"x","theme":"t","cast":"c","shots":[{"id":1,"title":"a","image":"i","cut":[0,1]},{"id":1,"title":"b","image":"i","cut":[0,1]}]}' >"$tmp/bad/board.json"
-expect_exit 1 "$sv" check "$tmp/bad"; grep -q duplicate "$tmp/err" || fail "duplicate-id message"
-echo '{"title":"x","theme":"t","cast":"c","shots":[{"id":1,"title":"a","image":"i","cut":[-1,3]}]}' >"$tmp/bad/board.json"
-expect_exit 1 "$sv" check "$tmp/bad"; grep -q 'cut must be' "$tmp/err" || fail "negative cut accepted"
+python3 - "$here/examples/board.json" "$tmp/bad" <<'PY'
+import json, os, sys
+good = json.load(open(sys.argv[1]))
+def write(name, mutate):
+    b = json.loads(json.dumps(good)); mutate(b)
+    os.makedirs(os.path.join(sys.argv[2], name), exist_ok=True)
+    json.dump(b, open(os.path.join(sys.argv[2], name, "board.json"), "w"))
+write("nocast", lambda b: b.pop("cast"))
+write("dupe", lambda b: b["shots"].append(dict(b["shots"][0])))
+write("typo", lambda b: b.update({"shotz": []}))
+write("stage", lambda b: b["shots"][0].update({"stage": "MIDDLE"}))
+write("nostill", lambda b: b["shots"][1]["prompts"].pop("still"))
+PY
+expect_exit 0 "$sv" check "$here/examples"
+for c in nocast:cast dupe:duplicate typo:shotz stage:stage nostill:still; do
+  expect_exit 1 "$sv" check "$tmp/bad/${c%%:*}"; grep -q "${c##*:}" "$tmp/err" || fail "${c%%:*}: message lacks '${c##*:}': $(cat "$tmp/err")"
+done
 
 # 3. Generation needs the project from the environment and never guesses one.
 mkdir -p "$tmp/film"
