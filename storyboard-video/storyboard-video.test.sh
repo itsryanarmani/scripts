@@ -65,13 +65,15 @@ grep -q 'past its slot' "$tmp/err" && fail "unexpected overlap warning"
 # The narrator keys the duck; when the last line ends early the scene sound must still run to the end.
 a_len=$(ffprobe -v error -select_streams a -show_entries stream=duration -of csv=p=0 "$film")
 python3 -c "import sys;sys.exit(abs(float(sys.argv[1])-float(sys.argv[2]))>0.15)" "$a_len" "$want" || fail "audio is $a_len s, film is $want s"
-# A board saved outside the project still finds its media.
-mkdir -p "$tmp/elsewhere" && "$sv" board "$tmp/film" "$tmp/elsewhere/b.html" >/dev/null
-python3 - "$tmp/elsewhere" "$tmp/elsewhere/b.html" <<'PY' || fail "board media paths do not resolve from another folder"
-import os, re, sys
-srcs = re.findall(r'src="([^"]+)"', open(sys.argv[2]).read())
-missing = [s for s in srcs if s.endswith(".png") and not os.path.exists(os.path.join(sys.argv[1], s)) and "cast" not in s]
-sys.exit(1 if missing or not srcs else 0)
+# A board saved in another folder, for a project whose path has '#' and a space, still finds every still and clip.
+mkdir -p "$tmp/else #where" && touch "$tmp/film/img/cast.png" && ln -s "$tmp/film" "$tmp/film #2"
+"$sv" board "$tmp/film #2" "$tmp/else #where/b.html" >/dev/null
+python3 - "$tmp/else #where" "$tmp/else #where/b.html" <<'PY' || fail "board media paths do not resolve from another folder"
+import html, os, re, sys, urllib.parse
+raw = re.findall(r'(?:src|poster)="([^"]+)"', open(sys.argv[2]).read())
+srcs = [urllib.parse.unquote(html.unescape(s)) for s in raw]
+missing = [s for s in srcs if not os.path.exists(os.path.join(sys.argv[1], s))]
+sys.exit(1 if missing or len(srcs) < 7 or any("#" in s for s in raw) else 0)  # a raw '#' starts a URL fragment
 PY
 
 # 7. A voice-over line too long for its slot is reported, not silently overlapped.

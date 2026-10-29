@@ -12,7 +12,7 @@ Environment: VERTEX_PROJECT (required for stills, veo, and voice-over), and opti
 SV_IMAGE_MODEL, SV_VIDEO_MODEL, SV_VIDEO_LOCATION, SV_TTS_MODEL. gcloud supplies the token, so
 CLOUDSDK_CONFIG picks the account. Exit status: 0 ok, 1 failed check, 2 bad usage.
 """
-import base64, concurrent.futures as cf, html, json, os, subprocess, sys, time, urllib.error, urllib.request
+import base64, concurrent.futures as cf, html, json, os, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 IMAGE_MODEL = os.environ.get("SV_IMAGE_MODEL", "gemini-3-pro-image")
 VIDEO_MODEL = os.environ.get("SV_VIDEO_MODEL", "veo-3.1-fast-generate-001")
@@ -172,7 +172,7 @@ def cmd_board(d, out):
     cards = []
     for s in b["shots"]:
         img, vid = f"img/{name(s['id'], 'png')}", f"vid/{name(s['id'], 'mp4')}"
-        exists, img, vid = os.path.exists(os.path.join(d, vid)), os.path.join(rel, img), os.path.join(rel, vid)
+        exists, img, vid = os.path.exists(os.path.join(d, vid)), *(e(urllib.parse.quote(os.path.join(rel, p))) for p in (img, vid))
         media = (f'<video src="{vid}" poster="{img}" controls preload="none"></video>' if exists
                  else f'<img src="{img}" alt="Frame {s["id"]}">')
         vo = f'<p class="vo">VO: {e(s["vo"])}</p>' if s.get("vo") else ""
@@ -183,7 +183,7 @@ def cmd_board(d, out):
            ".shot{background:#1b1b1f;border:1px solid #333;border-radius:10px;overflow:hidden}.shot img,.shot video{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}"
            ".b{padding:10px}.st{font:700 10px monospace;background:#f2c14e;color:#111;padding:2px 6px;border-radius:4px}h3{margin:6px 0}.vo{color:#aaa;font-style:italic}"
            f'.cast{{max-width:640px;width:100%;border-radius:10px}}</style><h1>{e(b["title"])}</h1>'
-           f'<img class="cast" src="{os.path.join(rel, "img/cast.png")}" alt="Cast sheet"><p>{e(b["cast"])}</p><div class="g">{"".join(cards)}</div>')
+           f'<img class="cast" src="{e(urllib.parse.quote(os.path.join(rel, "img/cast.png")))}" alt="Cast sheet"><p>{e(b["cast"])}</p><div class="g">{"".join(cards)}</div>')
     open(out, "w").write(doc)
     print(out)
 
