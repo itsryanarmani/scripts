@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""storyboard-video: turn one board.json into stills, a review board, Veo clips and an edited film.
+
+Usage:
+  storyboard-video check <dir>                       Validate <dir>/board.json
+  storyboard-video stills <dir> [ids...]             Cast sheet, then one still per shot anchored on it
+  storyboard-video board <dir> <out.html>            Review board: cast, story, stills (or clips) per shot
+  storyboard-video veo <dir> --confirm-spend [ids]   Image-to-video for each still (bills at submit)
+  storyboard-video cut <dir>                         Edit clips into out/film.mp4 with camera, transitions, ducked VO
+
+Environment: VERTEX_PROJECT (required for stills, veo, and voice-over), and optionally
+SV_IMAGE_MODEL, SV_VIDEO_MODEL, SV_VIDEO_LOCATION, SV_TTS_MODEL. gcloud supplies the token, so
+CLOUDSDK_CONFIG picks the account. Exit status: 0 ok, 1 failed check, 2 bad usage.
+"""
+import base64, concurrent.futures as cf, html, json, os, subprocess, sys, time, urllib.error, urllib.request
+
+IMAGE_MODEL = os.environ.get("SV_IMAGE_MODEL", "gemini-3-pro-image")
+VIDEO_MODEL = os.environ.get("SV_VIDEO_MODEL", "veo-3.1-fast-generate-001")
+VIDEO_LOCATION = os.environ.get("SV_VIDEO_LOCATION", "us-central1")
+TTS_MODEL = os.environ.get("SV_TTS_MODEL", "gemini-3.1-flash-tts-preview")
+# Rough USD per second of 720p video with audio. Third-party figures; check the Vertex AI price page.
+VEO_RATE = {"lite": 0.05, "fast": 0.12, "": 0.40}
+CLIP_SECONDS, W, H, FPS = 8, 1280, 720, 24
+
+
+def die(msg, code=1):
+    print(f"storyboard-video: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load(d):
+    try:
+        b = json.load(open(os.path.join(d, "board.json")))
+    except (OSError, ValueError) as e:
+        die(f"cannot read board.json: {e}")
+    for key in ("title", "theme", "cast", "shots"):
+        if not b.get(key):
+            die(f"board.json needs '{key}'")
+    seen = set()
+    for s in b["shots"]:
+        for key in ("id", "title", "image", "cut"):
+            if key not in s:
+                die(f"shot {s.get('id', '?')} needs '{key}'")
+        if s["id"] in seen:
+            die(f"duplicate shot id {s['id']}")
+        seen.add(s["id"])
+    return b
+
+
+def name(sid, ext):
+    return f"shot-{int(sid):02d}.{ext}"
+
+
+def project():
+    p = os.environ.get("VERTEX_PROJECT")
+    if not p:
+        die("set VERTEX_PROJECT to the Google Cloud project that has Vertex AI enabled")
+    return p
+
+
+def call(url, body):
+    tok = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
+    req = urllib.request.Request(url, json.dumps(body).encode(), {
+        "Authorization": f"Bearer {tok}", "x-goog-user-project": project(), "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code}: {e.read().decode()[:400]}")
+
+
+def gemini(model, parts, config):
+    url = f"https://aiplatform.googleapis.com/v1/projects/{project()}/locations/global/publishers/google/models/{model}:generateContent"
+    data = call(url, {"contents": [{"role": "user", "parts": parts}], "generationConfig": config})
+    for p in data["candidates"][0]["content"]["parts"]:
+        if "inlineData" in p:
+            return base64.b64decode(p["inlineData"]["data"])
+    raise RuntimeError(f"no media in response: {json.dumps(data)[:300]}")
+
+
+def parallel(fn, items):
+    with cf.ThreadPoolExecutor(5) as ex:
+        results = list(ex.map(fn, items))
+    for r in results:
+        print(r, flush=True)
+    if any("FAILED" in r for r in results):
+        sys.exit(1)
+
+
+def pick(b, ids):
+    want = {int(i) for i in ids}
+    return [s for s in b["shots"] if not want or s["id"] in want]
+
+
+def cmd_stills(d, ids):
+    b, img = load(d), os.path.join(d, "img")
+    project()
+    os.makedirs(img, exist_ok=True)
+    cfg = {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "16:9"}}
+    cast_path = os.path.join(img, "cast.png")
+    if not os.path.exists(cast_path):
+        prompt = (f"Character reference sheet on a plain background, every character full body, front view, side by side, "
+                  f"name label under each. Style: {b['theme']} Characters: {b['cast']}")
+        open(cast_path, "wb").write(gemini(IMAGE_MODEL, [{"text": prompt}], cfg))
+        print("cast ok", flush=True)
+    cast = {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(open(cast_path, "rb").read()).decode()}}
+
+    def one(s):
+        # The scene leads and is repeated after the identity lock: with the sheet attached, a model
+        # sometimes returns the sheet itself unless told plainly to draw one scene.
+        prompt = (f"Storyboard frame {s['id']} of a short launch film. Draw ONE cinematic scene, never a character lineup. "
+                  f"Scene: {s['image']} Use the EXACT characters from the reference sheet (same faces, hair, outfits, colours); "
+                  f"do not draw the sheet or name labels. Scene again: {s['image']} Style: {b['theme']} 16:9 film still, no captions.")
+        try:
+            open(os.path.join(img, name(s["id"], "png")), "wb").write(gemini(IMAGE_MODEL, [cast, {"text": prompt}], cfg))
+            return f"shot {s['id']} ok"
+        except Exception as e:
+            return f"shot {s['id']} FAILED: {e}"
+
+    parallel(one, pick(b, ids))
+
+
+def cmd_veo(d, args):
+    b = load(d)
+    ids = [a for a in args if a != "--confirm-spend"]
+    shots = pick(b, ids)
+    tier = next((t for t in ("lite", "fast") if t in VIDEO_MODEL), "")
+    cost = len(shots) * CLIP_SECONDS * VEO_RATE[tier]
+    if "--confirm-spend" not in args:
+        die(f"{len(shots)} clips x {CLIP_SECONDS}s on {VIDEO_MODEL} is about {cost:.2f} USD, billed at submit even if you "
+            f"stop polling. Review the stills first, then re-run with --confirm-spend.")
+    base = (f"https://{VIDEO_LOCATION}-aiplatform.googleapis.com/v1/projects/{project()}/locations/{VIDEO_LOCATION}"
+            f"/publishers/google/models/{VIDEO_MODEL}")
+    os.makedirs(os.path.join(d, "vid"), exist_ok=True)
+
+    def one(s):
+        still = os.path.join(d, "img", name(s["id"], "png"))
+        prompt = (f"Animate this exact frame; keep every character, prop and set identical. Action: {s.get('motion', s['action'])} "
+                  f"Style: {b['theme']} Audio: foley and sound effects plus any quoted line spoken in the scene; no narration, no music.")
+        try:
+            op = call(f"{base}:predictLongRunning", {
+                "instances": [{"prompt": prompt, "image": {"bytesBase64Encoded": base64.b64encode(open(still, "rb").read()).decode(), "mimeType": "image/png"}}],
+                "parameters": {"aspectRatio": "16:9", "durationSeconds": CLIP_SECONDS, "generateAudio": True, "sampleCount": 1, "resolution": "720p"}})
+            for _ in range(80):
+                time.sleep(15)
+                res = call(f"{base}:fetchPredictOperation", {"operationName": op["name"]})
+                if res.get("done"):
+                    vids = res.get("response", {}).get("videos") or []
+                    if not vids:
+                        return f"shot {s['id']} FAILED: {json.dumps(res)[:300]}"
+                    open(os.path.join(d, "vid", name(s["id"], "mp4")), "wb").write(base64.b64decode(vids[0]["bytesBase64Encoded"]))
+                    return f"shot {s['id']} ok"
+            return f"shot {s['id']} FAILED: timeout, operation {op['name']}"
+        except Exception as e:
+            return f"shot {s['id']} FAILED: {e}"
+
+    parallel(one, shots)
+
+
+def cmd_board(d, out):
+    b, e = load(d), html.escape
+    cards = []
+    for s in b["shots"]:
+        img, vid = f"img/{name(s['id'], 'png')}", f"vid/{name(s['id'], 'mp4')}"
+        media = (f'<video src="{vid}" poster="{img}" controls preload="none"></video>' if os.path.exists(os.path.join(d, vid))
+                 else f'<img src="{img}" alt="Frame {s["id"]}">')
+        vo = f'<p class="vo">VO: {e(s["vo"])}</p>' if s.get("vo") else ""
+        cards.append(f'<div class="shot">{media}<div class="b"><span class="st">{e(s.get("stage", ""))}</span>'
+                     f'<h3>{s["id"]} · {e(s["title"])}</h3><p>{e(s.get("action", ""))}</p>{vo}</div></div>')
+    doc = (f'<!doctype html><meta charset="utf-8"><title>{e(b["title"])}</title><style>'
+           "body{font:14px system-ui;background:#111;color:#eee;margin:24px}.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}"
+           ".shot{background:#1b1b1f;border:1px solid #333;border-radius:10px;overflow:hidden}.shot img,.shot video{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}"
+           ".b{padding:10px}.st{font:700 10px monospace;background:#f2c14e;color:#111;padding:2px 6px;border-radius:4px}h3{margin:6px 0}.vo{color:#aaa;font-style:italic}"
+           f'.cast{{max-width:640px;width:100%;border-radius:10px}}</style><h1>{e(b["title"])}</h1>'
+           f'<img class="cast" src="img/cast.png" alt="Cast sheet"><p>{e(b["cast"])}</p><div class="g">{"".join(cards)}</div>')
+    open(out, "w").write(doc)
+    print(out)
+
+
+def seconds(path):
+    return float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], text=True))
+
+
+def voice(b, sid, line, work):
+    wav = os.path.join(work, name(sid, "wav").replace("shot", "vo"))
+    if os.path.exists(wav):
+        return wav
+    pcm = gemini(TTS_MODEL, [{"text": f"Say in a warm, wry narrator voice, brisk pace: {line}"}], {
+        "responseModalities": ["AUDIO"],
+        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": b.get("edit", {}).get("voice", "Charon")}}}})
+    open(wav + ".pcm", "wb").write(pcm)
+    trim = "silenceremove=start_periods=1:start_threshold=-45dB,areverse"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", wav + ".pcm",
+                    "-af", f"{trim},{trim}", wav], check=True)
+    return wav
+
+
+def cmd_cut(d):
+    b = load(d)
+    shots, work = b["shots"], os.path.join(d, "out", "work")
+    os.makedirs(work, exist_ok=True)
+    default_vol = b.get("edit", {}).get("scene_volume", 0.7)
+    inputs, chains = [], []
+
+    def add(*args):
+        inputs.extend(args)
+        return inputs.count("-i") - 1
+
+    for n, s in enumerate(shots):
+        start, dur = s["cut"]
+        clip = add("-i", os.path.join(d, "vid", name(s["id"], "mp4")))
+        z = s.get("camera", "1")
+        if s.get("still_picture"):  # Veo drifted: keep the clip's sound, show the approved still
+            k = add("-loop", "1", "-framerate", str(FPS), "-t", str(dur), "-i", os.path.join(d, "img", name(s["id"], "png")))
+            src = f"[{k}:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+        else:
+            src = f"[{clip}:v]trim=start={start}:duration={dur},"
+        chains.append(f"{src}setpts=PTS-STARTPTS,fps={FPS},scale=w='trunc({W}*({z})/2)*2':h=-2:eval=frame,"
+                      f"crop={W}:{H},setsar=1,format=yuv420p,settb=1/{FPS * 1000}[v{n}]")
+        chains.append(f"[{clip}:a]atrim=start={start}:duration={dur},asetpts=PTS-STARTPTS,aresample=48000,"
+                      f"volume={s.get('scene_volume', default_vol)},afade=t=in:d=0.06,afade=t=out:st={dur - 0.08}:d=0.08[a{n}]")
+
+    vlab, alab, length, starts = "v0", "a0", shots[0]["cut"][1], [0.0]
+    for n, s in enumerate(shots[1:], 1):
+        dur = s["cut"][1]
+        if s.get("transition"):
+            kind, td = s["transition"]
+            starts.append(length - td)
+            chains.append(f"[{vlab}][v{n}]xfade=transition={kind}:duration={td}:offset={length - td}[vj{n}]")
+            chains.append(f"[{alab}][a{n}]acrossfade=d={td}[aj{n}]")
+            length += dur - td
+        else:
+            starts.append(length)
+            chains.append(f"[{vlab}][{alab}][v{n}][a{n}]concat=n=2:v=1:a=1[vc{n}][aj{n}]")
+            chains.append(f"[vc{n}]settb=1/{FPS * 1000}[vj{n}]")
+            length += dur
+        vlab, alab = f"vj{n}", f"aj{n}"
+
+    # Lines queue: each starts at its shot or after the previous line, and speeds up (max 1.2x)
+    # only to finish before the next shot; anything still too long is reported, never overlapped.
+    vo, prev_end = [], 0.0
+    for n, s in enumerate(shots):
+        if not s.get("vo"):
+            continue
+        wav = voice(b, s["id"], s["vo"], work)
+        begin = max(starts[n] + 0.12, prev_end + 0.12)
+        deadline = starts[n + 1] + 0.25 if n + 1 < len(shots) else length - 0.35
+        raw = seconds(wav)
+        speed = max(1.0, min(1.2, raw / max(deadline - begin, 0.1)))
+        prev_end = begin + raw / speed
+        if prev_end > deadline + 0.05:
+            print(f"warning: shot {s['id']} line runs {prev_end - deadline:.2f}s past its slot; shorten it or lengthen the shot", file=sys.stderr)
+        k = add("-i", wav)
+        chains.append(f"[{k}:a]atempo={speed:.3f},aresample=48000,pan=stereo|c0=c0|c1=c0,adelay={int(begin * 1000)}:all=1[vo{len(vo)}]")
+        vo.append(f"[vo{len(vo)}]")
+
+    if vo:  # the narrator keys a sidechain that ducks the scene sound while they talk
+        chains.append(f"{''.join(vo)}amix=inputs={len(vo)}:normalize=0,asplit=2[vomix][vokey]")
+        chains.append(f"[{alab}][vokey]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350[bed]")
+        chains.append("[bed][vomix]amix=inputs=2:weights='1 1.15':normalize=0[mix]")
+    else:
+        chains.append(f"[{alab}]anull[mix]")
+    chains.append(f"[mix]afade=t=out:st={length - 0.5}:d=0.5,loudnorm=I=-16:TP=-1.5,aresample=48000[aout]")
+
+    out = os.path.join(d, "out", "film.mp4")
+    # No -avoid_negative_ts: it shifts video by the AAC priming delay (0.021 s) and players show a black first frame.
+    r = subprocess.run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(chains), "-map", f"[{vlab}]", "-map", "[aout]",
+                        "-c:v", "libx264", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", out],
+                       capture_output=True, text=True)
+    if r.returncode:
+        die(r.stderr[-1500:])
+    json.dump({"length_s": round(length, 3), "shot_starts_s": {str(s["id"]): round(t, 3) for s, t in zip(shots, starts)}},
+              open(os.path.join(d, "out", "timeline.json"), "w"), indent=1)
+    print(json.dumps({"film": out, "length_s": round(seconds(out), 2)}))
+
+
+def main():
+    a = sys.argv[1:]
+    if len(a) < 2:
+        die(__doc__.strip(), 2)
+    cmd, d, rest = a[0], a[1], a[2:]
+    if cmd == "check":
+        print(json.dumps({"title": load(d)["title"], "shots": len(load(d)["shots"])}))
+    elif cmd == "stills":
+        cmd_stills(d, rest)
+    elif cmd == "veo":
+        cmd_veo(d, rest)
+    elif cmd == "board" and len(rest) == 1:
+        cmd_board(d, rest[0])
+    elif cmd == "cut":
+        cmd_cut(d)
+    else:
+        die(__doc__.strip(), 2)
+
+
+if __name__ == "__main__":
+    main()
