@@ -47,6 +47,10 @@ expect_exit 1 env -u VERTEX_PROJECT "$sv" stills "$tmp/film"; grep -q VERTEX_PRO
 # 4. Veo bills at submit, so it refuses without --confirm-spend and prints an estimate first.
 expect_exit 1 env VERTEX_PROJECT=dummy "$sv" veo "$tmp/film"
 grep -q 'confirm-spend' "$tmp/err" || fail "veo spend gate"; grep -q 'USD' "$tmp/err" || fail "veo estimate"
+# Even with --confirm-spend, veo waits for a recorded stills approval and respects the budget cap.
+expect_exit 1 env VERTEX_PROJECT=dummy "$sv" veo "$tmp/film" --confirm-spend; grep -q "'stills'" "$tmp/err" || fail "veo ran without a stills approval"
+python3 -c "import json,sys;p=sys.argv[1];b=json.load(open(p));b['budget']={'capUsd':0.5,'approvals':[{'stage':'stills','at':'2026-10-29'}]};json.dump(b,open(p,'w'))" "$tmp/film/board.json"
+expect_exit 1 env VERTEX_PROJECT=dummy "$sv" veo "$tmp/film" --confirm-spend; grep -q 'capUsd' "$tmp/err" || fail "veo passed the budget cap"
 
 # Synthetic stills, clips and voice-over so board and cut run offline.
 mkdir -p "$tmp/film/img" "$tmp/film/vid" "$tmp/film/out/work"

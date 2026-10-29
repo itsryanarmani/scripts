@@ -185,6 +185,12 @@ def cmd_veo(d, args):
     if "--confirm-spend" not in args:
         die(f"{len(shots)} clips x {CLIP_SECONDS}s on {video} is about {cost:.2f} USD, billed at submit even if you "
             f"stop polling. Review the stills first, then re-run with --confirm-spend.")
+    budget = b.get("budget", {})
+    if not any(x["stage"] == "stills" for x in budget.get("approvals", [])):
+        die("budget.approvals has no 'stills' entry. Show the stills, record the yes, then run veo.")
+    spent = sum(x["usd"] for x in budget.get("spend", []))
+    if "capUsd" in budget and spent + cost > budget["capUsd"]:
+        die(f"estimate {cost:.2f} + recorded spend {spent:.2f} USD would pass budget.capUsd {budget['capUsd']}")
     base = (f"https://{VIDEO_LOCATION}-aiplatform.googleapis.com/v1/projects/{project()}/locations/{VIDEO_LOCATION}"
             f"/publishers/google/models/{video}")
     os.makedirs(os.path.join(d, "vid"), exist_ok=True)
