@@ -189,7 +189,7 @@ def cmd_veo(d, args):
     if not any(x["stage"] == "stills" for x in budget.get("approvals", [])):
         die("budget.approvals has no 'stills' entry. Show the stills, record the yes, then run veo.")
     spent = sum(x["usd"] for x in budget.get("spend", []))
-    if "capUsd" in budget and spent + cost > budget["capUsd"]:
+    if "capUsd" in budget and round(spent + cost, 2) > budget["capUsd"]:  # round so an exact match is not a float overshoot
         die(f"estimate {cost:.2f} + recorded spend {spent:.2f} USD would pass budget.capUsd {budget['capUsd']}")
     base = (f"https://{VIDEO_LOCATION}-aiplatform.googleapis.com/v1/projects/{project()}/locations/{VIDEO_LOCATION}"
             f"/publishers/google/models/{video}")
