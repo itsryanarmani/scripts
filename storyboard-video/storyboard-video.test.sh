@@ -19,6 +19,8 @@ echo '{"title":"x","theme":"t","shots":[{"id":1}]}' >"$tmp/bad/board.json"
 expect_exit 1 "$sv" check "$tmp/bad"; grep -q cast "$tmp/err" || fail "missing-cast message"
 echo '{"title":"x","theme":"t","cast":"c","shots":[{"id":1,"title":"a","image":"i","cut":[0,1]},{"id":1,"title":"b","image":"i","cut":[0,1]}]}' >"$tmp/bad/board.json"
 expect_exit 1 "$sv" check "$tmp/bad"; grep -q duplicate "$tmp/err" || fail "duplicate-id message"
+echo '{"title":"x","theme":"t","cast":"c","shots":[{"id":1,"title":"a","image":"i","cut":[-1,3]}]}' >"$tmp/bad/board.json"
+expect_exit 1 "$sv" check "$tmp/bad"; grep -q 'cut must be' "$tmp/err" || fail "negative cut accepted"
 
 # 3. Generation needs the project from the environment and never guesses one.
 mkdir -p "$tmp/film"
@@ -60,6 +62,17 @@ want=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['length_s'
 got=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$film")
 python3 -c "import sys;sys.exit(abs(float(sys.argv[1])-float(sys.argv[2]))>0.15)" "$got" "$want" || fail "length $got, planned $want"
 grep -q 'past its slot' "$tmp/err" && fail "unexpected overlap warning"
+# The narrator keys the duck; when the last line ends early the scene sound must still run to the end.
+a_len=$(ffprobe -v error -select_streams a -show_entries stream=duration -of csv=p=0 "$film")
+python3 -c "import sys;sys.exit(abs(float(sys.argv[1])-float(sys.argv[2]))>0.15)" "$a_len" "$want" || fail "audio is $a_len s, film is $want s"
+# A board saved outside the project still finds its media.
+mkdir -p "$tmp/elsewhere" && "$sv" board "$tmp/film" "$tmp/elsewhere/b.html" >/dev/null
+python3 - "$tmp/elsewhere" "$tmp/elsewhere/b.html" <<'PY' || fail "board media paths do not resolve from another folder"
+import os, re, sys
+srcs = re.findall(r'src="([^"]+)"', open(sys.argv[2]).read())
+missing = [s for s in srcs if s.endswith(".png") and not os.path.exists(os.path.join(sys.argv[1], s)) and "cast" not in s]
+sys.exit(1 if missing or not srcs else 0)
+PY
 
 # 7. A voice-over line too long for its slot is reported, not silently overlapped.
 ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=600:sample_rate=24000" -t 9 "$tmp/film/out/work/vo-01.wav"

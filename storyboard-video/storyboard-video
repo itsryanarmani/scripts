@@ -41,10 +41,19 @@ def load(d):
         for key in ("id", "title", "image", "cut"):
             if key not in s:
                 die(f"shot {s.get('id', '?')} needs '{key}'")
+        cut = s["cut"]
+        if not (isinstance(cut, list) and len(cut) == 2 and all(isinstance(x, (int, float)) and x >= 0 for x in cut) and cut[1] > 0):
+            die(f"shot {s['id']} cut must be [start, duration] with start >= 0 and duration > 0")
         if s["id"] in seen:
             die(f"duplicate shot id {s['id']}")
         seen.add(s["id"])
     return b
+
+
+def save(path, data):
+    """Write only after the data exists, so a failed call never leaves an empty or truncated file."""
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def name(sid, ext):
@@ -101,7 +110,7 @@ def cmd_stills(d, ids):
     if not os.path.exists(cast_path):
         prompt = (f"Character reference sheet on a plain background, every character full body, front view, side by side, "
                   f"name label under each. Style: {b['theme']} Characters: {b['cast']}")
-        open(cast_path, "wb").write(gemini(IMAGE_MODEL, [{"text": prompt}], cfg))
+        save(cast_path, gemini(IMAGE_MODEL, [{"text": prompt}], cfg))
         print("cast ok", flush=True)
     cast = {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(open(cast_path, "rb").read()).decode()}}
 
@@ -112,7 +121,7 @@ def cmd_stills(d, ids):
                   f"Scene: {s['image']} Use the EXACT characters from the reference sheet (same faces, hair, outfits, colours); "
                   f"do not draw the sheet or name labels. Scene again: {s['image']} Style: {b['theme']} 16:9 film still, no captions.")
         try:
-            open(os.path.join(img, name(s["id"], "png")), "wb").write(gemini(IMAGE_MODEL, [cast, {"text": prompt}], cfg))
+            save(os.path.join(img, name(s["id"], "png")), gemini(IMAGE_MODEL, [cast, {"text": prompt}], cfg))
             return f"shot {s['id']} ok"
         except Exception as e:
             return f"shot {s['id']} FAILED: {e}"
@@ -135,7 +144,7 @@ def cmd_veo(d, args):
 
     def one(s):
         still = os.path.join(d, "img", name(s["id"], "png"))
-        prompt = (f"Animate this exact frame; keep every character, prop and set identical. Action: {s.get('motion', s['action'])} "
+        prompt = (f"Animate this exact frame; keep every character, prop and set identical. Action: {s.get('motion') or s.get('action', '')} "
                   f"Style: {b['theme']} Audio: foley and sound effects plus any quoted line spoken in the scene; no narration, no music.")
         try:
             op = call(f"{base}:predictLongRunning", {
@@ -148,7 +157,7 @@ def cmd_veo(d, args):
                     vids = res.get("response", {}).get("videos") or []
                     if not vids:
                         return f"shot {s['id']} FAILED: {json.dumps(res)[:300]}"
-                    open(os.path.join(d, "vid", name(s["id"], "mp4")), "wb").write(base64.b64decode(vids[0]["bytesBase64Encoded"]))
+                    save(os.path.join(d, "vid", name(s["id"], "mp4")), base64.b64decode(vids[0]["bytesBase64Encoded"]))
                     return f"shot {s['id']} ok"
             return f"shot {s['id']} FAILED: timeout, operation {op['name']}"
         except Exception as e:
@@ -159,10 +168,12 @@ def cmd_veo(d, args):
 
 def cmd_board(d, out):
     b, e = load(d), html.escape
+    rel = os.path.relpath(d, os.path.dirname(os.path.abspath(out)))  # media paths work wherever the board is saved
     cards = []
     for s in b["shots"]:
         img, vid = f"img/{name(s['id'], 'png')}", f"vid/{name(s['id'], 'mp4')}"
-        media = (f'<video src="{vid}" poster="{img}" controls preload="none"></video>' if os.path.exists(os.path.join(d, vid))
+        exists, img, vid = os.path.exists(os.path.join(d, vid)), os.path.join(rel, img), os.path.join(rel, vid)
+        media = (f'<video src="{vid}" poster="{img}" controls preload="none"></video>' if exists
                  else f'<img src="{img}" alt="Frame {s["id"]}">')
         vo = f'<p class="vo">VO: {e(s["vo"])}</p>' if s.get("vo") else ""
         cards.append(f'<div class="shot">{media}<div class="b"><span class="st">{e(s.get("stage", ""))}</span>'
@@ -172,7 +183,7 @@ def cmd_board(d, out):
            ".shot{background:#1b1b1f;border:1px solid #333;border-radius:10px;overflow:hidden}.shot img,.shot video{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}"
            ".b{padding:10px}.st{font:700 10px monospace;background:#f2c14e;color:#111;padding:2px 6px;border-radius:4px}h3{margin:6px 0}.vo{color:#aaa;font-style:italic}"
            f'.cast{{max-width:640px;width:100%;border-radius:10px}}</style><h1>{e(b["title"])}</h1>'
-           f'<img class="cast" src="img/cast.png" alt="Cast sheet"><p>{e(b["cast"])}</p><div class="g">{"".join(cards)}</div>')
+           f'<img class="cast" src="{os.path.join(rel, "img/cast.png")}" alt="Cast sheet"><p>{e(b["cast"])}</p><div class="g">{"".join(cards)}</div>')
     open(out, "w").write(doc)
     print(out)
 
@@ -183,15 +194,19 @@ def seconds(path):
 
 def voice(b, sid, line, work):
     wav = os.path.join(work, name(sid, "wav").replace("shot", "vo"))
-    if os.path.exists(wav):
+    voice_name = b.get("edit", {}).get("voice", "Charon")
+    key, key_path = f"{voice_name}|{line}", wav + ".key"
+    # A wav with no key file is a hand-recorded line: keep it. A generated one is redone when its text or voice changes.
+    if os.path.exists(wav) and (not os.path.exists(key_path) or open(key_path).read() == key):
         return wav
     pcm = gemini(TTS_MODEL, [{"text": f"Say in a warm, wry narrator voice, brisk pace: {line}"}], {
         "responseModalities": ["AUDIO"],
-        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": b.get("edit", {}).get("voice", "Charon")}}}})
-    open(wav + ".pcm", "wb").write(pcm)
+        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice_name}}}})
+    save(wav + ".pcm", pcm)
     trim = "silenceremove=start_periods=1:start_threshold=-45dB,areverse"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", wav + ".pcm",
                     "-af", f"{trim},{trim}", wav], check=True)
+    open(key_path, "w").write(key)
     return wav
 
 
@@ -255,7 +270,7 @@ def cmd_cut(d):
         vo.append(f"[vo{len(vo)}]")
 
     if vo:  # the narrator keys a sidechain that ducks the scene sound while they talk
-        chains.append(f"{''.join(vo)}amix=inputs={len(vo)}:normalize=0,asplit=2[vomix][vokey]")
+        chains.append(f"{''.join(vo)}amix=inputs={len(vo)}:normalize=0,apad=whole_dur={length},asplit=2[vomix][vokey]")
         chains.append(f"[{alab}][vokey]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350[bed]")
         chains.append("[bed][vomix]amix=inputs=2:weights='1 1.15':normalize=0[mix]")
     else:
