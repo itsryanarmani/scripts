@@ -72,6 +72,7 @@ def load(d):
     if errs:  # report the schema paths before anything below can trip on a malformed shape
         die("board.json does not match video.schema.json:\n  " + "\n  ".join(errs[:20]))
     ids = [s["id"] for s in b["shots"]]
+    errs += [f"board.shots[{i}].edit.window: duration must be above 0" for i, s in enumerate(b["shots"]) if s["edit"]["window"][1] <= 0]
     errs += [f"board.shots: duplicate shot id {i}" for i in sorted({i for i in ids if ids.count(i) > 1}, key=str)]
     if errs:
         die("board.json does not match video.schema.json:\n  " + "\n  ".join(errs[:20]))
@@ -238,7 +239,7 @@ def seconds(path):
 def voice(b, sid, line, work):
     wav = os.path.join(work, name(sid, "wav").replace("shot", "vo"))
     vo = b.get("audio", {}).get("voiceOver", {})
-    key, key_path = f"{vo.get('voice', 'Charon')}|{vo.get('direction', '')}|{line}", wav + ".key"
+    key, key_path = f"{model(b, 'tts')}|{vo.get('voice', 'Charon')}|{vo.get('direction', '')}|{line}", wav + ".key"
     # A wav with no key file is a hand-recorded line: keep it. A generated one is redone when its text or voice changes.
     if os.path.exists(wav) and (not os.path.exists(key_path) or open(key_path).read() == key):
         return wav
@@ -270,6 +271,7 @@ def cmd_cut(d):
     for n, s in enumerate(shots):
         ed = s["edit"]
         start, dur = ed["window"]
+        f = min(fade, dur / 2)  # a fade longer than half the shot would start before it
         clip = add("-i", os.path.join(d, "vid", name(s["id"], "mp4")))
         z = ed.get("zoom", "1")
         if ed.get("useStill"):  # the video model drifted: keep the clip's sound, show the approved still
@@ -280,7 +282,7 @@ def cmd_cut(d):
         chains.append(f"{src}setpts=PTS-STARTPTS,fps={FPS},scale=w='trunc({W}*({z})/2)*2':h=-2:eval=frame,"
                       f"crop={W}:{H},setsar=1,format=yuv420p,settb=1/{FPS * 1000}[v{n}]")
         chains.append(f"[{clip}:a]atrim=start={start}:duration={dur},asetpts=PTS-STARTPTS,aresample=48000,"
-                      f"volume={ed.get('sceneVolume', mix.get('sceneVolume', 0.7))},afade=t=in:d={fade * 0.75},afade=t=out:st={dur - fade}:d={fade}[a{n}]")
+                      f"volume={ed.get('sceneVolume', mix.get('sceneVolume', 0.7))},afade=t=in:d={f * 0.75},afade=t=out:st={dur - f}:d={f}[a{n}]")
 
     vlab, alab, length, starts = "v0", "a0", shots[0]["edit"]["window"][1], [0.0]
     for n, s in enumerate(shots[1:], 1):

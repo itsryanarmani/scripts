@@ -156,7 +156,7 @@
             "truePeak": {"type": "number", "minimum": -9, "maximum": 0}, "cutFadeMs": {"type": "number", "minimum": 0, "maximum": 500},
             "duck": {
               "type": "object", "additionalProperties": false,
-              "properties": {"threshold": {"type": "number", "minimum": 0.001, "maximum": 1}, "ratio": {"type": "number", "minimum": 1, "maximum": 20}, "attackMs": {"type": "number"}, "releaseMs": {"type": "number"}}
+              "properties": {"threshold": {"type": "number", "minimum": 0.001, "maximum": 1}, "ratio": {"type": "number", "minimum": 1, "maximum": 20}, "attackMs": {"type": "number", "minimum": 0.01, "maximum": 2000}, "releaseMs": {"type": "number", "minimum": 0.01, "maximum": 9000}}
             }
           }
         }

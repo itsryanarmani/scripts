@@ -27,9 +27,10 @@ write("dupe", lambda b: b["shots"].append(dict(b["shots"][0])))
 write("typo", lambda b: b.update({"shotz": []}))
 write("stage", lambda b: b["shots"][0].update({"stage": "MIDDLE"}))
 write("nostill", lambda b: b["shots"][1]["prompts"].pop("still"))
+write("zerodur", lambda b: b["shots"][0]["edit"].update({"window": [1, 0]}))
 PY
 expect_exit 0 "$sv" check "$here/examples"
-for c in nocast:cast dupe:duplicate typo:shotz stage:stage nostill:still; do
+for c in nocast:cast dupe:duplicate typo:shotz stage:stage nostill:still zerodur:duration; do
   expect_exit 1 "$sv" check "$tmp/bad/${c%%:*}"; grep -q "${c##*:}" "$tmp/err" || fail "${c%%:*}: message lacks '${c##*:}': $(cat "$tmp/err")"
 done
 
