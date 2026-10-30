@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""Set avatar, banner and bio across social platforms from one command.
+
+API platforms use urllib; browser platforms drive a signed-in Playwright profile and never type a password.
+Credentials come only from env vars or a 0600 config.toml (env wins). Secrets are never printed."""
+import argparse
+import base64
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+FIELDS = ('avatar', 'banner', 'bio')
+BROWSER_ENV = 'SOCIAL_PROFILE_BROWSER_PROFILE'
+# name: (method, avatar size, banner size, bio limit, required env vars)
+PLATFORMS = {
+    'x': ('api', (400, 400), (1500, 500), 160, ['X_API_KEY', 'X_API_SECRET', 'X_ACCESS_TOKEN', 'X_ACCESS_TOKEN_SECRET']),
+    'bluesky': ('api', (1000, 1000), (3000, 1000), 256, ['BSKY_HANDLE', 'BSKY_APP_PASSWORD']),
+    'mastodon': ('api', (400, 400), (1500, 500), 500, ['MASTODON_INSTANCE', 'MASTODON_TOKEN']),
+    'github': ('api', None, None, 160, ['GITHUB_TOKEN']),
+    'reddit': ('api', (256, 256), (1920, 384), 200, ['REDDIT_CLIENT_ID', 'REDDIT_CLIENT_SECRET', 'REDDIT_USERNAME', 'REDDIT_PASSWORD']),
+    'youtube': ('api', (800, 800), (2560, 1440), 1000, ['YOUTUBE_ACCESS_TOKEN']),
+    'instagram': ('browser', (320, 320), None, 150, []),
+    'linkedin': ('browser', (400, 400), (1584, 396), 220, []),
+    'tiktok': ('browser', (200, 200), None, 80, []),
+    'facebook': ('browser', (720, 720), (1640, 624), 101, []),
+    'pinterest': ('browser', (280, 280), (1600, 900), 500, []),
+    'tumblr': ('browser', (512, 512), (3000, 1055), 500, ['TUMBLR_BLOG']),
+}
+NOT_SECRET = {'BSKY_HANDLE', 'BSKY_PDS', 'MASTODON_INSTANCE', 'REDDIT_USERNAME', 'TUMBLR_BLOG'}
+NO_API = {
+    ('github', 'avatar'): 'GitHub has no API to set the avatar',
+    ('github', 'banner'): 'GitHub profiles have no banner',
+    ('youtube', 'avatar'): 'YouTube Data API cannot set the channel avatar',
+    **{('reddit', f): 'no verified Reddit API; set it in the browser' for f in ('avatar', 'banner')},
+}
+# Best-effort selectors, sites change them often. open_bio is clicked first if present;
+# apply closes a crop dialog. When avatar and banner share a selector, banner is the 2nd input.
+FILE = 'input[type=file][accept*=image]'
+SAVE = 'button:has-text("Save"), [role=button]:has-text("Save")'
+BROWSER = {
+    'instagram': {'url': 'https://www.instagram.com/accounts/edit/', 'bio': 'textarea#pepBio, textarea[name=biography]',
+                  'save': 'button[type=submit], div[role=button]:has-text("Submit")'},
+    'linkedin': {'url': 'https://www.linkedin.com/in/me/edit/intro/', 'bio': 'input[id*=headline], textarea[id*=headline]'},
+    'tiktok': {'url': 'https://www.tiktok.com/profile', 'open_bio': 'button:has-text("Edit profile")',
+               'bio': 'textarea[placeholder*="Bio" i]', 'apply': 'button:has-text("Apply")'},
+    'facebook': {'url': 'https://www.facebook.com/me', 'open_bio': '[role=button]:has-text("bio")', 'bio': 'textarea'},
+    'pinterest': {'url': 'https://www.pinterest.com/settings/edit-profile/', 'bio': 'textarea#about, textarea[name=about]'},
+    'tumblr': {'url': 'https://www.tumblr.com/settings/blog/{TUMBLR_BLOG}', 'bio': 'textarea[name=description], textarea'},
+}
+LOGIN = re.compile(r'login|signin|sign_in|checkpoint|authwall|emailsignup', re.I)
+SECRETS = set()
+
+
+def redact(text):
+    for secret in sorted((s for s in SECRETS if len(s) >= 6), key=len, reverse=True):
+        text = text.replace(secret, '***')
+    return text
+
+
+def load_config():
+    path = Path(os.getenv('SOCIAL_PROFILE_CONFIG', Path.home() / '.config/social-profile/config.toml'))
+    if not path.exists():
+        return {}
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        raise SystemExit(f'social-profile: refusing to read {path}: mode {mode:o} is group/world readable; run chmod 600 {path}')
+    return tomllib.loads(path.read_text())
+
+
+def creds(name, config):
+    keys = PLATFORMS[name][4] + (['BSKY_PDS'] if name == 'bluesky' else [])
+    out = {k: str(os.getenv(k) or config.get(name, {}).get(k)) for k in keys if os.getenv(k) or config.get(name, {}).get(k)}
+    if name == 'github' and 'GITHUB_TOKEN' not in out and shutil.which('gh'):
+        if token := subprocess.run(['gh', 'auth', 'token'], capture_output=True, text=True).stdout.strip():
+            out['GITHUB_TOKEN'] = token
+    SECRETS.update(v for k, v in out.items() if k not in NOT_SECRET)
+    return out
+
+
+def supports(name, field):
+    return PLATFORMS[name][FIELDS.index(field) + 1] is not None and (name, field) not in NO_API
+
+
+def prep_image(src, size, dest):
+    from PIL import Image, ImageOps
+    with Image.open(src) as im:
+        out = ImageOps.fit(ImageOps.exif_transpose(im).convert('RGB'), size, Image.LANCZOS, centering=(0.5, 0.5))
+    out.save(dest, 'JPEG', quality=90)
+    return dest
+
+
+def check_bio(name, bio):
+    limit = PLATFORMS[name][3]
+    if len(bio) > limit:
+        raise RuntimeError(f'bio is {len(bio)} chars; {name} allows {limit}')
+    return f'{len(bio)}/{limit} chars'
+
+
+def http(method, url, headers=None, body=None, ctype=None):
+    headers = {'User-Agent': 'social-profile/1.0', **(headers or {}), **({'Content-Type': ctype} if ctype else {})}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, body, headers, method=method), timeout=60) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f'{method} {url.split("?")[0]} -> HTTP {e.code}: {e.read()[:300].decode("utf-8", "replace")}') from None
+    return json.loads(data) if data.strip() else {}
+
+
+def form(fields):
+    return urllib.parse.urlencode(fields, quote_via=urllib.parse.quote).encode(), 'application/x-www-form-urlencoded'
+
+
+def multipart(fields, files):
+    b = uuid.uuid4().hex
+    body = b''.join(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields.items())
+    for key, path in files.items():
+        head = f'--{b}\r\nContent-Disposition: form-data; name="{key}"; filename="{Path(path).name}"\r\nContent-Type: image/jpeg\r\n\r\n'
+        body += head.encode() + Path(path).read_bytes() + b'\r\n'
+    return body + f'--{b}--\r\n'.encode(), f'multipart/form-data; boundary={b}'
+
+
+def pct(value):
+    return urllib.parse.quote(str(value), safe='~')
+
+
+def oauth1_header(method, url, params, consumer_key, consumer_secret, token, token_secret, nonce=None, timestamp=None):
+    oauth = {'oauth_consumer_key': consumer_key, 'oauth_nonce': nonce or uuid.uuid4().hex,
+             'oauth_signature_method': 'HMAC-SHA1', 'oauth_timestamp': str(timestamp or int(time.time())),
+             'oauth_token': token, 'oauth_version': '1.0'}
+    pairs = sorted((pct(k), pct(v)) for k, v in {**params, **oauth}.items())
+    base = '&'.join([method.upper(), pct(url), pct('&'.join(f'{k}={v}' for k, v in pairs))])
+    key = f'{pct(consumer_secret)}&{pct(token_secret)}'.encode()
+    oauth['oauth_signature'] = base64.b64encode(hmac.new(key, base.encode(), hashlib.sha1).digest()).decode()
+    return 'OAuth ' + ', '.join(f'{pct(k)}="{pct(v)}"' for k, v in sorted(oauth.items()))
+
+
+def set_x(c, fields):
+    calls = [('update_profile_image.json', {}, {'image': fields.get('avatar')}),
+             ('update_profile_banner.json', {}, {'banner': fields.get('banner')}),
+             ('update_profile.json', {'description': fields.get('bio')}, {})]
+    for endpoint, params, files in calls:
+        if any(v is not None for v in (*params.values(), *files.values())):
+            url = f'https://api.x.com/1.1/account/{endpoint}'
+            auth = oauth1_header('POST', url, params, *(c[k] for k in PLATFORMS['x'][4]))
+            http('POST', url, {'Authorization': auth}, *(multipart({}, files) if files else form(params)))
+
+
+def set_bluesky(c, fields):
+    xrpc = c.get('BSKY_PDS', 'https://bsky.social').rstrip('/') + '/xrpc/com.atproto.'
+    login = json.dumps({'identifier': c['BSKY_HANDLE'], 'password': c['BSKY_APP_PASSWORD']}).encode()
+    session = http('POST', xrpc + 'server.createSession', body=login, ctype='application/json')
+    SECRETS.update(filter(None, [session['accessJwt'], session.get('refreshJwt')]))
+    auth, ref = {'Authorization': f'Bearer {session["accessJwt"]}'}, {'repo': session['did'], 'collection': 'app.bsky.actor.profile', 'rkey': 'self'}
+    try:
+        current = http('GET', xrpc + 'repo.getRecord?' + urllib.parse.urlencode(ref), auth)
+    except RuntimeError as e:
+        if 'RecordNotFound' not in str(e):
+            raise
+        current = {}
+    record = current.get('value') or {'$type': 'app.bsky.actor.profile'}  # keeps displayName etc.
+    for field in ('avatar', 'banner'):
+        if field in fields:
+            record[field] = http('POST', xrpc + 'repo.uploadBlob', auth, Path(fields[field]).read_bytes(), 'image/jpeg')['blob']
+    if 'bio' in fields:
+        record['description'] = fields['bio']
+    put = {**ref, 'record': record, **({'swapRecord': current['cid']} if current.get('cid') else {})}
+    http('POST', xrpc + 'repo.putRecord', auth, json.dumps(put).encode(), 'application/json')
+
+
+def set_mastodon(c, fields):
+    files = {('header' if k == 'banner' else k): v for k, v in fields.items() if k != 'bio'}
+    url = c['MASTODON_INSTANCE'].rstrip('/') + '/api/v1/accounts/update_credentials'
+    http('PATCH', url, {'Authorization': f'Bearer {c["MASTODON_TOKEN"]}'}, *multipart({'note': fields['bio']} if 'bio' in fields else {}, files))
+
+
+def set_github(c, fields):
+    headers = {'Authorization': f'Bearer {c["GITHUB_TOKEN"]}', 'Accept': 'application/vnd.github+json'}
+    http('PATCH', 'https://api.github.com/user', headers, json.dumps({'bio': fields['bio']}).encode(), 'application/json')
+
+
+def set_reddit(c, fields):
+    # Unverified: rewrites the u_<name> profile subreddit settings via site_admin, keeping current values.
+    user, api = c['REDDIT_USERNAME'], 'https://oauth.reddit.com'
+    ua = {'User-Agent': f'social-profile/1.0 by u/{user}'}
+    basic = base64.b64encode(f'{c["REDDIT_CLIENT_ID"]}:{c["REDDIT_CLIENT_SECRET"]}'.encode()).decode()
+    grant = form({'grant_type': 'password', 'username': user, 'password': c['REDDIT_PASSWORD']})
+    token = http('POST', 'https://www.reddit.com/api/v1/access_token', {**ua, 'Authorization': f'Basic {basic}'}, *grant).get('access_token')
+    if not token:
+        raise RuntimeError('reddit token request returned no access_token')
+    SECRETS.add(token)
+    auth = {**ua, 'Authorization': f'Bearer {token}'}
+    settings = http('GET', f'{api}/r/u_{user}/about/edit', auth)['data']
+    sr = http('GET', f'{api}/user/{user}/about', auth)['data']['subreddit']['name']
+    update = {k: str(v).lower() if isinstance(v, bool) else v for k, v in settings.items() if isinstance(v, (str, int, bool))}
+    update.update(api_type='json', sr=sr, type=settings.get('subreddit_type', 'user'), public_description=fields['bio'])
+    errors = http('POST', f'{api}/api/site_admin', auth, *form(update)).get('json', {}).get('errors')
+    if errors:
+        raise RuntimeError(f'reddit site_admin: {errors}')
+
+
+def set_youtube(c, fields):
+    api, auth = 'https://www.googleapis.com/', {'Authorization': f'Bearer {c["YOUTUBE_ACCESS_TOKEN"]}'}
+    items = http('GET', api + 'youtube/v3/channels?part=brandingSettings&mine=true', auth).get('items') or []
+    if not items:
+        raise RuntimeError('no YouTube channel for this token')
+    branding = items[0].get('brandingSettings', {})  # sent back whole so other fields survive
+    if 'banner' in fields:
+        banner = http('POST', api + 'upload/youtube/v3/channelBanners/insert', auth, Path(fields['banner']).read_bytes(), 'image/jpeg')
+        branding.setdefault('image', {})['bannerExternalUrl'] = banner['url']
+    if 'bio' in fields:
+        branding.setdefault('channel', {})['description'] = fields['bio']
+    body = json.dumps({'id': items[0]['id'], 'brandingSettings': branding}).encode()
+    http('PUT', api + 'youtube/v3/channels?part=brandingSettings', auth, body, 'application/json')
+
+
+def set_browser(name, c, fields, profile, headful):
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise RuntimeError('playwright not installed: pip install playwright && playwright install chromium') from None
+    sel = {'avatar': FILE, 'banner': FILE, 'save': SAVE, **BROWSER[name]}
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(user_data_dir=profile, headless=not headful)
+        try:
+            page = ctx.new_page()
+            page.goto(sel['url'].format(**c), wait_until='domcontentloaded')
+            page.wait_for_timeout(3000)
+            if LOGIN.search(page.url):
+                raise RuntimeError('not signed in in this browser profile')
+            for field, value in fields.items():
+                if field == 'bio':
+                    if sel.get('open_bio') and page.locator(sel['open_bio']).count():
+                        page.locator(sel['open_bio']).first.click()
+                    page.locator(sel['bio']).first.fill(value)
+                    continue
+                page.locator(sel[field]).nth(int(field == 'banner' and sel['banner'] == sel['avatar'])).set_input_files(value)
+                page.wait_for_timeout(2000)
+                if sel.get('apply') and page.locator(sel['apply']).count():
+                    page.locator(sel['apply']).first.click()
+            page.locator(sel['save']).first.click()
+            page.wait_for_timeout(3000)
+        finally:
+            ctx.close()
+
+
+def report(status, name, detail):
+    print(f'{status:<4} {name:<10} {redact(detail)}')
+
+
+def run_platform(name, args, config, workdir):
+    c = creds(name, config)
+    gone = [k for k in PLATFORMS[name][4] if k not in c]
+    if PLATFORMS[name][0] == 'browser' and not args.browser_profile:
+        gone.append(f'--browser-profile or {BROWSER_ENV}')
+    if gone:
+        report('SKIP' if args.platform == 'all' else 'FAIL', name, 'not configured: set ' + ', '.join(gone))
+        return args.platform == 'all'
+    fields, notes = {}, []
+    for field, value in ((f, getattr(args, f)) for f in FIELDS if getattr(args, f) is not None):
+        if not supports(name, field):
+            report('SKIP', name, f'{field}: {NO_API.get((name, field), "not supported")}')
+        elif field == 'bio':
+            notes.append('bio ' + check_bio(name, value))
+            fields['bio'] = value
+        else:
+            size = PLATFORMS[name][FIELDS.index(field) + 1]
+            fields[field] = prep_image(value, size, os.path.join(workdir, f'{name}-{field}.jpg'))
+            notes.append(f'{field} {size[0]}x{size[1]} {fields[field]}')
+    if fields and args.dry_run:
+        report('OK', name, 'dry-run, would set: ' + '; '.join(notes))
+    elif fields:
+        if PLATFORMS[name][0] == 'browser':
+            set_browser(name, c, fields, args.browser_profile, args.headful)
+        else:
+            globals()[f'set_{name}'](c, fields)
+        report('OK', name, ', '.join(fields))
+    return True
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(prog='social-profile', description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('list', help='show platforms, methods, fields and env vars')
+    s = sub.add_parser('set', help='set avatar, banner and/or bio')
+    s.add_argument('--platform', required=True, choices=[*PLATFORMS, 'all'])
+    for field in FIELDS:
+        s.add_argument(f'--{field}')
+    s.add_argument('--dry-run', action='store_true', help='prepare images, check bio, no network calls')
+    s.add_argument('--browser-profile', default=os.getenv(BROWSER_ENV), help='signed-in Playwright user data dir')
+    s.add_argument('--headful', action='store_true')
+    args = parser.parse_args(argv)
+    if args.command == 'set' and all(getattr(args, f) is None for f in FIELDS):
+        s.error('give at least one of --avatar, --banner, --bio')
+    for path in (args.avatar, args.banner) if args.command == 'set' else ():
+        if path and not os.path.isfile(path):
+            s.error(f'no such image file: {path}')
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    if args.command == 'list':
+        print(f'{"platform":<10} {"method":<8} {"fields":<18} env')
+        for name, (method, *_, env) in PLATFORMS.items():
+            fields = ' '.join(f for f in FIELDS if supports(name, f))
+            env = env + ([f'--browser-profile or {BROWSER_ENV}'] if method == 'browser' else [])
+            print(f'{name:<10} {method:<8} {fields:<18} {" ".join(env)}')
+        return 0
+    config = load_config()
+    workdir = tempfile.mkdtemp(prefix='social-profile-')
+    ok = True
+    try:
+        for name in PLATFORMS if args.platform == 'all' else [args.platform]:
+            try:
+                ok = run_platform(name, args, config, workdir) and ok
+            except Exception as e:  # one platform failing must not stop the rest
+                report('FAIL', name, str(e))
+                ok = False
+    finally:
+        if not args.dry_run:
+            shutil.rmtree(workdir, ignore_errors=True)
+    return 0 if ok else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
