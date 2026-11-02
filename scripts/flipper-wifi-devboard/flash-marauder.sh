@@ -48,21 +48,25 @@ usb_serial_ports() {
 
 esp32_s2_bootloader_port() {
   local p out fixed="${1:-}"
-  if [ -n "$fixed" ]; then
-    out=$(run_esptool --chip esp32s2 --port "$fixed" -b 115200 chip-id 2>&1) || true
-    if echo "$out" | grep -qiE 'esp32-s2'; then
-      echo "$fixed"
-      return 0
+  try_port() {
+    p="$1"
+    out=$(run_esptool --chip esp32s2 --port "$p" -b 115200 chip-id 2>&1) || true
+    # Do not match "Failed to connect to ESP32-S2" — require a positive chip line or MAC.
+    if echo "$out" | grep -qiE 'Chip is ESP32-S2|Features:|MAC:'; then
+      if ! echo "$out" | grep -qiE 'fatal error|Failed to connect'; then
+        echo "$p"
+        return 0
+      fi
     fi
     return 1
+  }
+  if [ -n "$fixed" ]; then
+    try_port "$fixed"
+    return $?
   fi
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    out=$(run_esptool --chip esp32s2 --port "$p" -b 115200 chip-id 2>&1) || true
-    if echo "$out" | grep -qiE 'esp32-s2'; then
-      echo "$p"
-      return 0
-    fi
+    if try_port "$p"; then return 0; fi
   done < <(usb_serial_ports)
   return 1
 }
