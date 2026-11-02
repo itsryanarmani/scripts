@@ -1,0 +1,115 @@
+# reviewer-venues
+
+A dataset of 287 peer-review opportunities worldwide, plus a small script to
+filter it: journals, publisher reviewer programs, reviewer databases, conference
+program committees, artifact evaluation committees and practitioner magazines.
+Each venue was screened for predatory practices and charges reviewers no fee
+(see `predatory_check`). Some are invitation only; see `application_type`.
+
+Files:
+
+| File | What |
+|---|---|
+| `reviewer-venues.csv` | The dataset, one venue per row (single source) |
+| `filter_venues.py` | Filter script, Python 3 standard library only; `--format json` emits JSON on demand |
+
+## Columns
+
+| Column | Meaning |
+|---|---|
+| `name` | Venue or program name |
+| `publisher` | Publisher, society or organiser |
+| `region` | `Global`, `North America`, `EU/UK`, `Asia`, `Latin America`, `Africa`, `Middle East` or `Oceania` |
+| `country` | Country of the publisher or organiser |
+| `field` | Specific subject area |
+| `field_group` | Broader subject group: `AI/ML`, `Info systems`, `CS general`, `HCI`, `Software eng`, `Innovation/mgmt`, `Ethics/policy`, `Ed-tech`, `Health`, `Web/media`, `Comp social sci` or `Other` |
+| `venue_type` | `journal`, `conference PC`, `publisher program`, `practitioner magazine`, `reviewer database` or `artifact evaluation` |
+| `signup_url` | Page to start from |
+| `phd_required` | `yes`, `no`, `preferred` or `unknown` |
+| `publications_required` | Whether prior publications are needed |
+| `orcid_required` | Whether an ORCID iD is needed |
+| `other_criteria` | Anything else the venue asks for |
+| `application_type` | `account + reviewer profile`, `email editor`, `volunteer form`, `invitation only` or `open form` |
+| `form_asks` | What the application asks for |
+| `deadline_cadence` | `Rolling`, `Annual` and similar |
+| `fee` | Fee charged to reviewers (`none` throughout) |
+| `predatory_check` | Why the venue was judged legitimate |
+| `url_check` | Result of the link check: `loads`, `bot-blocked to scripts; open in browser` or `found by search` (the page was located by search, not fetched) |
+
+## Counts
+
+By region:
+
+| Region | Venues |
+|---|---|
+| Global | 102 |
+| North America | 64 |
+| EU/UK | 64 |
+| Asia | 27 |
+| Latin America | 13 |
+| Africa | 11 |
+| Middle East | 4 |
+| Oceania | 2 |
+
+By venue type:
+
+| Venue type | Venues |
+|---|---|
+| journal | 195 |
+| conference PC | 42 |
+| publisher program | 17 |
+| practitioner magazine | 15 |
+| reviewer database | 9 |
+| artifact evaluation | 9 |
+
+By application type:
+
+| Application type | Venues |
+|---|---|
+| account + reviewer profile | 133 |
+| email editor | 85 |
+| volunteer form | 45 |
+| invitation only | 20 |
+| open form | 4 |
+
+## Filter
+
+```bash
+python3 filter_venues.py [--region R] [--field F] [--type T] [--apply A] [--no-phd] [--format csv|json|table] [--data PATH]
+```
+
+Flags combine with AND. `--region`, `--field`, `--type` and `--apply` match a
+case-insensitive substring (so `--field ai` also hits words like "domain"; use
+`--field "AI/ML"` for the group). `--field` checks `field` and `field_group`. `--no-phd` drops venues where
+`phd_required` is `yes`. The default format is `csv`; `--format json` produces
+JSON on demand (there is no committed JSON copy). The match count goes to stderr.
+
+```bash
+# AI/ML journals in the EU/UK that do not list a PhD as required
+python3 filter_venues.py --region "EU/UK" --field "AI/ML" --type journal --no-phd --format table
+
+# Venues you can apply to by emailing the editor, as JSON
+python3 filter_venues.py --apply "email editor" --format json
+
+# Artifact evaluation committees
+python3 filter_venues.py --type artifact
+```
+
+## Caveats
+
+- Compiled in November 2026. Check the venue before relying on a row.
+- Many requirement fields are `unknown`. The venue did not publish the
+  requirement, or it was not found.
+- A `url_check` of `bot-blocked to scripts; open in browser` means the page
+  refuses scripts. Open it in a browser.
+- Conference pages point at the 2026 cycle. Look for the next year's call.
+- Predatory and fee-charging venues were screened out; `predatory_check` records
+  the basis for each row.
+- Verify the requirements on the official page before you apply.
+
+## How to become a reviewer
+
+The
+[`journal-reviewer-applications`](https://github.com/pooriaarab/skills/tree/main/journal-reviewer-applications)
+skill in [skills](https://github.com/pooriaarab/skills) walks through the
+profiles to set up first and how to apply.
