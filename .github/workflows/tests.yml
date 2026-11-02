@@ -110,6 +110,7 @@ jobs:
           set -euo pipefail
           ./append-point-scan.test.sh
           ./merge-hotspots.test.sh
+          ./scripts/flipper-wifi-devboard/flash-marauder.test.sh
 
       - name: Run warmup sync tests
         id: warmup-sync-tests
