@@ -10,9 +10,8 @@ Files:
 
 | File | What |
 |---|---|
-| `reviewer-venues.csv` | The dataset, one venue per row |
-| `reviewer-venues.json` | The same rows as JSON |
-| `filter_venues.py` | Filter script, Python 3 standard library only |
+| `reviewer-venues.csv` | The dataset, one venue per row (single source) |
+| `filter_venues.py` | Filter script, Python 3 standard library only; `--format json` emits JSON on demand |
 
 ## Columns
 
@@ -76,20 +75,20 @@ By application type:
 ## Filter
 
 ```bash
-python3 filter_venues.py [--region R] [--field F] [--type T] [--apply A] [--no-phd] [--format csv|json|table]
+python3 filter_venues.py [--region R] [--field F] [--type T] [--apply A] [--no-phd] [--format csv|json|table] [--data PATH]
 ```
 
-Flags combine with AND. `--region`, `--type` and `--apply` match a
-case-insensitive substring of `region`, `venue_type` and `application_type`.
-`--field` matches `field` or `field_group`. `--no-phd` drops venues where
-`phd_required` is `yes`. The default format is `csv`; the match count goes to
-stderr.
+Flags combine with AND. `--region`, `--field`, `--type` and `--apply` match a
+case-insensitive substring (so `--field ai` also hits words like "domain"; use
+`--field "AI/ML"` for the group). `--field` checks `field` and `field_group`. `--no-phd` drops venues where
+`phd_required` is `yes`. The default format is `csv`; `--format json` produces
+JSON on demand (there is no committed JSON copy). The match count goes to stderr.
 
 ```bash
-# Journals in the EU/UK that do not need a PhD, in AI
-python3 filter_venues.py --region "EU/UK" --field ai --type journal --no-phd --format table
+# AI/ML journals in the EU/UK that do not list a PhD as required
+python3 filter_venues.py --region "EU/UK" --field "AI/ML" --type journal --no-phd --format table
 
-# Every venue you can apply to by emailing the editor, as JSON
+# Venues you can apply to by emailing the editor, as JSON
 python3 filter_venues.py --apply "email editor" --format json
 
 # Artifact evaluation committees
@@ -101,8 +100,8 @@ python3 filter_venues.py --type artifact
 - Compiled in November 2026. Check the venue before relying on a row.
 - Many requirement fields are `unknown`. The venue did not publish the
   requirement, or it was not found.
-- A `url_check` of `bot-blocked to scripts; open in browser` means the page refuses scripts. Open it in a
-  browser.
+- A `url_check` of `bot-blocked to scripts; open in browser` means the page
+  refuses scripts. Open it in a browser.
 - Conference pages point at the 2026 cycle. Look for the next year's call.
 - Predatory and fee-charging venues were screened out; `predatory_check` records
   the basis for each row.
