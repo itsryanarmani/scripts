@@ -70,6 +70,7 @@ Not part of the diagnosis order above.
 | `fleet-ci-census` | Per repo and workflow: run count, p50/p95 wall time, total minutes, failure and cancellation rates. JSON by default; `--markdown` ranks by total minutes. A run count at the page cap is a floor, not a total. See [fleet-ci-census.md](fleet-ci-census.md). |
 | `append-point-scan` | Flag shared append points from repo contents alone: freshness gates, enumerated scripts, ordinal registries, committed junk. Answers what WILL conflict once a repo gets busy. `./append-point-scan <dir-or-owner/repo>`. |
 | `merge-hotspots` | Rank files by share of recent commits and mark derived vs source. Churn is not contention: a busy file only serializes merges when several PRs touch it. `./merge-hotspots <dir-or-owner/repo>`. |
+| `scripts/flipper-wifi-devboard/` | Flash **ESP32Marauder** on the Flipper **Wi‑Fi dev board** with `esptool` (not qFlipper radio recovery). README covers DFU brick recovery and what *not* to flash. |
 
 ## Guides
 
