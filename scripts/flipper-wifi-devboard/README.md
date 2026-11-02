@@ -42,22 +42,54 @@ card files are on the microSD and are separate from internal flash.
 
 ## Flash Marauder on the Wi‑Fi dev board (correct path)
 
+**Setup for flashing:** Wi‑Fi board **USB → computer only**. Flipper can stay in a drawer;
+it is **not** needed until after Marauder is written.
+
+### Download mode (step by step)
+
+The board ships with **Blackmagic** firmware. `esptool` only works in **ROM download
+mode**. The USB name **changes** when you succeed — do not keep using an old port path.
+
+| USB label (typical macOS) | Meaning |
+|---------------------------|---------|
+| **Blackmagic ESP32** + `cu.usbmodemblackmagic*` | Normal / Blackmagic — **not** ready for `esptool` |
+| **ESP32-S2** + `cu.usbmodem01` (or similar short name) | Download mode — **flash now** (window is short) |
+
+**Method A — buttons (board already plugged in):**
+
+1. Hold **BOOT** on the dev board.
+2. While holding BOOT, **tap RESET** once.
+3. Keep holding BOOT **~10 seconds**, then release.
+4. Within **~30 seconds**, run `./flash-marauder.sh` (omit `--port` so the script scans
+   ports, or pass the new `cu.usbmodem…` device).
+
+**Method B — plug while holding BOOT (often more reliable):**
+
+1. Unplug USB from the board.
+2. Hold **BOOT**.
+3. Plug USB into the Mac **while still holding BOOT**.
+4. Keep holding **5–10 seconds**, release BOOT.
+5. Run `./flash-marauder.sh` immediately.
+
+**If flash fails:** unplug USB, repeat Method A or B. Download mode **times out** quickly;
+seeing **ESP32-S2** in System Information for a moment then losing it is normal if you
+wait too long.
+
+**After success:** press **RESET** once, unplug USB, stack board on Flipper, open the
+Marauder companion app.
+
 ### Option A — Mac/Linux helper in this folder
 
 [`flash-marauder.sh`](flash-marauder.sh) downloads official Marauder **Flipper dev board**
 binaries from GitHub releases and flashes with `esptool` (via `uvx` if needed).
 
-1. Connect the **dev board only** to the computer with USB (direct port on the board, not
-   only through the Flipper, if flashing fails).
-2. Enter **download mode** on the board:
-   - Hold **BOOT**
-   - Press and release **RESET** (while still holding BOOT)
-   - Wait a few seconds, release **BOOT**
-3. Run `./flash-marauder.sh` (or `./flash-marauder.sh --port /dev/cu.…`).
+1. Connect the **dev board only** to the computer with USB (see **Download mode** above).
+2. Enter download mode (Method A or B).
+3. Run `./flash-marauder.sh` — **do not** pass a stale `--port` from Blackmagic; let the
+   script find the bootloader port, or pass the port that appears **after** download mode
+   (often `cu.usbmodem01` on macOS).
 
-In download mode, macOS often shows an Espressif USB device (`VID 0x303A`), not
-“Blackmagic ESP32”. If `esptool` cannot connect, the board is still running Blackmagic
-or normal firmware—repeat step 2.
+The script waits up to three minutes, **re-scanning** serial ports each pass.
 
 4. Press **RESET** once after a successful flash.
 

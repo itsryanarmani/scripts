@@ -36,23 +36,35 @@ run_esptool() {
   fi
 }
 
-pick_port() {
-  if [ -n "$PORT" ]; then
-    echo "$PORT"
-    return
-  fi
-  # Prefer Espressif ROM bootloader (download mode); fall back to explicit Blackmagic ports.
+# zsh-friendly glob (no error when no matches)
+usb_serial_ports() {
   local p
   for p in /dev/cu.usbmodem* /dev/tty.usbmodem*; do
     [ -e "$p" ] || continue
-    case "$p" in
-      *Bluetooth*) continue ;;
-    esac
+    case "$p" in *Bluetooth*) continue ;; esac
     echo "$p"
-    return
   done
-  echo "no USB serial device found; use --port" >&2
-  exit 1
+}
+
+esp32_s2_bootloader_port() {
+  local p out fixed="${1:-}"
+  if [ -n "$fixed" ]; then
+    out=$(run_esptool --chip esp32s2 --port "$fixed" -b 115200 chip-id 2>&1) || true
+    if echo "$out" | grep -qiE 'esp32-s2'; then
+      echo "$fixed"
+      return 0
+    fi
+    return 1
+  fi
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    out=$(run_esptool --chip esp32s2 --port "$p" -b 115200 chip-id 2>&1) || true
+    if echo "$out" | grep -qiE 'esp32-s2'; then
+      echo "$p"
+      return 0
+    fi
+  done < <(usb_serial_ports)
+  return 1
 }
 
 mkdir -p "$CACHE_DIR"
@@ -70,7 +82,6 @@ fetch() {
   curl -fsSL -o "$dest" "$url"
 }
 
-# Resolve firmware URL when the release embeds a build date in the filename.
 if [ ! -s "$FW_BIN" ]; then
   latest=$(
     curl -fsSL "https://api.github.com/repos/justcallmekoko/ESP32Marauder/releases/tags/${MARAUDER_VERSION}" \
@@ -83,50 +94,38 @@ fetch "https://github.com/justcallmekoko/ESP32Marauder/raw/master/FlashFiles/Fli
 fetch "https://github.com/justcallmekoko/ESP32Marauder/raw/master/FlashFiles/FlipperZeroDevBoard/esp32_marauder.ino.partitions.bin" "$PART_BIN"
 fetch "https://github.com/justcallmekoko/ESP32Marauder/raw/master/FlashFiles/FlipperZeroDevBoard/boot_app0.bin" "$APP0_BIN"
 
-PORT="$(pick_port)"
-
-FLASH_ARGS=(
-  --chip esp32s2 --port "$PORT" -b 460800
-  write-flash --flash-mode dio --flash-freq 80m --flash-size 4MB
-  0x1000 "$BOOT_BIN"
-  0x8000 "$PART_BIN"
-  0xE000 "$APP0_BIN"
-  0x10000 "$FW_BIN"
-)
-
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "dry-run: port=$PORT would wait for download mode, erase-flash, then write-flash"
-  printf '  %q\n' "${FLASH_ARGS[@]}"
+  echo "dry-run: would wait for ESP32-S2 download mode, erase-flash, write-flash"
+  echo "  firmware: $FW_BIN"
   exit 0
 fi
 
-echo "Using port: $PORT"
-echo "Put the Wi‑Fi dev board in download mode (hold BOOT, tap RESET, release BOOT)."
-echo "Waiting for ESP32-S2 ROM bootloader…"
+echo "Board USB → this computer only (Flipper not required)."
+echo "Download mode: hold BOOT, tap RESET, hold BOOT ~10s — or hold BOOT while plugging USB."
+echo "Waiting for ESP32-S2 ROM bootloader (re-scanning ports)…"
 
 deadline=$((SECONDS + 180))
+ACTIVE_PORT=""
 while [ "$SECONDS" -lt "$deadline" ]; do
-  if run_esptool --chip esp32s2 --port "$PORT" -b 115200 chip-id 2>/dev/null | grep -q "Chip is ESP32-S2"; then
+  if ACTIVE_PORT=$(esp32_s2_bootloader_port "$PORT"); then
     break
   fi
-  sleep 3
+  sleep 2
 done
 
-if ! run_esptool --chip esp32s2 --port "$PORT" -b 115200 chip-id 2>/dev/null | grep -q "Chip is ESP32-S2"; then
-  echo "Could not talk to ESP32-S2 in download mode on $PORT." >&2
-  echo "If USB shows Blackmagic only, repeat BOOT+RESET; try a direct USB cable to the board." >&2
+if [ -z "$ACTIVE_PORT" ]; then
+  echo "Could not talk to ESP32-S2 in download mode." >&2
+  echo "USB probably still shows Blackmagic — repeat BOOT+RESET or hold BOOT while replugging USB." >&2
+  echo "Do not pass --port from Blackmagic; omit it or use the port that appears after download mode." >&2
   exit 1
 fi
 
-FLASH_ARGS=(
-  --chip esp32s2 --port "$PORT" -b 460800
-  write-flash --flash-mode dio --flash-freq 80m --flash-size 4MB
-  0x1000 "$BOOT_BIN"
-  0x8000 "$PART_BIN"
-  0xE000 "$APP0_BIN"
-  0x10000 "$FW_BIN"
-)
+echo "Using port: $ACTIVE_PORT"
 
-run_esptool --chip esp32s2 --port "$PORT" -b 460800 erase-flash
-run_esptool "${FLASH_ARGS[@]}"
+run_esptool --chip esp32s2 --port "$ACTIVE_PORT" -b 460800 erase-flash
+run_esptool --chip esp32s2 --port "$ACTIVE_PORT" -b 460800 write-flash --flash-mode dio --flash-freq 80m --flash-size 4MB \
+  0x1000 "$BOOT_BIN" \
+  0x8000 "$PART_BIN" \
+  0xE000 "$APP0_BIN" \
+  0x10000 "$FW_BIN"
 echo "Done. Press RESET on the dev board, stack on Flipper, open the Marauder companion app."

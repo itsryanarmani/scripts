@@ -43,9 +43,8 @@ case "$out" in
   *dry-run*) ok "dry-run prints intent" ;;
   *) bad "dry-run output: $out" ;;
 esac
-
 grep -q 'qFlipper' "$SCRIPT_DIR/README.md" && ok "README warns about qFlipper radio path" || bad "README missing qFlipper warning"
-grep -q '303A' "$SCRIPT_DIR/README.md" && ok "README mentions download-mode USB hint" || bad "README missing download-mode hint"
+grep -qE '303A|ESP32-S2|Download mode' "$SCRIPT_DIR/README.md" && ok "README mentions download-mode USB hint" || bad "README missing download-mode hint"
 
 echo
 echo "passed $pass, failed $fail"
