@@ -1,9 +1,10 @@
 # reviewer-venues
 
-A dataset of 287 places that accept new peer reviewers worldwide, plus a small
-script to filter it. Every venue is legitimate and charges no fee: journals,
-publisher reviewer programs, reviewer databases, conference program committees,
-artifact evaluation committees and practitioner magazines.
+A dataset of 287 peer-review opportunities worldwide, plus a small script to
+filter it: journals, publisher reviewer programs, reviewer databases, conference
+program committees, artifact evaluation committees and practitioner magazines.
+Each venue was screened for predatory practices and charges reviewers no fee
+(see `predatory_check`). Some are invitation only; see `application_type`.
 
 Files:
 
@@ -22,7 +23,7 @@ Files:
 | `region` | `Global`, `North America`, `EU/UK`, `Asia`, `Latin America`, `Africa`, `Middle East` or `Oceania` |
 | `country` | Country of the publisher or organiser |
 | `field` | Specific subject area |
-| `field_group` | Broader subject group |
+| `field_group` | Broader subject group: `AI/ML`, `Info systems`, `CS general`, `HCI`, `Software eng`, `Innovation/mgmt`, `Ethics/policy`, `Ed-tech`, `Health`, `Web/media`, `Comp social sci` or `Other` |
 | `venue_type` | `journal`, `conference PC`, `publisher program`, `practitioner magazine`, `reviewer database` or `artifact evaluation` |
 | `signup_url` | Page to start from |
 | `phd_required` | `yes`, `no`, `preferred` or `unknown` |
@@ -34,7 +35,7 @@ Files:
 | `deadline_cadence` | `Rolling`, `Annual` and similar |
 | `fee` | Fee charged to reviewers (`none` throughout) |
 | `predatory_check` | Why the venue was judged legitimate |
-| `url_check` | Result of the link check |
+| `url_check` | Result of the link check: `loads`, `bot-blocked to scripts; open in browser` or `found by search` (the page was located by search, not fetched) |
 
 ## Counts
 
@@ -100,10 +101,11 @@ python3 filter_venues.py --type artifact
 - Compiled in November 2026. Check the venue before relying on a row.
 - Many requirement fields are `unknown`. The venue did not publish the
   requirement, or it was not found.
-- A `url_check` of bot-blocked means the page refuses scripts. Open it in a
+- A `url_check` of `bot-blocked to scripts; open in browser` means the page refuses scripts. Open it in a
   browser.
 - Conference pages point at the 2026 cycle. Look for the next year's call.
-- Predatory and fee-charging venues are excluded.
+- Predatory and fee-charging venues were screened out; `predatory_check` records
+  the basis for each row.
 - Verify the requirements on the official page before you apply.
 
 ## How to become a reviewer
