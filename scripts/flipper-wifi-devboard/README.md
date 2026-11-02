@@ -72,9 +72,106 @@ or normal firmware—repeat step 2.
 
 ### After Marauder is on the board
 
-1. Stack the board on the Flipper.
-2. Install/open the **ESP32 Marauder** companion app on the Flipper (app catalog / SD).
-3. Use only on networks you own or are allowed to test.
+See **[Daily use (step by step)](#daily-use-step-by-step)** below.
+
+## Daily use (step by step)
+
+Assumes Marauder (or another ESP32 Wi‑Fi firmware) is already on the dev board.
+
+### 1. Physical setup
+
+1. **Power off** the Flipper or at least close apps using GPIO (optional but avoids glitches).
+2. **Line up the dev board** with the Flipper’s GPIO pins on the back (board stacks on top of
+   the Flipper body).
+3. **Press firmly** until seated — all pins must connect.
+4. **Do not** plug the dev board’s USB‑C into the Mac for normal use; the Flipper battery
+   powers the stack. USB on the board is for **flashing** or **Blackmagic Wi‑Fi debugging**,
+   not required for Marauder day‑to‑day.
+
+### 2. Turn on and open the right app
+
+1. Short‑press the Flipper **Back** button to wake/boot.
+2. Open the app menu: **OK** on the desktop, or navigate to **Apps**.
+3. For Marauder, open the companion app (name varies by install), commonly:
+   - **Apps → GPIO → [ESP32 Marauder]** or **WiFi Marauder**, or
+   - **Apps → Tools → …** if you installed from the catalog into another folder.
+4. If you do not see it: on the Flipper open **Hub / Catalog** (or install from
+   [lab.flipper.net](https://lab.flipper.net)) and search **Marauder** or **ESP32 Marauder**,
+   then sync to SD and reopen **Apps**.
+
+The Flipper app is a **remote screen and menu** for the ESP32. The actual Wi‑Fi work runs
+**on the dev board**, not inside the Flipper main CPU.
+
+### 3. First launch checklist
+
+| Step | What to do |
+|------|------------|
+| Wait for connect | First open can take **10–30 seconds** while the app talks to the board over GPIO/UART. |
+| If it hangs | **Back** out, reseat the board, reboot Flipper, try again. |
+| Serial / debug | Only needed for troubleshooting; normal use is all on‑screen menus. |
+
+### 4. What you **can** do (with Marauder on the board)
+
+These are **Wi‑Fi** features on **your lab network** (networks you own or have permission
+to test):
+
+| Area | Examples (names vary by Marauder version) |
+|------|---------------------------------------------|
+| Scan | List nearby Wi‑Fi networks, AP info, channels |
+| Sniff / capture | Monitor mode‑style captures (save for analysis on a PC later) |
+| Probe / beacon tools | Test how devices behave (lab only) |
+| Wardriving‑style logging | GPS needs extra hardware; Flipper alone has no GPS on the board |
+| Evil Portal–style setups | **Separate firmware or add‑ons**; not all Marauder builds expose this from the Flipper UI |
+
+Your Flipper **still does** everything it did before **without** the board:
+
+- Sub‑GHz, NFC, RFID, IR, iButton, GPIO (when not used by the board stack), Bluetooth as
+  shipped — **unchanged**.
+
+### 5. What you **cannot** do (common misconceptions)
+
+| Myth | Reality |
+|------|---------|
+| “Wi‑Fi board gives Flipper Wi‑Fi in every app” | **No.** Only apps written to talk to the ESP32 (Marauder companion, WiFi Scanner, etc.) use the board. |
+| “Marauder replaces Sub‑GHz or NFC” | **No.** Different hardware. |
+| “Flipper alone deauths Wi‑Fi after Marauder flash on the board” | **No** unless you open the Marauder (or similar) app and the firmware supports that action. |
+| “Flash Marauder through qFlipper radio recovery” | **Wrong target** — that flashes the Flipper BT coprocessor and can brick boot (see above). |
+| “Use offensive Wi‑Fi anywhere” | **Illegal** on others’ networks in most places. |
+
+### 6. Other firmware / apps (not only Marauder)
+
+You can reflash the dev board with other ESP32 projects (each has its own Flipper companion
+or UART protocol):
+
+| Firmware type | Typical Flipper side | Use |
+|---------------|----------------------|-----|
+| **Marauder** | ESP32 Marauder app | Wi‑Fi test / sniff toolkit |
+| **Blackmagic** | WiFi dev tools / debugger | Wi‑Fi debugging for developers |
+| **Evil Portal** (often separate flash) | Evil Portal app | Captive portal lab demos |
+| **WiFi Scanner** (official-style) | WiFi Scanner app | Simpler scanning than full Marauder |
+
+Switching firmware = **reflash the dev board only** (same BOOT+RESET + `flash-marauder.sh`
+or ESP Flasher). Flipper SD data stays put.
+
+### 7. How to **extend** features
+
+| Goal | Approach |
+|------|----------|
+| More Marauder menus / fixes | Reflash board to a **newer** [Marauder `_flipper.bin` release](https://github.com/justcallmekoko/ESP32Marauder/releases); update companion app from catalog if needed. |
+| Evil Portal, etc. | Flash firmware built for that project, install matching **Flipper app** from catalog or community bundles. |
+| Save captures on PC | Marauder/sniff workflows often export via **serial/USB** or SD on the ESP32 mod — official dev board has **no microSD on the board itself**; check your firmware docs. |
+| Flipper automation | **Bad USB / scripts** on Flipper cannot magically drive Marauder unless an app exposes it; use the companion app menus or a PC serial client. |
+| Stronger antenna / range | Hardware mods only (antenna, enclosure); software cannot fix bad RF. |
+| Developer path | **Blackmagic** firmware + PC tools; or build Marauder from source and flash with `esptool`. |
+
+### 8. Troubleshooting quick table
+
+| Problem | Try |
+|---------|-----|
+| App says no connection | Reseat board; reboot Flipper; confirm you flashed **`_flipper.bin`**, not WROOM/S3 builds. |
+| Board hot / high drain | Normal under heavy Wi‑Fi; remove board when not in use to save battery. |
+| Still shows Blackmagic on PC USB | That is the **old firmware label** until you flash Marauder in download mode. |
+| Flipper won’t boot | **Unplug/remove Wi‑Fi board**, charge, qFlipper repair — do not assume the board caused it until Flipper boots alone. |
 
 ## Legal and safety
 
