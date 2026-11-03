@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # E2E for gbp-create.
 # Usage: gbp-create-e2e [--session <name>]
-# Part 1 needs no browser. It checks every spec guard and proves that "plan"
-# opens no browser (the browser command is replaced with /bin/false).
+# Part 1 needs no browser. It checks every spec guard, the ledger rules that
+# stop a duplicate profile, and that "plan" opens no browser (the browser
+# command is replaced with /bin/false).
 # Part 2 runs only with --session. It needs an agent-browser session that is
-# signed in to Google. It fills every sign-up screen up to the click that
-# creates the profile, then stops. It creates no profile and writes no ledger.
+# signed in to Google. It fills the screens up to the click that creates the
+# profile, then stops. It creates no profile and writes no ledger.
+# Part 2 reads GBP_E2E_AREA (default "Toronto, ON") and GBP_E2E_CATEGORY
+# (default "Language school"). The category must be one Google suggests.
 # Prints a PASS or FAIL line per step. Exit code is 0 only when all pass.
 set -uo pipefail
 
@@ -21,16 +24,19 @@ step() { # step <label> <expected-exit> <command...>
   local label="$1" want="$2"; shift 2
   local got
   LAST="$("$@" 2>&1)"; got=$?
-  if [ "$got" -eq "$want" ]; then echo "PASS $label"; else echo "FAIL $label (exit $got, want $want)"; echo "$LAST" | sed 's/^/     /'; fails=$((fails+1)); fi
+  if [ "$got" -eq "$want" ]; then echo "PASS $label"; else echo "FAIL $label (exit $got, want $want)"; printf '%s\n' "$LAST" | sed 's/^/     /'; fails=$((fails+1)); fi
 }
 has() { # has <label> <text>
-  if grep -qF -- "$2" <<<"$LAST"; then echo "PASS $1"; else echo "FAIL $1 (missing: $2)"; echo "$LAST" | sed 's/^/     /'; fails=$((fails+1)); fi
+  if grep -qF -- "$2" <<<"$LAST"; then echo "PASS $1"; else echo "FAIL $1 (missing: $2)"; printf '%s\n' "$LAST" | sed 's/^/     /'; fails=$((fails+1)); fi
 }
 
 spec() { # spec <file> <json>
   printf '%s\n' "$2" > "$WORK/$1"
 }
-GOOD='{"name":"Example Site","category":"French language school","website":"https://example.com","areas":["Vancouver, BC"],"description":"We teach French to adults in small groups."}'
+profile() { # profile <name> <website> <description>
+  printf '[{"name":"%s","category":"x","website":"%s","areas":["V"],"description":"%s"}]\n' "$1" "$2" "$3"
+}
+GOOD='{"name":"Example Site","category":"Language school","website":"https://example.com","areas":["Example City, EX"],"description":"We teach adults in small groups."}'
 
 export GBP_CREATE_AB=/bin/false
 
@@ -40,36 +46,71 @@ has  "plan lists the profile" "Example Site"
 
 spec nonjson.json 'not json'
 step "rejects invalid JSON" 1 "$CLI" plan "$WORK/nonjson.json"
+has  "says the JSON is invalid" "not valid JSON"
 spec empty.json '[]'
 step "rejects an empty array" 1 "$CLI" plan "$WORK/empty.json"
+has  "says the array is empty" "non-empty JSON array"
 spec noname.json '[{"category":"x","website":"https://a.com","areas":["V"]}]'
 step "rejects a missing name" 1 "$CLI" plan "$WORK/noname.json"
-spec http.json '[{"name":"A","category":"x","website":"http://a.com","areas":["V"]}]'
-step "rejects a website without https" 1 "$CLI" plan "$WORK/http.json"
+has  "says the name is required" "name is required"
 spec noarea.json '[{"name":"A","category":"x","website":"https://a.com","areas":[]}]'
 step "rejects empty areas" 1 "$CLI" plan "$WORK/noarea.json"
+has  "says the areas are needed" "areas must be"
 spec dup.json "[$GOOD,$GOOD]"
 step "rejects a duplicate name" 1 "$CLI" plan "$WORK/dup.json"
 has  "names the duplicate" "duplicate name"
+spec dupspace.json "[$GOOD,{\"name\":\" example SITE \",\"category\":\"x\",\"website\":\"https://b.com\",\"areas\":[\"V\"]}]"
+step "rejects a duplicate that differs by spaces and case" 1 "$CLI" plan "$WORK/dupspace.json"
+has  "names the spaced duplicate" "duplicate name"
 
-for item in 'visit https://example.com today|a URL' 'see example.com|a domain name' 'from $497 per level|a price' 'call 604 555 0123|a phone number'; do
+for site in 'http://a.com' 'https://?' 'https://example.com bad' 'https://nodot' 'https://user:pw@a.com'; do
+  profile A "$site" "ok" > "$WORK/site.json"
+  step "rejects the website $site" 1 "$CLI" plan "$WORK/site.json"
+  has  "explains the website rule for $site" "website must be a full https:// address"
+done
+
+for item in 'visit https://example.com today|a URL' 'see example.com|a domain name' 'see example.dev|a domain name' 'from $497 per level|a price' 'call 604 555 0123|a phone number' 'call +1 (604) 555-0123|a phone number'; do
   text="${item%%|*}"; what="${item##*|}"
-  printf '[{"name":"A","category":"x","website":"https://a.com","areas":["V"],"description":"%s"}]\n' "$text" > "$WORK/desc.json"
-  step "rejects a description with $what" 1 "$CLI" plan "$WORK/desc.json"
-  has  "names $what" "$what"
+  profile A https://a.com "$text" > "$WORK/desc.json"
+  step "rejects a description: $text" 1 "$CLI" plan "$WORK/desc.json"
+  has  "names $what for: $text" "holds $what"
+done
+
+for ok in 'Open 2015-2025 for adults.' 'We teach adults. Classes are small.' 'Levels A1 to C2.'; do
+  profile A https://a.com "$ok" > "$WORK/descok.json"
+  step "accepts the description: $ok" 0 "$CLI" plan "$WORK/descok.json"
 done
 
 long="$(printf 'a%.0s' $(seq 1 751))"
-printf '[{"name":"A","category":"x","website":"https://a.com","areas":["V"],"description":"%s"}]\n' "$long" > "$WORK/long.json"
+profile A https://a.com "$long" > "$WORK/long.json"
 step "rejects a description over 750 characters" 1 "$CLI" plan "$WORK/long.json"
+has  "says the description is too long" "over 750 characters"
+exact="$(printf 'a%.0s' $(seq 1 750))"
+profile A https://a.com "$exact" > "$WORK/exact.json"
+step "accepts a description of exactly 750 characters" 0 "$CLI" plan "$WORK/exact.json"
 
 step "rejects a name that is not in the spec" 1 "$CLI" plan "$WORK/ok.json" "No Such Site"
+has  "names the unknown profile" "not in the spec"
 step "create needs a browser and fails when none runs" 1 "$CLI" create "$WORK/ok.json"
-if [ -e "$WORK/ok.json.ledger.json" ]; then echo "FAIL a failed run wrote a ledger"; fails=$((fails+1)); else echo "PASS a failed run wrote no ledger"; fi
+has  "says the browser command failed" "browser command"
+if [ -e "$WORK/ok.json.ledger.json" ]; then echo "FAIL a run that never reached the submit click wrote a ledger"; fails=$((fails+1)); else echo "PASS a run that never reached the submit click wrote no ledger"; fi
+
+# Ledger rules. These run with no browser: they must decide before any click.
+printf '{"example site":"done"}\n' > "$WORK/done.ledger.json"
+step "skips a profile that is done" 0 "$CLI" create "$WORK/ok.json" --ledger "$WORK/done.ledger.json"
+has  "says it skipped" "skipped Example Site: already created"
+for state in pending created; do
+  printf '{"example site":"%s"}\n' "$state" > "$WORK/open.ledger.json"
+  step "stops on a ledger entry that is $state" 1 "$CLI" create "$WORK/ok.json" --ledger "$WORK/open.ledger.json"
+  has  "says a profile may exist ($state)" "A profile may exist with setup unfinished"
+done
+printf '["Example Site"]\n' > "$WORK/old.ledger.json"
+step "rejects a ledger that is not an object" 1 "$CLI" create "$WORK/ok.json" --ledger "$WORK/old.ledger.json"
 
 if [ -n "$SESSION" ]; then
   unset GBP_CREATE_AB
-  spec live.json '[{"name":"Zz Gbp Create E2E","category":"French language school","website":"https://example.com","areas":["Vancouver, BC"],"description":"E2E run. Not submitted."}]'
+  area="${GBP_E2E_AREA:-Toronto, ON}"; category="${GBP_E2E_CATEGORY:-Language school}"
+  printf '[{"name":"Zz Gbp Create E2E","category":"%s","website":"https://example.com","areas":["%s"],"description":"E2E run. Not submitted."}]\n' "$category" "$area" > "$WORK/live.json"
   step "live flow stops before submit" 0 "$CLI" create "$WORK/live.json" --session "$SESSION" --stop-before-submit
   has  "reports the stop" "stopped before submit: Zz Gbp Create E2E"
   if [ -e "$WORK/live.json.ledger.json" ]; then echo "FAIL the stop wrote a ledger"; fails=$((fails+1)); else echo "PASS the stop wrote no ledger"; fi
