@@ -1,0 +1,386 @@
+#!/usr/bin/env node
+'use strict';
+
+// Open Google Business Profiles for service-area businesses from a local spec.
+// Google documents a Business Profile API, but it needs separate API access, so
+// this script drives the public sign-up screens through agent-browser. It never
+// enters an address and stops at verification, which a person finishes.
+
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const HELP = `gbp-create - open Google Business Profiles from a spec
+
+Usage:
+  gbp-create plan   <spec>
+  gbp-create create <spec> [name...]
+
+Options:
+  --session <name>       agent-browser session already connected to a Chrome
+                         that is signed in to Google (default:
+                         $GBP_CREATE_SESSION or "default")
+  --ledger <file>        name -> pending, created or done (default:
+                         <spec>.ledger.json)
+  --stop-before-submit   fill the screens before Google creates the profile,
+                         stop one click before it, and record nothing
+  --allow-similar        go on when Google lists existing businesses with a
+                         similar name (default: stop and ask a person)
+  --help                 show this help
+
+Spec: a JSON array. Keep the file OUTSIDE any repo.
+  [{"name": "Example Site", "category": "Language school",
+    "website": "https://example.com", "areas": ["Example City, EX"],
+    "description": "Plain text, at most 750 characters."}]
+
+plan checks the spec and lists each profile. It opens no browser.
+create runs the flow for each profile that is not "done" in the ledger. It
+chooses "No" to a customer-visible location, picks the area from Google's list,
+skips hours, photos and Workspace, and picks "Verify Later". It stops on the
+first error, so one failure never makes a second profile. A ledger entry that
+is "pending" or "created" means a profile may exist with setup unfinished. The
+script then stops and asks a person to check the Business Profile list.
+The category must match one of Google's suggestions word for word, or the
+script stops and lists what Google offered. The account is whichever Google
+account the browser session is signed in to.
+`;
+
+const DESCRIPTION_MAX = 750;
+const STEP_TIMEOUT_MS = 25000;
+
+function fail(message) {
+  process.stderr.write(`gbp-create: ${message}\n`);
+  process.exit(1);
+}
+
+function parseArgs(argv) {
+  const opts = { session: process.env.GBP_CREATE_SESSION || 'default', stopBeforeSubmit: false };
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--session') opts.session = argv[++i];
+    else if (a === '--ledger') opts.ledger = argv[++i];
+    else if (a === '--stop-before-submit') opts.stopBeforeSubmit = true;
+    else if (a === '--allow-similar') opts.allowSimilar = true;
+    else if (a === '--help' || a === '-h') opts.help = true;
+    else if (a.startsWith('--')) fail(`unknown option ${a}`);
+    else rest.push(a);
+  }
+  return { opts, rest };
+}
+
+// Google rejected one description with a price and a URL, without saying which.
+// So block both, and phone numbers too.
+const DESCRIPTION_RULES = [
+  [/https?:\/\/|www\./i, 'a URL'],
+  [/\b[a-z0-9-]+\.[a-z]{2,24}(?=[\s/,;:)!?]|$)/i, 'a domain name'],
+  [/[$€£]\s?\d|\b\d+\s?(CAD|USD|EUR|dollars?)\b/i, 'a price'],
+  // Ten digits or more in a run. A year range such as 2015-2025 has eight.
+  [/(?:\+?\d[\s().-]*){10,}/, 'a phone number'],
+];
+
+function validWebsite(text) {
+  if (/\s/.test(text)) return false;
+  try {
+    const u = new URL(text);
+    return u.protocol === 'https:' && u.hostname.includes('.') && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+}
+
+function loadSpec(file) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    fail(`cannot read spec ${file}: ${e.code || e.message}`);
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    fail(`spec is not valid JSON: ${e.message}`);
+  }
+  if (!Array.isArray(data) || data.length === 0) fail('spec must be a non-empty JSON array');
+  const seen = new Set();
+  data.forEach((p, i) => {
+    const at = `profile ${i + 1}`;
+    if (!p || typeof p !== 'object') fail(`${at}: must be an object`);
+    if (typeof p.name !== 'string' || !p.name.trim() || p.name.trim().length > 100) fail(`${at}: name is required, 100 characters at most`);
+    // One spelling everywhere: the duplicate check, the ledger and the form.
+    p.name = p.name.trim();
+    if (seen.has(p.name.toLowerCase())) fail(`${at}: duplicate name "${p.name}"`);
+    seen.add(p.name.toLowerCase());
+    if (typeof p.category !== 'string' || !p.category.trim()) fail(`${p.name}: category is required`);
+    if (typeof p.website !== 'string' || !validWebsite(p.website)) fail(`${p.name}: website must be a full https:// address with a host name`);
+    if (!Array.isArray(p.areas) || p.areas.length === 0 || p.areas.some((a) => typeof a !== 'string' || !a.trim())) {
+      fail(`${p.name}: areas must be a non-empty array of place names`);
+    }
+    if (p.description !== undefined) {
+      if (typeof p.description !== 'string') fail(`${p.name}: description must be text`);
+      if (p.description.length > DESCRIPTION_MAX) fail(`${p.name}: description is over ${DESCRIPTION_MAX} characters`);
+      for (const [re, what] of DESCRIPTION_RULES) {
+        if (re.test(p.description)) fail(`${p.name}: description holds ${what}, which Google rejects`);
+      }
+    }
+  });
+  return data;
+}
+
+function printPlan(profiles) {
+  profiles.forEach((p, i) => {
+    process.stdout.write(`${i + 1}. ${p.name} | ${p.category} | ${p.website} | areas: ${p.areas.join('; ')}\n`);
+  });
+}
+
+// ---- browser layer ----------------------------------------------------------
+
+function makeBrowser(session) {
+  const bin = process.env.GBP_CREATE_AB || 'agent-browser';
+  const env = { ...process.env, AGENT_BROWSER_AUTO_CONNECT: '0' };
+  const ab = (...args) => {
+    try {
+      return execFileSync(bin, ['--session', session, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      const why = (e.stderr || e.stdout || e.message || '').toString().trim().split('\n')[0];
+      return fail(`browser command "${args[0]}" failed: ${why || `exit ${e.status}`}`);
+    }
+  };
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+  const parse = (text) =>
+    text
+      .split('\n')
+      .map((line) => {
+        const m = /^\s*- (\w+) "(.*?)"(?: \[([^\]]*)\])?/.exec(line);
+        if (!m) return null;
+        const ref = /ref=(e\d+)/.exec(m[3] || '');
+        return { role: m[1], name: m[2], ref: ref && ref[1], disabled: /\bdisabled\b/.test(m[3] || '') };
+      })
+      .filter(Boolean);
+
+  const snap = () => parse(ab('snapshot', '-i'));
+
+  // Refs change after every action, so each lookup takes a fresh snapshot.
+  const find = (role, name, items = snap()) =>
+    items.find((it) => it.role === role && it.ref && !it.disabled && (name instanceof RegExp ? name.test(it.name) : it.name === name));
+
+  const waitFor = (test, what) => {
+    const end = Date.now() + STEP_TIMEOUT_MS;
+    for (;;) {
+      const items = snap();
+      if (test(items)) return items;
+      if (Date.now() > end) fail(`timed out waiting for: ${what}`);
+      sleep(1000);
+    }
+  };
+  const heading = (re) => (items) => items.some((it) => it.role === 'heading' && re.test(it.name));
+  const act = (verb, role, name, ...more) => {
+    const el = find(role, name);
+    if (!el) fail(`no ${role} named ${name} on the page`);
+    ab(verb, `@${el.ref}`, ...more);
+  };
+  return { ab, snap, find, waitFor, heading, act, sleep };
+}
+
+const H = {
+  confirm: /^Confirm your business/,
+  start: /^Start building your Business Profile/,
+  visit: /customers can visit/,
+  area: /^Where do you serve your customers/,
+  contact: /^What contact details/,
+  address: /^Please enter your mailing address/,
+  desc: /^Add business description/,
+  done: /^Your edits will be visible once/,
+};
+
+function pickSuggestion(b, label, wanted, exact) {
+  const items = b.waitFor((it) => it.some((x) => x.role === 'option'), `suggestions for ${label}`);
+  const options = items.filter((x) => x.role === 'option' && x.ref);
+  const norm = (s) => s.trim().toLowerCase();
+  const hit = exact ? options.find((o) => norm(o.name) === norm(wanted)) : options[0];
+  if (!hit) fail(`${label} "${wanted}" is not among Google's suggestions: ${options.map((o) => o.name).join(', ')}`);
+  b.ab('click', `@${hit.ref}`);
+  // The suggestion list covers the Next button while it closes.
+  b.sleep(1500);
+}
+
+// mark(state) saves the ledger. "pending" is saved just before the create click.
+function createOne(b, p, opts, mark) {
+  b.ab('open', 'https://business.google.com/create');
+  const ADD = 'Add your business to Google';
+  let items = b.waitFor(
+    (it) => b.heading(H.confirm)(it) || b.heading(H.start)(it) || b.find('button', ADD, it),
+    'the first sign-up screen',
+  );
+  // Some sessions land on a search screen first. The button below it starts sign-up.
+  if (b.find('button', ADD, items)) {
+    b.act('click', 'button', ADD);
+    items = b.waitFor((it) => b.heading(H.confirm)(it) || b.heading(H.start)(it), 'the screen after the search screen');
+  }
+  // Google offers to link the new profile to a business the account already has.
+  // That is the wrong business, so always choose another one.
+  if (b.heading(H.confirm)(items)) {
+    b.act('click', 'button', 'This profile is for another business');
+    b.waitFor(b.heading(H.start), 'the name screen');
+  }
+
+  b.act('fill', 'combobox', /^Business name/, p.name);
+  // The name field opens a suggestion list that covers the category field.
+  // Take only the "create" option. Any other option is an existing business,
+  // which may be this one. Making a second profile for it is a duplicate, so
+  // stop and let a person look.
+  // The "create" option is always in the list, so wait for it, give late
+  // matches a moment to arrive, and read the list again.
+  const isCreate = (o) => /Create a business with this name/.test(o.name);
+  const optionsOf = (it) => it.filter((x) => x.role === 'option' && x.ref);
+  b.waitFor((it) => optionsOf(it).some(isCreate), 'the name suggestions');
+  b.sleep(1500);
+  const listed = optionsOf(b.snap());
+  const create = listed.find(isCreate);
+  if (!create) fail(`${p.name}: the name suggestions changed while loading. Run again.`);
+  const existing = listed.filter((o) => o !== create);
+  if (existing.length && !opts.allowSimilar) {
+    fail(
+      `${p.name}: Google lists existing businesses with a similar name (${existing.map((o) => o.name).join('; ')}). ` +
+        'Check them by hand. If none is this business, run again with --allow-similar.',
+    );
+  }
+  b.ab('click', `@${create.ref}`);
+  b.sleep(1500);
+  // A reopened draft can arrive with the category set, so no list opens.
+  if (b.find('button', 'Clear category')) b.act('click', 'button', 'Clear category');
+  b.act('click', 'combobox', /^Business category/);
+  b.act('type', 'combobox', /^Business category/, p.category);
+  pickSuggestion(b, 'category', p.category, true);
+  b.act('click', 'button', 'Next');
+
+  b.waitFor(b.heading(H.visit), 'the customer-visible location question');
+  b.act('click', 'radio', 'No');
+  b.act('click', 'button', 'Next');
+
+  b.waitFor(b.heading(H.area), 'the service area screen');
+  for (const area of p.areas) {
+    b.act('click', 'combobox', 'Search and select areas');
+    b.act('type', 'combobox', /^Search and select areas/, area);
+    pickSuggestion(b, 'area', area, false);
+    b.sleep(500);
+  }
+  b.act('click', 'button', 'Next');
+
+  b.waitFor(b.heading(H.contact), 'the contact details screen');
+  b.act('fill', 'textbox', /^Website/, p.website);
+  if (opts.stopBeforeSubmit) return 'stopped';
+  // After the next click the profile may exist, even if this process dies
+  // before it sees the answer. Record that first.
+  mark('pending');
+  b.act('click', 'button', 'Next');
+  return 'submitted';
+}
+
+function finishOne(b, p, mark) {
+  b.waitFor(b.heading(H.address), 'the verification address screen');
+  mark('created');
+  b.act('click', 'button', 'Verify Later');
+  for (let guard = 0; guard < 12; guard++) {
+    const items = b.waitFor(
+      (it) => Object.values(H).some((re) => b.heading(re)(it)) || it.some((x) => x.name === 'Skip'),
+      'the next profile screen',
+    );
+    if (b.heading(H.done)(items)) {
+      b.act('click', 'button', 'Continue');
+      mark('done');
+      return;
+    }
+    if (b.heading(H.desc)(items) && p.description) {
+      b.act('fill', 'textbox', 'Business description', p.description);
+      b.act('click', 'button', 'Next');
+      b.sleep(3000);
+      if (b.heading(H.desc)(b.snap())) {
+        fail(`${p.name}: the page did not move on after the description. Google may have rejected the text, or the connection failed.`);
+      }
+      continue;
+    }
+    if (b.find('button', 'Skip', items)) {
+      b.act('click', 'button', 'Skip');
+      b.sleep(2000);
+      continue;
+    }
+    if (b.find('button', 'Continue', items)) {
+      b.act('click', 'button', 'Continue');
+      mark('done');
+      return;
+    }
+    fail(`${p.name}: no way forward on the current screen`);
+  }
+  fail(`${p.name}: too many screens after the profile was created`);
+}
+
+// Ledger: name -> "pending" (before the create click), "created", or "done".
+function readLedger(file) {
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!data || Array.isArray(data) || typeof data !== 'object') fail(`ledger ${file} must be a JSON object`);
+    return data;
+  } catch (e) {
+    if (e.code === 'ENOENT') return {};
+    return fail(`cannot read ledger ${file}: ${e.message}`);
+  }
+}
+
+function main() {
+  const { opts, rest } = parseArgs(process.argv.slice(2));
+  if (opts.help || rest.length === 0) {
+    process.stdout.write(HELP);
+    return;
+  }
+  const [cmd, specFile, ...names] = rest;
+  if (!specFile) fail('missing <spec>');
+  const profiles = loadSpec(specFile);
+  const wanted = names.map((n) => n.trim().toLowerCase());
+  const unknown = names.filter((n) => !profiles.some((p) => p.name.toLowerCase() === n.trim().toLowerCase()));
+  if (unknown.length) fail(`not in the spec: ${unknown.join(', ')}`);
+  const chosen = names.length ? profiles.filter((p) => wanted.includes(p.name.toLowerCase())) : profiles;
+
+  if (cmd === 'plan') return printPlan(chosen);
+  if (cmd !== 'create') fail(`unknown command ${cmd}`);
+
+  const ledgerFile = opts.ledger || `${path.resolve(specFile)}.ledger.json`;
+  // One run at a time per ledger. Two runs would each read a stale copy.
+  const lockFile = `${ledgerFile}.lock`;
+  try {
+    fs.closeSync(fs.openSync(lockFile, 'wx'));
+  } catch {
+    fail(`another run holds ${lockFile}. If no run is active, delete that file.`);
+  }
+  process.on('exit', () => fs.rmSync(lockFile, { force: true }));
+  const ledger = readLedger(ledgerFile);
+  const b = makeBrowser(opts.session);
+  for (const p of chosen) {
+    const key = p.name.toLowerCase();
+    if (ledger[key] === 'done') {
+      process.stdout.write(`skipped ${p.name}: already created\n`);
+      continue;
+    }
+    if (ledger[key]) {
+      fail(
+        `${p.name}: the ledger says "${ledger[key]}". A profile may exist with setup unfinished. ` +
+          `Check the Business Profile list and finish by hand. Then set it to "done" in ${ledgerFile}, or remove the entry if no profile exists.`,
+      );
+    }
+    const mark = (state) => {
+      ledger[key] = state;
+      fs.writeFileSync(ledgerFile, `${JSON.stringify(ledger, null, 2)}\n`);
+    };
+    const state = createOne(b, p, opts, mark);
+    if (state === 'stopped') {
+      process.stdout.write(`stopped before submit: ${p.name}\n`);
+      continue;
+    }
+    finishOne(b, p, mark);
+    process.stdout.write(`created, verification pending: ${p.name}\n`);
+  }
+}
+
+main();

@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# E2E for gbp-create.
+# Usage: gbp-create-e2e [--session <name>]
+# Part 1 needs no browser: spec guards, ledger rules, and "plan" (the browser
+# command is /bin/false, so any browser use fails).
+# Part 2 needs --session, an agent-browser session signed in to Google. It
+# fills the screens up to the click that creates the profile, then stops. It
+# creates no profile and writes no ledger. It reads GBP_E2E_AREA (default
+# "Toronto, ON") and GBP_E2E_CATEGORY (default "Language school", which must be
+# a category Google suggests).
+# Prints PASS or FAIL per step. Exit code is 0 only when all pass.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+CLI="$HERE/gbp-create"
+SESSION=""
+if [ "${1:-}" = "--session" ]; then SESSION="${2:?--session needs a name}"; fi
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+fails=0
+
+step() { # step <label> <expected-exit> <command...>
+  local label="$1" want="$2"; shift 2
+  local got
+  LAST="$("$@" 2>&1)"; got=$?
+  if [ "$got" -eq "$want" ]; then echo "PASS $label"; else echo "FAIL $label (exit $got, want $want)"; printf '%s\n' "$LAST" | sed 's/^/     /'; fails=$((fails+1)); fi
+}
+has() { # has <label> <text>
+  if grep -qF -- "$2" <<<"$LAST"; then echo "PASS $1"; else echo "FAIL $1 (missing: $2)"; printf '%s\n' "$LAST" | sed 's/^/     /'; fails=$((fails+1)); fi
+}
+
+spec() { # spec <file> <json>
+  printf '%s\n' "$2" > "$WORK/$1"
+}
+profile() { # profile <name> <website> <description>
+  printf '[{"name":"%s","category":"x","website":"%s","areas":["V"],"description":"%s"}]\n' "$1" "$2" "$3"
+}
+GOOD='{"name":"Example Site","category":"Language school","website":"https://example.com","areas":["Example City, EX"],"description":"We teach adults in small groups."}'
+
+export GBP_CREATE_AB=/bin/false
+
+spec ok.json "[$GOOD]"
+step "plan accepts a good spec and opens no browser" 0 "$CLI" plan "$WORK/ok.json"
+has  "plan lists the profile" "Example Site"
+rej() { # rej <label> <spec-file> <message it must print>: exit 1 and print that message
+  step "rejects $1" 1 "$CLI" plan "$2"; has "says: $3" "$3"
+}
+spec a.json 'not json';                                                  rej "invalid JSON" "$WORK/a.json" "not valid JSON"
+spec a.json '[]';                                                        rej "an empty array" "$WORK/a.json" "non-empty JSON array"
+spec a.json '[{"category":"x","website":"https://a.com","areas":["V"]}]'; rej "a missing name" "$WORK/a.json" "name is required"
+spec a.json '[{"name":"A","category":"x","website":"https://a.com","areas":[]}]'; rej "empty areas" "$WORK/a.json" "areas must be"
+spec a.json "[$GOOD,$GOOD]";                                             rej "a duplicate name" "$WORK/a.json" "duplicate name"
+spec a.json "[$GOOD,{\"name\":\" example SITE \",\"category\":\"x\",\"website\":\"https://b.com\",\"areas\":[\"V\"]}]"
+rej "a duplicate that differs by spaces and case" "$WORK/a.json" "duplicate name"
+
+for site in 'http://a.com' 'https://?' 'https://example.com bad' 'https://nodot' 'https://user:pw@a.com'; do
+  profile A "$site" "ok" > "$WORK/a.json"; rej "the website $site" "$WORK/a.json" "website must be a full https:// address"
+done
+for item in 'visit https://example.com today|a URL' 'see example.com|a domain name' 'see example.dev|a domain name' 'from $497 per level|a price' 'call 604 555 0123|a phone number' 'call +1 (604) 555-0123|a phone number'; do
+  profile A https://a.com "${item%%|*}" > "$WORK/a.json"; rej "a description: ${item%%|*}" "$WORK/a.json" "holds ${item##*|}"
+done
+profile A https://a.com "Open 2015-2025 for adults. Levels A1 to C2." > "$WORK/a.json"
+step "accepts a year range and level names" 0 "$CLI" plan "$WORK/a.json"
+
+profile A https://a.com "$(printf 'a%.0s' $(seq 1 751))" > "$WORK/a.json"; rej "a description over 750 characters" "$WORK/a.json" "over 750 characters"
+profile A https://a.com "$(printf 'a%.0s' $(seq 1 750))" > "$WORK/a.json"
+step "accepts a description of exactly 750 characters" 0 "$CLI" plan "$WORK/a.json"
+step "rejects a name that is not in the spec" 1 "$CLI" plan "$WORK/ok.json" "No Such Site"
+has  "names the unknown profile" "not in the spec"
+step "create needs a browser and fails when none runs" 1 "$CLI" create "$WORK/ok.json"
+has  "says the browser command failed" "browser command"
+if [ -e "$WORK/ok.json.ledger.json" ]; then echo "FAIL a run that never reached the submit click wrote a ledger"; fails=$((fails+1)); else echo "PASS a run that never reached the submit click wrote no ledger"; fi
+
+if [ -e "$WORK/ok.json.ledger.json.lock" ]; then echo "FAIL a failed run left its lock file"; fails=$((fails+1)); else echo "PASS a failed run removed its lock file"; fi
+: > "$WORK/ok.json.ledger.json.lock"
+step "stops when another run holds the lock" 1 "$CLI" create "$WORK/ok.json"; has "says another run holds it" "another run holds"
+[ -e "$WORK/ok.json.ledger.json.lock" ] && echo "PASS the other run's lock file is left alone" || { echo "FAIL the other run's lock file was removed"; fails=$((fails+1)); }
+rm -f "$WORK/ok.json.ledger.json.lock"
+
+# Ledger rules. These run with no browser: they must decide before any click.
+printf '{"example site":"done"}\n' > "$WORK/done.ledger.json"
+step "skips a profile that is done" 0 "$CLI" create "$WORK/ok.json" --ledger "$WORK/done.ledger.json"
+has  "says it skipped" "skipped Example Site: already created"
+for state in pending created; do
+  printf '{"example site":"%s"}\n' "$state" > "$WORK/open.ledger.json"
+  step "stops on a ledger entry that is $state" 1 "$CLI" create "$WORK/ok.json" --ledger "$WORK/open.ledger.json"
+  has  "says a profile may exist ($state)" "A profile may exist with setup unfinished"
+done
+printf '["Example Site"]\n' > "$WORK/old.ledger.json"
+step "rejects a ledger that is not an object" 1 "$CLI" create "$WORK/ok.json" --ledger "$WORK/old.ledger.json"
+
+if [ -n "$SESSION" ]; then
+  unset GBP_CREATE_AB
+  area="${GBP_E2E_AREA:-Toronto, ON}"; category="${GBP_E2E_CATEGORY:-Language school}"
+  printf '[{"name":"Zz Gbp Create E2E","category":"%s","website":"https://example.com","areas":["%s"],"description":"E2E run. Not submitted."}]\n' "$category" "$area" > "$WORK/live.json"
+  step "live flow stops before submit" 0 "$CLI" create "$WORK/live.json" --session "$SESSION" --stop-before-submit
+  has  "reports the stop" "stopped before submit: Zz Gbp Create E2E"
+  if [ -e "$WORK/live.json.ledger.json" ]; then echo "FAIL the stop wrote a ledger"; fails=$((fails+1)); else echo "PASS the stop wrote no ledger"; fi
+  # The page must still be on the contact screen. A profile would have moved it on.
+  snap="$(AGENT_BROWSER_AUTO_CONNECT=0 agent-browser --session "$SESSION" snapshot -i 2>&1)"
+  if grep -q 'What contact details' <<<"$snap"; then echo "PASS the page is still on the contact screen"; else echo "FAIL the page left the contact screen"; fails=$((fails+1)); fi
+else
+  echo "SKIP live flow (pass --session <name> to run it)"
+fi
+
+echo
+if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; fi
+exit $((fails > 0))
