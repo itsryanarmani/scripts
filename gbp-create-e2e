@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# E2E for gbp-create.
+# Usage: gbp-create-e2e [--session <name>]
+# Part 1 needs no browser. It checks every spec guard and proves that "plan"
+# opens no browser (the browser command is replaced with /bin/false).
+# Part 2 runs only with --session. It needs an agent-browser session that is
+# signed in to Google. It fills every sign-up screen up to the click that
+# creates the profile, then stops. It creates no profile and writes no ledger.
+# Prints a PASS or FAIL line per step. Exit code is 0 only when all pass.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+CLI="$HERE/gbp-create"
+SESSION=""
+if [ "${1:-}" = "--session" ]; then SESSION="${2:?--session needs a name}"; fi
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+fails=0
+
+step() { # step <label> <expected-exit> <command...>
+  local label="$1" want="$2"; shift 2
+  local got
+  LAST="$("$@" 2>&1)"; got=$?
+  if [ "$got" -eq "$want" ]; then echo "PASS $label"; else echo "FAIL $label (exit $got, want $want)"; echo "$LAST" | sed 's/^/     /'; fails=$((fails+1)); fi
+}
+has() { # has <label> <text>
+  if grep -qF -- "$2" <<<"$LAST"; then echo "PASS $1"; else echo "FAIL $1 (missing: $2)"; echo "$LAST" | sed 's/^/     /'; fails=$((fails+1)); fi
+}
+
+spec() { # spec <file> <json>
+  printf '%s\n' "$2" > "$WORK/$1"
+}
+GOOD='{"name":"Example Site","category":"French language school","website":"https://example.com","areas":["Vancouver, BC"],"description":"We teach French to adults in small groups."}'
+
+export GBP_CREATE_AB=/bin/false
+
+spec ok.json "[$GOOD]"
+step "plan accepts a good spec and opens no browser" 0 "$CLI" plan "$WORK/ok.json"
+has  "plan lists the profile" "Example Site"
+
+spec nonjson.json 'not json'
+step "rejects invalid JSON" 1 "$CLI" plan "$WORK/nonjson.json"
+spec empty.json '[]'
+step "rejects an empty array" 1 "$CLI" plan "$WORK/empty.json"
+spec noname.json '[{"category":"x","website":"https://a.com","areas":["V"]}]'
+step "rejects a missing name" 1 "$CLI" plan "$WORK/noname.json"
+spec http.json '[{"name":"A","category":"x","website":"http://a.com","areas":["V"]}]'
+step "rejects a website without https" 1 "$CLI" plan "$WORK/http.json"
+spec noarea.json '[{"name":"A","category":"x","website":"https://a.com","areas":[]}]'
+step "rejects empty areas" 1 "$CLI" plan "$WORK/noarea.json"
+spec dup.json "[$GOOD,$GOOD]"
+step "rejects a duplicate name" 1 "$CLI" plan "$WORK/dup.json"
+has  "names the duplicate" "duplicate name"
+
+for item in 'visit https://example.com today|a URL' 'see example.com|a domain name' 'from $497 per level|a price' 'call 604 555 0123|a phone number'; do
+  text="${item%%|*}"; what="${item##*|}"
+  printf '[{"name":"A","category":"x","website":"https://a.com","areas":["V"],"description":"%s"}]\n' "$text" > "$WORK/desc.json"
+  step "rejects a description with $what" 1 "$CLI" plan "$WORK/desc.json"
+  has  "names $what" "$what"
+done
+
+long="$(printf 'a%.0s' $(seq 1 751))"
+printf '[{"name":"A","category":"x","website":"https://a.com","areas":["V"],"description":"%s"}]\n' "$long" > "$WORK/long.json"
+step "rejects a description over 750 characters" 1 "$CLI" plan "$WORK/long.json"
+
+step "rejects a name that is not in the spec" 1 "$CLI" plan "$WORK/ok.json" "No Such Site"
+step "create needs a browser and fails when none runs" 1 "$CLI" create "$WORK/ok.json"
+if [ -e "$WORK/ok.json.ledger.json" ]; then echo "FAIL a failed run wrote a ledger"; fails=$((fails+1)); else echo "PASS a failed run wrote no ledger"; fi
+
+if [ -n "$SESSION" ]; then
+  unset GBP_CREATE_AB
+  spec live.json '[{"name":"Zz Gbp Create E2E","category":"French language school","website":"https://example.com","areas":["Vancouver, BC"],"description":"E2E run. Not submitted."}]'
+  step "live flow stops before submit" 0 "$CLI" create "$WORK/live.json" --session "$SESSION" --stop-before-submit
+  has  "reports the stop" "stopped before submit: Zz Gbp Create E2E"
+  if [ -e "$WORK/live.json.ledger.json" ]; then echo "FAIL the stop wrote a ledger"; fails=$((fails+1)); else echo "PASS the stop wrote no ledger"; fi
+  # The page must still be on the contact screen. A profile would have moved it on.
+  snap="$(AGENT_BROWSER_AUTO_CONNECT=0 agent-browser --session "$SESSION" snapshot -i 2>&1)"
+  if grep -q 'What contact details' <<<"$snap"; then echo "PASS the page is still on the contact screen"; else echo "FAIL the page left the contact screen"; fails=$((fails+1)); fi
+else
+  echo "SKIP live flow (pass --session <name> to run it)"
+fi
+
+echo
+if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; fi
+exit $((fails > 0))
