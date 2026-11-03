@@ -218,6 +218,14 @@ function createOne(b, p, opts) {
   }
 
   b.act('fill', 'combobox', /^Business name/, p.name);
+  // The name field opens a suggestion list that covers the category field.
+  // Take only the "create" option. Any other option is an existing business.
+  b.sleep(2000);
+  const create = b.find('option', /Create a business with this name/);
+  if (create) {
+    b.ab('click', `@${create.ref}`);
+    b.sleep(1500);
+  }
   // Google keeps a half-finished draft. A reopened form can arrive with the
   // category already set, and then no suggestion list opens.
   if (b.find('button', 'Clear category')) b.act('click', 'button', 'Clear category');
