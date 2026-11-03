@@ -80,8 +80,17 @@ def cleanup_job(root, started, previous_tmp):
         if work.exists():
             for entry in work.iterdir():
                 if not entry.name.startswith('_') and entry.name != '.cache':
-                    cleanup_attempt('workspace', lambda: subprocess.run(
-                        ['sudo', '-n', 'rm', '-rf', '--', str(entry)], check=True, timeout=30))
+                    def remove_workspace(entry=entry):
+                        # Rename first: a slow rm that outlives its timeout must only ever
+                        # delete this trash copy, never the next job's fresh checkout.
+                        target = entry
+                        if not entry.name.startswith('.trash-'):
+                            target = work / ('.trash-' + entry.name + '-' + str(time.time_ns()))
+                            subprocess.run(['sudo', '-n', 'mv', '--', str(entry), str(target)],
+                                           check=True, timeout=30)
+                        subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(target)],
+                                       check=True, timeout=300)
+                    cleanup_attempt('workspace', remove_workspace)
     cleanup_attempt('workspaces', workspaces)
     print('Lease cleanup attempted; caches retained', flush=True)
 
