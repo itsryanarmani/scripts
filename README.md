@@ -234,6 +234,7 @@ Run `stack-merge --help` for the variables. Check both tools with
 | Doc | What |
 |---|---|
 | `box-cost-discipline.md` | How to keep ascii.dev Boxes cheap, and why `state: idle` is not an idleness signal |
+| `cost-audit-and-boat-traps.md` | Cost-audit rules, Boat box traps, and shell traps that hide a real failure |
 | `box-warm-start.md` | Where the ~77s Box attach actually goes, and what a warm snapshot does and does not buy |
 | `t3-code-on-a-box.md` | Running T3 Code on a Box and reaching it over `box host` |
 | `silent-failover-discipline.md` | Why a working primary/backup credential failover can take a whole fleet down silently, and what to alert on instead |
