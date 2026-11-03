@@ -24,6 +24,18 @@ proof, production checks, runner placement, safe pool drains, and billing eviden
 
 Fleet CI wall-time census. `./fleet-ci-census --help`.
 
+## black-october-audit
+
+Read-only host audit for one Mac. It checks system Chrome, Electron app versions
+against patched floors, cached Chromium builds, open ports, macOS protections, secret
+file modes and outdated tools. It exits 1 when a check fails. Use `--json FILE` for a
+report with no secret values. Steps and fixes:
+[`black-october-hardening`](https://github.com/pooriaarab/skills/blob/main/black-october-hardening/SKILL.md).
+
+```bash
+./black-october-audit --json /tmp/black-october.json
+```
+
 ## Diagnose CI in this order
 
 The four `ci-*` scripts are one workflow, not four tools. Run them in order. Each step

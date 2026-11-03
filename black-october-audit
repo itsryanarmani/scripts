@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+# Read-only host audit for the Black October patch window (macOS).
+# Usage: black-october-audit [--json FILE] [--fast] [--min-chrome VER]
+#                            [--electron-floors "43:43.8.6 44:44.10.1"]
+# Exit 0 when no check fails. Exit 1 when one or more checks fail.
+# It prints versions, app names, port numbers and counts. It never prints
+# secret values, URLs, headers or process arguments.
+set -uo pipefail
+
+MIN_CHROME="${MIN_CHROME:-156.0.8078.73}"
+ELECTRON_FLOORS="${ELECTRON_FLOORS:-43:43.8.6 44:44.10.1 45:45.2.1}"
+JSON_OUT=""
+FAST=0
+
+usage() {
+  cat <<'USAGE'
+Usage: black-october-audit [options]
+  --json FILE            also write a JSON report to FILE
+  --fast                 skip the slow checks (softwareupdate, brew, npm)
+  --min-chrome VER       oldest allowed Chrome build (default 156.0.8078.73)
+  --electron-floors STR  patched Electron floors, "MAJOR:VERSION ..."
+  -h, --help             show this help
+USAGE
+}
+
+while (( $# )); do
+  case "$1" in
+    --json) JSON_OUT="${2:?--json needs a file}"; shift 2 ;;
+    --fast) FAST=1; shift ;;
+    --min-chrome) MIN_CHROME="${2:?--min-chrome needs a version}"; shift 2 ;;
+    --electron-floors) ELECTRON_FLOORS="${2:?--electron-floors needs a value}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "error: this audit supports macOS only" >&2
+  exit 2
+fi
+
+RESULTS="$(mktemp)"
+trap 'rm -f "$RESULTS"' EXIT
+
+# add STATUS CHECK DETAIL
+add() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$RESULTS"; }
+
+# ver_lt A B: true when version A is older than version B.
+ver_lt() {
+  [ "$1" != "$2" ] || return 1
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
+}
+
+# --- 1. macOS protections ---------------------------------------------------
+sip="$(csrutil status 2>&1 || true)"
+case "$sip" in
+  *enabled*) add PASS macos.sip "System Integrity Protection is enabled" ;;
+  *) add FAIL macos.sip "System Integrity Protection is not enabled" ;;
+esac
+
+fv="$(fdesetup status 2>&1 || true)"
+case "$fv" in
+  *"is On"*) add PASS macos.filevault "FileVault is on" ;;
+  *) add FAIL macos.filevault "FileVault is not on" ;;
+esac
+
+fw="$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>&1 || true)"
+case "$fw" in
+  *"enabled"*) add PASS macos.firewall "Application firewall is on" ;;
+  *) add FAIL macos.firewall "Application firewall is off" ;;
+esac
+
+gk="$(spctl --status 2>&1 || true)"
+case "$gk" in
+  *"assessments enabled"*) add PASS macos.gatekeeper "Gatekeeper is on" ;;
+  *) add FAIL macos.gatekeeper "Gatekeeper is off" ;;
+esac
+
+if [ "$FAST" -eq 0 ]; then
+  su="$(softwareupdate -l 2>&1 || true)"
+  case "$su" in
+    *"No new software available"*) add PASS macos.updates "No macOS update is waiting" ;;
+    *) add WARN macos.updates "A macOS update may be waiting. Run: softwareupdate -l" ;;
+  esac
+else
+  add SKIP macos.updates "Skipped by --fast"
+fi
+
+# --- 2. System Chrome -------------------------------------------------------
+chrome="/Applications/Google Chrome.app/Contents/Info.plist"
+if [ -f "$chrome" ]; then
+  cv="$(defaults read "${chrome%.plist}" CFBundleShortVersionString 2>/dev/null || true)"
+  if [ -z "$cv" ]; then
+    add WARN chrome.system "Could not read the Chrome version"
+  elif ver_lt "$cv" "$MIN_CHROME"; then
+    add FAIL chrome.system "Chrome $cv is older than $MIN_CHROME"
+  else
+    add PASS chrome.system "Chrome $cv meets $MIN_CHROME"
+  fi
+else
+  add SKIP chrome.system "Google Chrome is not installed"
+fi
+
+# --- 3. Electron apps -------------------------------------------------------
+min_major=999
+max_major=0
+for f in $ELECTRON_FLOORS; do
+  m="${f%%:*}"
+  (( m < min_major )) && min_major=$m
+  (( m > max_major )) && max_major=$m
+done
+
+electron_count=0
+for base in /Applications "$HOME/Applications"; do
+  [ -d "$base" ] || continue
+  for app in "$base"/*.app; do
+    plist="$app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"
+    [ -f "$plist" ] || continue
+    electron_count=$((electron_count + 1))
+    name="$(basename "$app" .app)"
+    ev="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist" 2>/dev/null || true)"
+    if [ -z "$ev" ]; then
+      add WARN "electron.$name" "Could not read the Electron version"
+      continue
+    fi
+    major="${ev%%.*}"
+    floor=""
+    for f in $ELECTRON_FLOORS; do
+      [ "${f%%:*}" = "$major" ] && floor="${f#*:}"
+    done
+    if [ -n "$floor" ]; then
+      if ver_lt "$ev" "$floor"; then
+        add FAIL "electron.$name" "Electron $ev is below the patched floor $floor"
+      else
+        add PASS "electron.$name" "Electron $ev meets the floor $floor"
+      fi
+    elif (( major < min_major )); then
+      add FAIL "electron.$name" "Electron $ev is on an unpatched line. Update the app or remove it"
+    else
+      add PASS "electron.$name" "Electron $ev is newer than every listed floor"
+    fi
+  done
+done
+[ "$electron_count" -gt 0 ] || add SKIP electron.apps "No Electron app found"
+
+# --- 4. Stray Chromium builds -----------------------------------------------
+stray_roots=(
+  "$HOME/Library/Caches/ms-playwright"
+  "$HOME/.cache/ms-playwright"
+  "$HOME/.cache/puppeteer"
+  "$HOME/.agent-browser/browsers"
+  "$HOME/.cache/hyperframes/chrome"
+)
+stray_found=0
+for root in "${stray_roots[@]}"; do
+  [ -d "$root" ] || continue
+  while IFS= read -r bin; do
+    [ -n "$bin" ] || continue
+    out="$("$bin" --version 2>/dev/null || true)"
+    bv="$(printf '%s' "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    stray_found=$((stray_found + 1))
+    label="${root/#$HOME/~}"
+    if [ -z "$bv" ]; then
+      add WARN "chromium.cache" "Unknown build under $label"
+    elif ver_lt "$bv" "$MIN_CHROME"; then
+      add FAIL "chromium.cache" "Build $bv under $label is older than $MIN_CHROME"
+    else
+      add PASS "chromium.cache" "Build $bv under $label"
+    fi
+  done < <(find "$root" -maxdepth 8 -type f -perm -u+x \
+    \( -name "Google Chrome for Testing" -o -name "chrome-headless-shell" -o -name "Chromium" \) 2>/dev/null)
+done
+[ "$stray_found" -gt 0 ] || add PASS chromium.cache "No cached Chromium build found"
+
+# --- 5. Network exposure ----------------------------------------------------
+# Listeners that bind to every interface. AirPlay (5000, 7000) is expected.
+exposed="$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print $1" "$9}' \
+  | grep -E ' (\*|0\.0\.0\.0|\[::\]):[0-9]+$' \
+  | grep -vE ' \*:(5000|7000)$' | sort -u)"
+if [ -n "$exposed" ]; then
+  while IFS= read -r line; do
+    add WARN net.listen "Listens on all interfaces: $line"
+  done <<< "$exposed"
+else
+  add PASS net.listen "No unexpected listener on all interfaces"
+fi
+
+debug_count="$(ps -axo args 2>/dev/null | grep -c -- '--remote-debugging-port' || true)"
+# The grep process matches itself once.
+debug_count=$(( debug_count > 0 ? debug_count - 1 : 0 ))
+if [ "$debug_count" -gt 0 ]; then
+  add WARN browser.debug "$debug_count process(es) run with --remote-debugging-port. Any local process can drive that browser"
+else
+  add PASS browser.debug "No browser runs with a remote debugging port"
+fi
+
+# --- 6. Secret file permissions ---------------------------------------------
+perm_bad=0
+check_mode() {
+  local path="$1" mode
+  [ -e "$path" ] || return 0
+  mode="$(stat -f %Lp "$path" 2>/dev/null || echo 000)"
+  if [ "${mode: -2}" != "00" ]; then
+    add FAIL secrets.perms "${path/#$HOME/~} has mode $mode. Run: chmod 600"
+    perm_bad=1
+  fi
+}
+for f in "$HOME/.npmrc" "$HOME/.netrc" "$HOME/.aws/credentials" "$HOME/.config/gh/hosts.yml"; do
+  check_mode "$f"
+done
+if [ -d "$HOME/.ssh" ]; then
+  while IFS= read -r key; do
+    check_mode "$key"
+  done < <(find "$HOME/.ssh" -maxdepth 1 -type f ! -name '*.pub' ! -name '*known_hosts*' \
+    ! -name config ! -name authorized_keys 2>/dev/null)
+fi
+[ "$perm_bad" -eq 1 ] || add PASS secrets.perms "Secret files are private to the owner"
+
+# --- 7. Tooling -------------------------------------------------------------
+if [ "$FAST" -eq 0 ]; then
+  if command -v brew >/dev/null 2>&1; then
+    n="$(HOMEBREW_NO_AUTO_UPDATE=1 brew outdated --quiet 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$n" -gt 0 ]; then add WARN tooling.brew "$n outdated Homebrew package(s). Run: brew upgrade"
+    else add PASS tooling.brew "Homebrew is current"; fi
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    n="$(npm outdated -g --parseable 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$n" -gt 0 ]; then add WARN tooling.npm "$n outdated global npm package(s). Run: npm outdated -g"
+    else add PASS tooling.npm "Global npm packages are current"; fi
+  fi
+else
+  add SKIP tooling "Skipped by --fast"
+fi
+
+# --- Report -----------------------------------------------------------------
+pass=$(grep -c '^PASS' "$RESULTS" || true)
+warn=$(grep -c '^WARN' "$RESULTS" || true)
+fail=$(grep -c '^FAIL' "$RESULTS" || true)
+
+sort -t$'\t' -k1,1r -k2,2 "$RESULTS" | awk -F'\t' '{printf "%-5s %-30s %s\n", $1, $2, $3}'
+echo
+echo "Summary: $pass pass, $warn warn, $fail fail"
+
+if [ -n "$JSON_OUT" ]; then
+  python3 -I - "$RESULTS" "$JSON_OUT" "$MIN_CHROME" "$ELECTRON_FLOORS" <<'PY'
+import json, sys, datetime
+results, out, min_chrome, floors = sys.argv[1:5]
+checks = []
+for line in open(results):
+    status, check, detail = line.rstrip("\n").split("\t", 2)
+    checks.append({"status": status, "check": check, "detail": detail})
+counts = {s: sum(1 for c in checks if c["status"] == s) for s in ("PASS", "WARN", "FAIL", "SKIP")}
+doc = {
+    "generated": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    "min_chrome": min_chrome,
+    "electron_floors": floors,
+    "summary": counts,
+    "checks": checks,
+}
+with open(out, "w") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+PY
+  echo "JSON report: $JSON_OUT"
+fi
+
+[ "$fail" -eq 0 ]
