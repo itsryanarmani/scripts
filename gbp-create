@@ -44,8 +44,8 @@ first error, so one failure never makes a second profile. A ledger entry that
 is "pending" or "created" means a profile may exist with setup unfinished. The
 script then stops and asks a person to check the Business Profile list.
 The category must match one of Google's suggestions word for word, or the
-script stops and lists what Google offered.
-The account is whichever Google account the browser session is signed in to.
+script stops and lists what Google offered. The account is whichever Google
+account the browser session is signed in to.
 `;
 
 const DESCRIPTION_MAX = 750;
@@ -72,14 +72,13 @@ function parseArgs(argv) {
   return { opts, rest };
 }
 
-// Google rejected a description that held a price and a URL. It does not say
-// which one it dislikes, so the spec check blocks both, and phone numbers too.
+// Google rejected one description with a price and a URL, without saying which.
+// So block both, and phone numbers too.
 const DESCRIPTION_RULES = [
   [/https?:\/\/|www\./i, 'a URL'],
   [/\b[a-z0-9-]+\.[a-z]{2,24}(?=[\s/,;:)!?]|$)/i, 'a domain name'],
   [/[$€£]\s?\d|\b\d+\s?(CAD|USD|EUR|dollars?)\b/i, 'a price'],
-  // Ten digits or more in one run, with spaces, dots, dashes or brackets
-  // between them. A year range such as 2015-2025 has only eight.
+  // Ten digits or more in a run. A year range such as 2015-2025 has eight.
   [/(?:\+?\d[\s().-]*){10,}/, 'a phone number'],
 ];
 
@@ -137,9 +136,8 @@ function printPlan(profiles) {
     process.stdout.write(`${i + 1}. ${p.name} | ${p.category} | ${p.website} | areas: ${p.areas.join('; ')}\n`);
   });
   process.stdout.write(
-    'Steps for each: open the create page, choose "another business" if offered, fill name and category,\n' +
-      'answer No to a customer-visible location, add the areas, add the website, create, choose Verify Later,\n' +
-      'skip hours, add the description, skip photos and Workspace.\n',
+    'Each: open the create page, pick "another business", fill name and category, answer No to a visible location,\n' +
+      'add areas and website, create, Verify Later, skip hours, add the description, skip photos and Workspace.\n',
   );
 }
 
@@ -219,8 +217,7 @@ function pickSuggestion(b, label, wanted, exact) {
   b.sleep(1500);
 }
 
-// mark(state) saves the ledger. createOne calls it with "pending" just before
-// the click that makes the profile, so a crash after the click leaves a trace.
+// mark(state) saves the ledger. "pending" is saved just before the create click.
 function createOne(b, p, opts, mark) {
   b.ab('open', 'https://business.google.com/create');
   const ADD = 'Add your business to Google';
@@ -259,8 +256,7 @@ function createOne(b, p, opts, mark) {
     b.ab('click', `@${create.ref}`);
     b.sleep(1500);
   }
-  // Google keeps a half-finished draft. A reopened form can arrive with the
-  // category already set, and then no suggestion list opens.
+  // A reopened draft can arrive with the category set, so no list opens.
   if (b.find('button', 'Clear category')) b.act('click', 'button', 'Clear category');
   b.act('click', 'combobox', /^Business category/);
   b.act('type', 'combobox', /^Business category/, p.category);
@@ -328,8 +324,7 @@ function finishOne(b, p, mark) {
   fail(`${p.name}: too many screens after the profile was created`);
 }
 
-// The ledger maps a name to "pending" (the create click is about to happen or
-// happened), "created" (Google showed the verification screen) or "done".
+// Ledger: name -> "pending" (before the create click), "created", or "done".
 function readLedger(file) {
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));

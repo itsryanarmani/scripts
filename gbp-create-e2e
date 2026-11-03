@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # E2E for gbp-create.
 # Usage: gbp-create-e2e [--session <name>]
-# Part 1 needs no browser. It checks every spec guard, the ledger rules that
-# stop a duplicate profile, and that "plan" opens no browser (the browser
-# command is replaced with /bin/false).
-# Part 2 runs only with --session. It needs an agent-browser session that is
-# signed in to Google. It fills the screens up to the click that creates the
-# profile, then stops. It creates no profile and writes no ledger.
-# Part 2 reads GBP_E2E_AREA (default "Toronto, ON") and GBP_E2E_CATEGORY
-# (default "Language school"). The category must be one Google suggests.
-# Prints a PASS or FAIL line per step. Exit code is 0 only when all pass.
+# Part 1 needs no browser: spec guards, ledger rules, and "plan" (the browser
+# command is /bin/false, so any browser use fails).
+# Part 2 needs --session, an agent-browser session signed in to Google. It
+# fills the screens up to the click that creates the profile, then stops. It
+# creates no profile and writes no ledger. It reads GBP_E2E_AREA (default
+# "Toronto, ON") and GBP_E2E_CATEGORY (default "Language school", which must be
+# a category Google suggests).
+# Prints PASS or FAIL per step. Exit code is 0 only when all pass.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -44,36 +43,23 @@ spec ok.json "[$GOOD]"
 step "plan accepts a good spec and opens no browser" 0 "$CLI" plan "$WORK/ok.json"
 has  "plan lists the profile" "Example Site"
 
-spec nonjson.json 'not json'
-step "rejects invalid JSON" 1 "$CLI" plan "$WORK/nonjson.json"
-has  "says the JSON is invalid" "not valid JSON"
-spec empty.json '[]'
-step "rejects an empty array" 1 "$CLI" plan "$WORK/empty.json"
-has  "says the array is empty" "non-empty JSON array"
-spec noname.json '[{"category":"x","website":"https://a.com","areas":["V"]}]'
-step "rejects a missing name" 1 "$CLI" plan "$WORK/noname.json"
-has  "says the name is required" "name is required"
-spec noarea.json '[{"name":"A","category":"x","website":"https://a.com","areas":[]}]'
-step "rejects empty areas" 1 "$CLI" plan "$WORK/noarea.json"
-has  "says the areas are needed" "areas must be"
-spec dup.json "[$GOOD,$GOOD]"
-step "rejects a duplicate name" 1 "$CLI" plan "$WORK/dup.json"
-has  "names the duplicate" "duplicate name"
-spec dupspace.json "[$GOOD,{\"name\":\" example SITE \",\"category\":\"x\",\"website\":\"https://b.com\",\"areas\":[\"V\"]}]"
-step "rejects a duplicate that differs by spaces and case" 1 "$CLI" plan "$WORK/dupspace.json"
-has  "names the spaced duplicate" "duplicate name"
+rej() { # rej <label> <spec-file> <message it must print>: exit 1 and print that message
+  step "rejects $1" 1 "$CLI" plan "$2"; has "says: $3" "$3"
+}
+spec a.json 'not json';                                                  rej "invalid JSON" "$WORK/a.json" "not valid JSON"
+spec a.json '[]';                                                        rej "an empty array" "$WORK/a.json" "non-empty JSON array"
+spec a.json '[{"category":"x","website":"https://a.com","areas":["V"]}]'; rej "a missing name" "$WORK/a.json" "name is required"
+spec a.json '[{"name":"A","category":"x","website":"https://a.com","areas":[]}]'; rej "empty areas" "$WORK/a.json" "areas must be"
+spec a.json "[$GOOD,$GOOD]";                                             rej "a duplicate name" "$WORK/a.json" "duplicate name"
+spec a.json "[$GOOD,{\"name\":\" example SITE \",\"category\":\"x\",\"website\":\"https://b.com\",\"areas\":[\"V\"]}]"
+rej "a duplicate that differs by spaces and case" "$WORK/a.json" "duplicate name"
 
 for site in 'http://a.com' 'https://?' 'https://example.com bad' 'https://nodot' 'https://user:pw@a.com'; do
-  profile A "$site" "ok" > "$WORK/site.json"
-  step "rejects the website $site" 1 "$CLI" plan "$WORK/site.json"
-  has  "explains the website rule for $site" "website must be a full https:// address"
+  profile A "$site" "ok" > "$WORK/a.json"; rej "the website $site" "$WORK/a.json" "website must be a full https:// address"
 done
 
 for item in 'visit https://example.com today|a URL' 'see example.com|a domain name' 'see example.dev|a domain name' 'from $497 per level|a price' 'call 604 555 0123|a phone number' 'call +1 (604) 555-0123|a phone number'; do
-  text="${item%%|*}"; what="${item##*|}"
-  profile A https://a.com "$text" > "$WORK/desc.json"
-  step "rejects a description: $text" 1 "$CLI" plan "$WORK/desc.json"
-  has  "names $what for: $text" "holds $what"
+  profile A https://a.com "${item%%|*}" > "$WORK/a.json"; rej "a description: ${item%%|*}" "$WORK/a.json" "holds ${item##*|}"
 done
 
 for ok in 'Open 2015-2025 for adults.' 'We teach adults. Classes are small.' 'Levels A1 to C2.'; do
@@ -81,13 +67,9 @@ for ok in 'Open 2015-2025 for adults.' 'We teach adults. Classes are small.' 'Le
   step "accepts the description: $ok" 0 "$CLI" plan "$WORK/descok.json"
 done
 
-long="$(printf 'a%.0s' $(seq 1 751))"
-profile A https://a.com "$long" > "$WORK/long.json"
-step "rejects a description over 750 characters" 1 "$CLI" plan "$WORK/long.json"
-has  "says the description is too long" "over 750 characters"
-exact="$(printf 'a%.0s' $(seq 1 750))"
-profile A https://a.com "$exact" > "$WORK/exact.json"
-step "accepts a description of exactly 750 characters" 0 "$CLI" plan "$WORK/exact.json"
+profile A https://a.com "$(printf 'a%.0s' $(seq 1 751))" > "$WORK/a.json"; rej "a description over 750 characters" "$WORK/a.json" "over 750 characters"
+profile A https://a.com "$(printf 'a%.0s' $(seq 1 750))" > "$WORK/a.json"
+step "accepts a description of exactly 750 characters" 0 "$CLI" plan "$WORK/a.json"
 
 step "rejects a name that is not in the spec" 1 "$CLI" plan "$WORK/ok.json" "No Such Site"
 has  "names the unknown profile" "not in the spec"
