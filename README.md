@@ -271,3 +271,10 @@ monitors it found and the last level it sent.
 
 Do not trust `m1ddc ... get luminance` to confirm a write. Through some docks
 it returns a stale value after a write that worked, so look at the screen.
+
+## Social media cleanup tools
+
+| Tool | What it does |
+|---|---|
+| [`pinterest-privacy/`](pinterest-privacy/) | Make all your Pinterest boards secret, or delete them, with dry run and undo. |
+| [`reddit-cleanup/`](reddit-cleanup/) | Delete your own Reddit comments and optionally posts, with dry run, filters and a CSV backup. |
