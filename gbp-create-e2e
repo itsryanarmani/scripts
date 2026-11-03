@@ -42,7 +42,6 @@ export GBP_CREATE_AB=/bin/false
 spec ok.json "[$GOOD]"
 step "plan accepts a good spec and opens no browser" 0 "$CLI" plan "$WORK/ok.json"
 has  "plan lists the profile" "Example Site"
-
 rej() { # rej <label> <spec-file> <message it must print>: exit 1 and print that message
   step "rejects $1" 1 "$CLI" plan "$2"; has "says: $3" "$3"
 }
@@ -57,25 +56,26 @@ rej "a duplicate that differs by spaces and case" "$WORK/a.json" "duplicate name
 for site in 'http://a.com' 'https://?' 'https://example.com bad' 'https://nodot' 'https://user:pw@a.com'; do
   profile A "$site" "ok" > "$WORK/a.json"; rej "the website $site" "$WORK/a.json" "website must be a full https:// address"
 done
-
 for item in 'visit https://example.com today|a URL' 'see example.com|a domain name' 'see example.dev|a domain name' 'from $497 per level|a price' 'call 604 555 0123|a phone number' 'call +1 (604) 555-0123|a phone number'; do
   profile A https://a.com "${item%%|*}" > "$WORK/a.json"; rej "a description: ${item%%|*}" "$WORK/a.json" "holds ${item##*|}"
 done
-
-for ok in 'Open 2015-2025 for adults.' 'We teach adults. Classes are small.' 'Levels A1 to C2.'; do
-  profile A https://a.com "$ok" > "$WORK/descok.json"
-  step "accepts the description: $ok" 0 "$CLI" plan "$WORK/descok.json"
-done
+profile A https://a.com "Open 2015-2025 for adults. Levels A1 to C2." > "$WORK/a.json"
+step "accepts a year range and level names" 0 "$CLI" plan "$WORK/a.json"
 
 profile A https://a.com "$(printf 'a%.0s' $(seq 1 751))" > "$WORK/a.json"; rej "a description over 750 characters" "$WORK/a.json" "over 750 characters"
 profile A https://a.com "$(printf 'a%.0s' $(seq 1 750))" > "$WORK/a.json"
 step "accepts a description of exactly 750 characters" 0 "$CLI" plan "$WORK/a.json"
-
 step "rejects a name that is not in the spec" 1 "$CLI" plan "$WORK/ok.json" "No Such Site"
 has  "names the unknown profile" "not in the spec"
 step "create needs a browser and fails when none runs" 1 "$CLI" create "$WORK/ok.json"
 has  "says the browser command failed" "browser command"
 if [ -e "$WORK/ok.json.ledger.json" ]; then echo "FAIL a run that never reached the submit click wrote a ledger"; fails=$((fails+1)); else echo "PASS a run that never reached the submit click wrote no ledger"; fi
+
+if [ -e "$WORK/ok.json.ledger.json.lock" ]; then echo "FAIL a failed run left its lock file"; fails=$((fails+1)); else echo "PASS a failed run removed its lock file"; fi
+: > "$WORK/ok.json.ledger.json.lock"
+step "stops when another run holds the lock" 1 "$CLI" create "$WORK/ok.json"; has "says another run holds it" "another run holds"
+[ -e "$WORK/ok.json.ledger.json.lock" ] && echo "PASS the other run's lock file is left alone" || { echo "FAIL the other run's lock file was removed"; fails=$((fails+1)); }
+rm -f "$WORK/ok.json.ledger.json.lock"
 
 # Ledger rules. These run with no browser: they must decide before any click.
 printf '{"example site":"done"}\n' > "$WORK/done.ledger.json"

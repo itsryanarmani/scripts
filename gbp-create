@@ -2,10 +2,9 @@
 'use strict';
 
 // Open Google Business Profiles for service-area businesses from a local spec.
-// Google documents a Business Profile API, but it needs separate API access.
-// This script drives the public sign-up screens through agent-browser instead.
-// It never enters an address and it stops at the verification step. A person
-// finishes verification.
+// Google documents a Business Profile API, but it needs separate API access, so
+// this script drives the public sign-up screens through agent-browser. It never
+// enters an address and stops at verification, which a person finishes.
 
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -30,13 +29,11 @@ Options:
   --help                 show this help
 
 Spec: a JSON array. Keep the file OUTSIDE any repo.
-  [{"name": "Example Site",
-    "category": "Language school",
-    "website": "https://example.com",
-    "areas": ["Example City, EX"],
+  [{"name": "Example Site", "category": "Language school",
+    "website": "https://example.com", "areas": ["Example City, EX"],
     "description": "Plain text, at most 750 characters."}]
 
-plan checks the spec and prints each step. It opens no browser.
+plan checks the spec and lists each profile. It opens no browser.
 create runs the flow for each profile that is not "done" in the ledger. It
 chooses "No" to a customer-visible location, picks the area from Google's list,
 skips hours, photos and Workspace, and picks "Verify Later". It stops on the
@@ -135,10 +132,6 @@ function printPlan(profiles) {
   profiles.forEach((p, i) => {
     process.stdout.write(`${i + 1}. ${p.name} | ${p.category} | ${p.website} | areas: ${p.areas.join('; ')}\n`);
   });
-  process.stdout.write(
-    'Each: open the create page, pick "another business", fill name and category, answer No to a visible location,\n' +
-      'add areas and website, create, Verify Later, skip hours, add the description, skip photos and Workspace.\n',
-  );
 }
 
 // ---- browser layer ----------------------------------------------------------
@@ -198,11 +191,7 @@ const H = {
   area: /^Where do you serve your customers/,
   contact: /^What contact details/,
   address: /^Please enter your mailing address/,
-  hours: /^Add business hours/,
   desc: /^Add business description/,
-  storefront: /^Add a storefront photo/,
-  photos: /^Add photos of your business/,
-  workspace: /custom email address|Google Workspace/,
   done: /^Your edits will be visible once/,
 };
 
@@ -242,9 +231,15 @@ function createOne(b, p, opts, mark) {
   // Take only the "create" option. Any other option is an existing business,
   // which may be this one. Making a second profile for it is a duplicate, so
   // stop and let a person look.
-  b.sleep(2000);
-  const listed = b.snap().filter((x) => x.role === 'option' && x.ref);
-  const create = listed.find((o) => /Create a business with this name/.test(o.name));
+  // The "create" option is always in the list, so wait for it, give late
+  // matches a moment to arrive, and read the list again.
+  const isCreate = (o) => /Create a business with this name/.test(o.name);
+  const optionsOf = (it) => it.filter((x) => x.role === 'option' && x.ref);
+  b.waitFor((it) => optionsOf(it).some(isCreate), 'the name suggestions');
+  b.sleep(1500);
+  const listed = optionsOf(b.snap());
+  const create = listed.find(isCreate);
+  if (!create) fail(`${p.name}: the name suggestions changed while loading. Run again.`);
   const existing = listed.filter((o) => o !== create);
   if (existing.length && !opts.allowSimilar) {
     fail(
@@ -252,10 +247,8 @@ function createOne(b, p, opts, mark) {
         'Check them by hand. If none is this business, run again with --allow-similar.',
     );
   }
-  if (create) {
-    b.ab('click', `@${create.ref}`);
-    b.sleep(1500);
-  }
+  b.ab('click', `@${create.ref}`);
+  b.sleep(1500);
   // A reopened draft can arrive with the category set, so no list opens.
   if (b.find('button', 'Clear category')) b.act('click', 'button', 'Clear category');
   b.act('click', 'combobox', /^Business category/);
@@ -354,6 +347,14 @@ function main() {
   if (cmd !== 'create') fail(`unknown command ${cmd}`);
 
   const ledgerFile = opts.ledger || `${path.resolve(specFile)}.ledger.json`;
+  // One run at a time per ledger. Two runs would each read a stale copy.
+  const lockFile = `${ledgerFile}.lock`;
+  try {
+    fs.closeSync(fs.openSync(lockFile, 'wx'));
+  } catch {
+    fail(`another run holds ${lockFile}. If no run is active, delete that file.`);
+  }
+  process.on('exit', () => fs.rmSync(lockFile, { force: true }));
   const ledger = readLedger(ledgerFile);
   const b = makeBrowser(opts.session);
   for (const p of chosen) {
