@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Dump the whole flash of an ESP32 board and record its SHA-256.
+# Usage: esp-flash-backup <serial-port> [out-dir]
+# Read-only. Keep the dump outside Git: it can hold Wi-Fi credentials.
+set -euo pipefail
+
+port="${1:?usage: esp-flash-backup <serial-port> [out-dir]}"
+out="${2:-$PWD}"
+mkdir -p "$out"
+
+esptool() { uvx esptool --port "$port" "$@"; }
+
+info="$(esptool flash-id 2>&1)"
+size="$(sed -n 's/.*Detected flash size: *//p' <<<"$info" | head -1)"
+mac="$(sed -n 's/^MAC: *//p' <<<"$info" | head -1 | tr -d ':')"
+[ -n "$size" ] && [ -n "$mac" ] || { echo "could not read flash size or MAC" >&2; exit 1; }
+
+file="$out/flash-${size}-${mac}.bin"
+esptool read-flash 0 ALL "$file"
+(cd "$out" && shasum -a 256 "$(basename "$file")" | tee -a SHA256SUMS)
+echo "restore: uvx esptool --port $port write-flash 0 $file"

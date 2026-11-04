@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Write a server URL and Wi-Fi login into an ESP32 settings (NVS) partition.
+# For XiaoZhi-family firmware, which reads these keys from namespace "wifi":
+#   ota_url, ssid, password, channel
+# No rebuild needed. Replaces the whole NVS partition: anything else stored
+# there (activation, other settings) is erased. Back up first: esp-flash-backup.
+#
+# Usage: OTA_URL=http://<lan-ip>:8003/xiaozhi/ota/ \
+#        ESP_WIFI_SSID=<name> ESP_WIFI_PASSWORD=<pw> \
+#        esp-nvs-wifi-ota <serial-port> [--dry-run]
+# The password comes from the environment, never from argv, and the temp
+# files are removed on exit. ESP32 radios use 2.4 GHz only.
+set -euo pipefail
+umask 077
+
+port="${1:?usage: esp-nvs-wifi-ota <serial-port> [--dry-run]}"
+dry="${2:-}"
+: "${OTA_URL:?set OTA_URL}" "${ESP_WIFI_SSID:?set ESP_WIFI_SSID}" "${ESP_WIFI_PASSWORD:?set ESP_WIFI_PASSWORD}"
+[ "${#ESP_WIFI_SSID}" -le 32 ] && [ "${#ESP_WIFI_PASSWORD}" -le 64 ] || { echo "ssid max 32, password max 64 chars" >&2; exit 1; }
+case "$OTA_URL$ESP_WIFI_SSID$ESP_WIFI_PASSWORD" in *[,\"]*) echo "values may not contain , or \"" >&2; exit 1;; esac
+
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+
+# Find the NVS partition in the device's own table instead of assuming an offset.
+uvx esptool --port "$port" read-flash 0x8000 0x1000 "$tmp/pt.bin" >/dev/null
+read -r offset size < <(python3 -I - "$tmp/pt.bin" <<'PY'
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+for i in range(0, len(d), 32):
+    e = d[i:i + 32]
+    if e[:2] != b"\xaa\x50":
+        break
+    t, s, o, l = struct.unpack("<BBII", e[2:12])
+    if t == 1 and s == 2 and e[12:28].rstrip(b"\0") == b"nvs":
+        print(hex(o), hex(l)); sys.exit(0)
+sys.exit("no nvs partition in table")
+PY
+)
+echo "nvs partition: offset $offset size $size"
+
+cat > "$tmp/nvs.csv" <<CSV
+key,type,encoding,value
+wifi,namespace,,
+ssid,data,string,$ESP_WIFI_SSID
+password,data,string,$ESP_WIFI_PASSWORD
+channel,data,u8,0
+ota_url,data,string,$OTA_URL
+CSV
+uvx --from esp-idf-nvs-partition-gen python -m esp_idf_nvs_partition_gen generate "$tmp/nvs.csv" "$tmp/nvs.bin" "$size" >/dev/null
+echo "image: $(wc -c <"$tmp/nvs.bin") bytes, ssid=${ESP_WIFI_SSID}, ota_url=${OTA_URL}"
+
+[ "$dry" = "--dry-run" ] && { echo "dry run: nothing written"; exit 0; }
+uvx esptool --port "$port" write-flash "$offset" "$tmp/nvs.bin"
