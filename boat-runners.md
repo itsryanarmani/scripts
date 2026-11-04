@@ -48,8 +48,6 @@ Broker/GitHub outages delay work until lease cleanup is acknowledged.
 The [pool cost proposal](boat-pool-cost-plan.md) describes a disabled demand
 policy, its cost worksheet, and the drain safety requirements before activation.
 
-## Two models: one sandbox per job, or one pool Box per label
-
 ## Choose one sandbox per job or a JIT pool
 
 Use one model per workload. Do not mix them in one job.
