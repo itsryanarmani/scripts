@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# webview-kiosk-update — push web content to a WebView kiosk app WITHOUT
+# reinstalling the APK or killing the process.
+#
+# Why this exists: `install -r` and `am force-stop` on a WebView app can leave
+# the renderer un-bindable ("Failed to establish the service connection")
+# until the device reboots. This script never touches the process — it pushes
+# files into the app sandbox and asks the running WebView to re-navigate.
+#
+# App-side contract (see the android-webview-kiosk skill):
+#   - android:debuggable="true"           (enables run-as)
+#   - MainActivity loads filesDir/kiosk/<entry> when present, else assets
+#   - launchMode="singleTask" and onNewIntent handles a "reload" boolean extra
+#
+# USAGE:
+#   webview-kiosk-update <webroot> <package> [device-serial]
+#     <webroot>  dir containing index.html (or your entry page)
+#     <package>  e.g. com.example.kiosk
+#     [serial]   adb -s target; defaults to the only connected device
+set -euo pipefail
+
+SRC="${1:?usage: webview-kiosk-update <webroot> <package> [device-serial]}"
+PKG="${2:?missing package name}"
+DEV="${3:-}"
+ADB=(adb); [ -n "$DEV" ] && ADB+=( -s "$DEV" )
+
+[[ "$PKG" =~ ^[A-Za-z0-9._]+$ ]] || { echo "invalid package name: $PKG" >&2; exit 1; }
+[ -d "$SRC" ] || { echo "no such dir: $SRC" >&2; exit 1; }
+
+echo "== push -> /data/local/tmp/kiosk-push"
+"${ADB[@]}" shell rm -rf /data/local/tmp/kiosk-push
+"${ADB[@]}" push "$SRC" /data/local/tmp/kiosk-push >/dev/null
+
+echo "== run-as copy into files/kiosk"
+"${ADB[@]}" shell "run-as $PKG sh -c 'rm -rf files/kiosk.new && mkdir -p files && cp -r /data/local/tmp/kiosk-push files/kiosk.new && rm -rf files/kiosk && mv files/kiosk.new files/kiosk'"
+"${ADB[@]}" shell rm -rf /data/local/tmp/kiosk-push
+
+echo "== reload intent (in-place, no process kill)"
+"${ADB[@]}" logcat -c 2>/dev/null || true
+"${ADB[@]}" shell am start -n "$PKG/.MainActivity" --ez reload true >/dev/null
+sleep 4
+"${ADB[@]}" logcat -d 2>/dev/null | grep -E 'page finished|load error' | tail -2 || true
+echo "== done"
