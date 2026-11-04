@@ -296,6 +296,7 @@ it returns a stale value after a write that worked, so look at the screen.
 |---|---|
 | [`pinterest-privacy/`](pinterest-privacy/) | Make all your Pinterest boards secret, or delete them, with dry run and undo. |
 | [`reddit-cleanup/`](reddit-cleanup/) | Delete your own Reddit comments and optionally posts, with dry run, filters and a CSV backup. |
+| [`x-cleanup/`](x-cleanup/) | Delete your own X posts and replies from an archive or CSV of ids, paced in small batches, resumable. |
 
 ## ble-bridge
 
