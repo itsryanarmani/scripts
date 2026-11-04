@@ -74,10 +74,10 @@ runner_alive() {
   remote "cd ~/$DIR 2>/dev/null && test -f runner.pid && kill -0 \"\$(cat runner.pid)\" 2>/dev/null"
 }
 
-# Takes the start lock with an atomic mkdir. The runner holds it for its whole
+# Creates the start lock with shell noclobber (O_EXCL). The runner holds it for its whole
 # life and removes it on exit; stop and a failed start remove it too.
 take_lock() {
-  remote "umask 077; mkdir -p ~/$DIR && mkdir ~/$DIR/.lock 2>/dev/null" && return 0
+  remote "umask 077; mkdir -p ~/$DIR && (set -o noclobber; { echo \$\$ > ~/$DIR/.lock; } 2>/dev/null)" && return 0
   if runner_alive; then die 1 "a runner is already alive in ~/$DIR on the VM; stop it first"; fi
   die 1 "~/$DIR/.lock exists but no runner is alive (another start, or a crashed run); run stop to clear it"
 }
@@ -93,7 +93,7 @@ umask 077
 cd "$(dirname "$0")"
 . ./runner.conf
 echo $$ > runner.pid
-finish() { echo "$1" > result; echo "runner $1 $(date -u +%FT%TZ)" >> runner.log; rm -f runner.pid; rmdir .lock 2>/dev/null; exit "$2"; }
+finish() { echo "$1" > result; echo "runner $1 $(date -u +%FT%TZ)" >> runner.log; rm -f runner.pid; (rmdir .lock 2>/dev/null || rm -f .lock); exit "$2"; }
 agent_env="${ORCH_AGENT_ENV/#\~/$HOME}"
 [ -f "$agent_env" ] && . "$agent_env"
 # secrets.env is data, never code: KEY=VALUE lines, optional `export `, values
@@ -158,7 +158,7 @@ cmd_start() {
     if remote "grep -qx finished ~/$DIR/result 2>/dev/null"; then
       echo "runner already finished in ~/$DIR on the VM"; return 0
     fi
-    remote "cat ~/$DIR/result 2>/dev/null; rmdir ~/$DIR/.lock 2>/dev/null; true" >&2
+    remote "cat ~/$DIR/result 2>/dev/null; (rmdir ~/$DIR/.lock 2>/dev/null || rm -f ~/$DIR/.lock); true" >&2
     die 3 "the runner is not alive ${VERIFY_WAIT}s after start; see the result above"
   fi
   echo "runner started in ~/$DIR on the VM. Give the VM a TTL and idle timeout longer than the job."
@@ -202,7 +202,7 @@ cmd_stop() {
     for f in runner.pid agent.pid; do
       test -f \$f || continue
       p=\$(cat \$f); pkill -TERM -P \"\$p\" 2>/dev/null; kill \"\$p\" 2>/dev/null; rm -f \$f
-    done; rmdir .lock 2>/dev/null; echo 'runner stopped'"
+    done; (rmdir .lock 2>/dev/null || rm -f .lock); echo 'runner stopped'"
 }
 
 case "$SUB" in
