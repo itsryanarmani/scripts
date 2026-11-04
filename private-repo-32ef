@@ -281,16 +281,20 @@ cmd_launch() {
 
 cmd_apply_patch() {
   need_farm
-  local patch check=0
-  patch="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/private-repo-32ef.d/farm-ios27.patch"
-  [[ -f "$patch" ]] || die "missing $patch"
+  local dir patch check=0 applied=0
+  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/private-repo-32ef.d"
   [[ "${1:-}" == --check ]] && check=1
   cd "$FARM_DIR"
-  if git apply --reverse --check "$patch" 2>/dev/null; then echo "patch already applied"; return 0; fi
-  git apply --check "$patch" || die "patch does not apply to $FARM_DIR (the farm moved on, or edits clash)"
-  if [[ $check -eq 1 ]]; then echo "patch applies cleanly"; return 0; fi
-  git apply "$patch"
-  echo "patch applied. Restart the worker if it runs: private-repo-32ef down && private-repo-32ef up"
+  for patch in "$dir"/*.patch; do
+    [[ -f "$patch" ]] || die "no patch in $dir"
+    if git apply --reverse --check "$patch" 2>/dev/null; then echo "$(basename "$patch"): already applied"; continue; fi
+    git apply --check "$patch" || die "$(basename "$patch") does not apply to $FARM_DIR (the farm moved on, or edits clash)"
+    if [[ $check -eq 1 ]]; then echo "$(basename "$patch"): applies cleanly"; continue; fi
+    git apply "$patch"; applied=1
+    echo "$(basename "$patch"): applied"
+  done
+  [[ $applied -eq 1 ]] && echo "Restart the worker if it runs: private-repo-32ef down && private-repo-32ef up"
+  return 0
 }
 
 main() {

@@ -1,0 +1,139 @@
+diff --git a/src/devices/coordinates.ts b/src/devices/coordinates.ts
+index 5268334..4b5a885 100644
+--- a/src/devices/coordinates.ts
++++ b/src/devices/coordinates.ts
+@@ -263,6 +263,8 @@ const SX_X = 375 / 375;
+ const SY_X = 812 / 667;
+ const SX_13 = 390 / 375;
+ const SY_13 = 844 / 667;
++const SX_12 = 428 / 375;
++const SY_12 = 926 / 667;
+ const SX_17 = 402 / 375;
+ const SY_17 = 874 / 667;
+ 
+@@ -376,6 +378,64 @@ export const DEVICE_COORDINATES = {
+         },
+         linkedin: linkedinForScreen({ width: 390, height: 844 }),
+     },
++    // Seeded from iphone13 scaled 390×844 → 428×926. Rail points were tapped on a real phone.
++    iphone12promax: {
++        displayName: 'iPhone 12 Pro Max',
++        productTypes: ['iPhone13,4'],
++        screenSize: { width: 428, height: 926 },
++        passcodeKeypad: {
++            columnX: [117, 218, 314],
++            rowY: [305, 482, 590, 702],
++        },
++        tiktok: {
++            ...scaleSocial(IPHONE8_TIKTOK, SX_12, SY_12),
++            // Naive 8→13 scale lands like/save on avatar/count text. Seed from
++            // the calibrated iphone17pro map scaled 402×874 → 390×844.
++            like: { x: 397, y: 518 },
++            save: { x: 397, y: 654 },
++            comment: { x: 397, y: 585 },
++            followingTab: { x: 173, y: 93 },
++            homeTab: { x: 44, y: 884 },
++            profileTab: { x: 386, y: 884 },
++            // Camera create · bottom-left Recents thumbnail (from live screenshot).
++            upload: { x: 57, y: 817 },
++            // Full-screen Videos/Recents grid (not the old half-sheet tray).
++            picker: {
++                ...scaleSocial(IPHONE8_TIKTOK, SX_12, SY_12).picker,
++                firstY: 241,
++                cellY: 241,
++                cellX: 70,
++                circleX: 70,
++                columnStep: 143,
++                rowStep: 143,
++            },
++            // Full-screen publish form · red Post is top-right (not bottom).
++            finish: { x: 384, y: 79 },
++            draft: { x: 77, y: 878 },
++            // Description text (under cover) — y≈299 lands on "# Hashtags" and seeds "#".
++            caption: { x: 159, y: 258 },
++            swipe: { x: 138, startY: 764, endY: 208, durationMs: 380 },
++        },
++        instagram: {
++            ...scaleSocial(IPHONE8_INSTAGRAM, SX_12, SY_12),
++            // Floating-pill row (~797) — scaled from calibrated 17 Pro (~825).
++            homeTab: { x: 43, y: 874 },
++            profileTab: { x: 384, y: 903 },
++            reelsTab: { x: 142, y: 874 },
++            searchTab: { x: 127, y: 874 },
++            create: { x: 219, y: 874 },
++            followingTab: { x: 77, y: 102 },
++            dmCompose: { x: 214, y: 874 },
++            composeNewMessage: { x: 403, y: 82 },
++            searchField: { x: 213, y: 106 },
++            searchFirstResult: { x: 214, y: 244 },
++            dmSearchSubmit: { x: 394, y: 106 },
++            dmComposer: { x: 170, y: 551 },
++            dmSend: { x: 383, y: 551 },
++            dmBack: { x: 25, y: 58 },
++        },
++        linkedin: linkedinForScreen({ width: 428, height: 926 }),
++    },
+     // Seeded from iphone8 by scaling 375×667 → 402×874. Recalibrate via the
+     // dashboard before relying on automation taps in production.
+     iphone17pro: {
+diff --git a/src/instagram/coordinates.ts b/src/instagram/coordinates.ts
+index cc52d06..3f9ba70 100644
+--- a/src/instagram/coordinates.ts
++++ b/src/instagram/coordinates.ts
+@@ -80,6 +80,28 @@ export const DEVICE_COORDINATES = {
+             swipe: { x: 194, startY: 696, endY: 228, durationMs: 450 },
+         },
+     },
++    // iPhone 12 Pro Max 428×926: iphone13 scaled. TikTok rail points tapped on the phone (like, save inferred).
++    iphone12promax: {
++        passcodeKeypad: { columnX: [117, 218, 314], rowY: [305, 482, 590, 702] },
++        instagram: {
++            profileTab: { x: 384, y: 903 }, homeTab: { x: 43, y: 874 }, accountSwitcher: { x: 55, y: 100 },
++            create: { x: 219, y: 874 }, postContent: { x: 80, y: 805 }, upload: { x: 80, y: 861 }, selectMultiple: { x: 388, y: 98 },
++            useLayout: { x: 213, y: 722 },
++            picker: { circleX: 70, columnStep: 143, firstY: 250, trayY: 555, rowStep: 173, cellX: 70, cellStep: 143, cellY: 250 },
++            pickerNext: { x: 388, y: 98 }, editorNext: { x: 388, y: 98 }, caption: { x: 114, y: 278 },
++            keyboardBack: { x: 25, y: 58 }, draft: { x: 91, y: 98 }, finish: { x: 388, y: 98 },
++            like: { x: 394, y: 500 }, save: { x: 394, y: 694 },
++            followingTab: { x: 77, y: 102 }, reelsTab: { x: 142, y: 874 },
++            searchTab: { x: 127, y: 874 }, searchField: { x: 213, y: 106 }, searchFirstResult: { x: 214, y: 244 },
++            dmSearchSubmit: { x: 394, y: 106 },
++            profileMessage: { x: 319, y: 583 },
++            dmCompose: { x: 214, y: 874 }, composeNewMessage: { x: 403, y: 82 },
++            dmComposer: { x: 170, y: 551 }, dmSend: { x: 383, y: 551 }, dmBack: { x: 25, y: 58 },
++            comment: { x: 394, y: 597 },
++            commentComposer: { x: 160, y: 833 }, commentSend: { x: 388, y: 833 },
++            swipe: { x: 213, startY: 764, endY: 250, durationMs: 450 },
++        },
++    },
+     // Keep in sync with src/devices/coordinates.ts.
+     iphone17pro: {
+         passcodeKeypad: { columnX: [110, 205, 295], rowY: [288, 455, 557, 663] },
+diff --git a/src/tiktok/coordinates.ts b/src/tiktok/coordinates.ts
+index 873f810..db2a0d4 100644
+--- a/src/tiktok/coordinates.ts
++++ b/src/tiktok/coordinates.ts
+@@ -63,6 +63,23 @@ export const DEVICE_COORDINATES = {
+             swipe: { x: 194, startY: 696, endY: 190, durationMs: 450 },
+         },
+     },
++    // iPhone 12 Pro Max 428×926: iphone13 scaled. TikTok rail points tapped on the phone (like, save inferred).
++    iphone12promax: {
++        passcodeKeypad: { columnX: [117, 218, 314], rowY: [305, 482, 590, 702] },
++        tiktok: {
++            profileTab: { x: 386, y: 884 }, homeTab: { x: 44, y: 884 }, accountSwitcher: { x: 211, y: 219 },
++            create: { x: 213, y: 889 }, postContent: { x: 213, y: 889 }, upload: { x: 57, y: 817 }, selectMultiple: { x: 27, y: 858 },
++            useLayout: { x: 27, y: 679 },
++            picker: { circleX: 70, columnStep: 143, firstY: 241, trayY: 500, rowStep: 143, cellX: 70, cellStep: 143, cellY: 241 },
++            pickerNext: { x: 316, y: 857 }, editorNext: { x: 316, y: 884 }, caption: { x: 159, y: 258 },
++            keyboardBack: { x: 25, y: 58 }, draft: { x: 77, y: 878 }, finish: { x: 384, y: 79 },
++            like: { x: 397, y: 518 }, save: { x: 397, y: 654 },
++            followingTab: { x: 109, y: 109 }, comment: { x: 397, y: 585 },
++            commentComposer: { x: 160, y: 861 }, commentSend: { x: 388, y: 861 },
++            liveClose: { x: 401, y: 98 },
++            swipe: { x: 213, startY: 764, endY: 208, durationMs: 450 },
++        },
++    },
+     // Keep in sync with src/devices/coordinates.ts (scaled seed for 402×874).
+     iphone17pro: {
+         passcodeKeypad: { columnX: [110, 205, 295], rowY: [288, 455, 557, 663] },
