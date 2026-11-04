@@ -33,7 +33,7 @@ This file lists every way the tool can fail. The tests in
 | 19 | `stop` kills by process name and takes out other agents on the VM, or the SSH session itself. | Kill only the PIDs in `runner.pid` and `agent.pid`. | yes |
 | 20 | `gh` is not installed on the VM, so an agent that must open PRs fails late. | `start` prints a warning when `gh` is missing. | yes |
 | 21 | The VM's TTL or idle timeout is shorter than the job, and the provider reaps it mid-run. | Not detectable through SSH alone. `start` prints a reminder to give the VM a lifetime longer than the job. | no, by design |
-| 22 | Two `start` calls race: both see no live runner and both launch. | `start` takes `.lock` with an atomic `mkdir` before it uploads anything. The runner holds the lock for its life. The loser exits 1. | yes |
+| 22 | Two `start` calls race: both see no live runner and both launch. | `start` creates `.lock` with shell noclobber (`O_EXCL`) before it uploads anything. The runner holds the lock for its life. The loser exits 1. | yes |
 | 23 | A lock is left without a runner (a start that died mid-upload, or a killed VM). | `start` exits 1 and says to run `stop`, which clears the lock. Nothing guesses that a lock is stale. | yes |
 | 24 | A finished job leaves `DONE`, so the next job in the same folder stops before its first round. | After it takes the lock, `start` removes `DONE` and `result` before it unpacks the new bundle. `STATUS.md` carries over; ship an empty one in the bundle to start fresh. | yes |
 | 25 | A short job finishes inside the start check, so a missing runner reads as a crash. | The runner writes `result` (`finished` or `failed: ...`) before it exits. `start` exits 0 on `finished`. | yes |
