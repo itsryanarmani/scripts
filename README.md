@@ -247,6 +247,7 @@ Run `stack-merge --help` for the variables. Check both tools with
 
 | Doc | What |
 |---|---|
+| [CI/CD speed](rules/ci-cd-speed.md) | Measured CI tactics, cache costs, test gates, and safe fleet rollouts |
 | `box-cost-discipline.md` | How to keep ascii.dev Boxes cheap, and why `state: idle` is not an idleness signal |
 | `cost-audit-and-boat-traps.md` | Cost-audit rules, Boat box traps, and shell traps that hide a real failure |
 | `box-warm-start.md` | Where the ~77s Box attach actually goes, and what a warm snapshot does and does not buy |
