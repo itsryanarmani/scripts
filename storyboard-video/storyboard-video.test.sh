@@ -93,4 +93,25 @@ ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=600:sample_rate=24000" -t 
 "$sv" cut "$tmp/film" >"$tmp/out" 2>"$tmp/err" || fail "cut with long line"
 grep -q 'past its slot' "$tmp/err" || fail "missing overlap warning"
 
+# 8. verify measures the film and writes checks in the schema's verify shape; all pass on a good cut.
+ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=600:sample_rate=24000" -t 1.5 "$tmp/film/out/work/vo-01.wav"
+"$sv" cut "$tmp/film" >/dev/null 2>"$tmp/err" || fail "cut before verify: $(tail -3 "$tmp/err")"
+expect_exit 0 "$sv" verify "$tmp/film"
+python3 - "$tmp/film/out/verify.json" <<'PY' || fail "verify.json"
+import json, sys
+v = json.load(open(sys.argv[1]))
+names = {c["name"] for c in v["checks"]}
+assert {"streams start at 0", "length matches timeline", "loudness"} <= names, names
+assert all(c["pass"] for c in v["checks"]), v["checks"]
+PY
+
+# 9. verify fails a film whose video starts late (players show a black first frame).
+ffmpeg -loglevel error -y -itsoffset 0.5 -i "$film" -i "$film" -map 0:v -map 1:a -c copy "$tmp/shifted.mp4"
+mv "$tmp/shifted.mp4" "$film"
+expect_exit 1 "$sv" verify "$tmp/film"
+grep -q 'streams start at 0' "$tmp/err" || fail "verify did not name the start-time check"
+# A film with no audio stream fails the loudness check instead of crashing or passing.
+ffmpeg -loglevel error -y -i "$film" -an -c copy "$tmp/silent.mp4" && mv "$tmp/silent.mp4" "$film"
+expect_exit 1 "$sv" verify "$tmp/film"; grep -q 'loudness' "$tmp/err" || fail "verify passed or crashed on a film with no audio: $(tail -2 "$tmp/err")"
+
 echo "storyboard-video: all tests passed"

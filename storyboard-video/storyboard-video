@@ -7,12 +7,13 @@ Usage:
   storyboard-video board <dir> <out.html>            Review board: cast, story, stills (or clips) per shot
   storyboard-video veo <dir> --confirm-spend [ids]   Image-to-video for each still (bills at submit)
   storyboard-video cut <dir>                         Edit clips into out/film.mp4 with camera, transitions, ducked VO
+  storyboard-video verify <dir>                      Measure out/film.mp4 and write out/verify.json
 
 Environment: VERTEX_PROJECT (required for stills, veo and voice-over). SV_IMAGE_MODEL,
 SV_VIDEO_MODEL, SV_VIDEO_LOCATION and SV_TTS_MODEL override the board's `models`. gcloud supplies
 the token, so CLOUDSDK_CONFIG picks the account. Exit status: 0 ok, 1 failed check, 2 bad usage.
 """
-import base64, concurrent.futures as cf, html, json, os, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import base64, concurrent.futures as cf, datetime, html, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 DEFAULT_MODELS = {"image": "gemini-3-pro-image", "video": "veo-3.1-fast-generate-001", "tts": "gemini-3.1-flash-tts-preview"}
@@ -29,6 +30,8 @@ def die(msg, code=1):
 
 def validate(value, schema, root, path="board"):
     """The JSON Schema subset video.schema.json uses; returns a list of 'path: problem' strings."""
+    if "$ref" in schema:
+        schema = root["$defs"][schema["$ref"].rsplit("/", 1)[1]]
     kinds = {"object": dict, "array": list, "string": str, "boolean": bool, "integer": int, "number": (int, float)}
     want = schema.get("type")
     if want and (not isinstance(value, kinds[want]) or (want in ("integer", "number") and isinstance(value, bool))):
@@ -339,6 +342,40 @@ def cmd_cut(d):
     print(json.dumps({"film": out, "length_s": round(seconds(out), 2)}))
 
 
+def cmd_verify(d):
+    b = load(d)
+    film, timeline = os.path.join(d, "out", "film.mp4"), json.load(open(os.path.join(d, "out", "timeline.json")))
+    mix = b.get("audio", {}).get("mix", {})
+    starts = subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0", film], text=True).split()
+    eb = subprocess.run(["ffmpeg", "-i", film, "-map", "0:a:0", "-af", "ebur128=peak=true", "-f", "null", "-"], capture_output=True, text=True)
+    found = re.findall(r"I:\s+(-?[\d.]+) LUFS", eb.stderr)
+    lufs = float(found[-1]) if eb.returncode == 0 and found else None  # no audio stream, or ffmpeg failed: the check fails
+    bd = subprocess.run(["ffmpeg", "-i", film, "-map", "0:v:0", "-vf", "blackdetect=d=0.04:pix_th=0.08", "-f", "null", "-"], capture_output=True, text=True)
+    black = re.findall(r"black_start:([\d.]+)", bd.stderr) if bd.returncode == 0 else None  # a failed scan must not pass
+    length, target = seconds(film), mix.get("targetLufs", -16)
+    checks = [
+        {"name": "streams start at 0", "method": "ffprobe stream start_time", "expected": "0.000000 for every stream",
+         "actual": " ".join(starts), "pass": all(x.split(",")[-1] == "0.000000" for x in starts)},
+        {"name": "length matches timeline", "method": "ffprobe duration vs out/timeline.json", "expected": f"{timeline['length_s']} ± 0.15 s",
+         "actual": f"{length:.3f} s", "pass": abs(length - timeline["length_s"]) <= 0.15},
+        {"name": "loudness", "method": "ffmpeg ebur128 integrated", "expected": f"{target} ± 1.5 LUFS",
+         "actual": f"{lufs} LUFS" if lufs is not None else "not measured: " + eb.stderr.strip().splitlines()[-1][:120],
+         "pass": lufs is not None and abs(lufs - target) <= 1.5},
+        {"name": "no black opening frame", "method": "ffmpeg blackdetect", "expected": "no black segment at 0 s",
+         "actual": "scan failed" if black is None else ", ".join(black) or "none",
+         "pass": black is not None and not any(float(t) < 1 / 48 for t in black)},  # only a black frame at 0 s fails
+    ]
+    record = {"checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "film": "out/film.mp4", "checks": checks}
+    errs = validate(record, {"$ref": "#/$defs/verify"}, schema(), "verify")
+    if errs:
+        die("verify record does not match the schema: " + "; ".join(errs))
+    json.dump(record, open(os.path.join(d, "out", "verify.json"), "w"), indent=1)
+    failed = [c["name"] for c in checks if not c["pass"]]
+    print(json.dumps({"verify": "out/verify.json", "failed": failed}))
+    if failed:
+        die("failed checks: " + ", ".join(failed))
+
+
 def main():
     a = sys.argv[1:]
     if len(a) < 2:
@@ -355,6 +392,8 @@ def main():
         cmd_board(d, rest[0])
     elif cmd == "cut":
         cmd_cut(d)
+    elif cmd == "verify":
+        cmd_verify(d)
     else:
         die(__doc__.strip(), 2)
 
