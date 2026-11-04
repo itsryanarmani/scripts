@@ -27,10 +27,10 @@ any required `file:` dependency. Never commit that copy.”
 ## Claim identity mismatch
 
 Symptom: The branch guard rejects a worker’s own claim.
-Cause: The claim uses an override, but the guard runs in the harness and sees
-`claude:unknown`. The worker and guard identify different holders.
-Brief: “Claim with `env -u FLEET_AGENT_ID`. Check the tool’s detected identity
-in the harness before creating the branch.”
+Cause: The worker overrides its identity with a shell environment variable.
+The guard runs in the harness process and cannot see that variable.
+Brief: “Claim with the identity that the guard detects. Do not override it
+with an environment variable set in your own shell.”
 
 ## Dead worker claims
 
@@ -63,5 +63,5 @@ step and next command so another worker can resume through another route.”
 
 Symptom: A claimed CI saving later becomes a net loss.
 Cause: Estimates omit restore cost, queue time, or the real runner’s behaviour.
-Three projections changed from 11.9 min, to 3–4 min, to a net loss in one day.
+One projected saving was revised downward twice and then measured as a loss.
 Brief: “Quote only measured numbers. Keep projections separate from results.”

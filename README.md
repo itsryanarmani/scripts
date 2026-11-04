@@ -252,7 +252,7 @@ Run `stack-merge --help` for the variables. Check both tools with
 | `box-warm-start.md` | Where the ~77s Box attach actually goes, and what a warm snapshot does and does not buy |
 | `t3-code-on-a-box.md` | Running T3 Code on a Box and reaching it over `box host` |
 | `silent-failover-discipline.md` | Why a working primary/backup credential failover can take a whole fleet down silently, and what to alert on instead |
-| [Delegation failure modes](rules/delegation-failure-modes.md) | Shared worktree traps, claim handling, review results, and measured savings |
+| `rules/delegation-failure-modes.md` | Shared worktree traps, claim handling, review results, and measured savings |
 - [cloudflare-auth-discipline.md](cloudflare-auth-discipline.md) — why wrangler, OAuth and the Cloudflare MCP cannot mint an API token, the one permission that can, and how to mint narrow per-purpose tokens that do not break on custom domains.
 
 ## Agent routing
