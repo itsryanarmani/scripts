@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+"""muse-vault-fill — seed login entries into the Muse Secure credentials store.
+
+Drives the Muse macOS app (Settings → Secure store) through Peekaboo:
+`peekaboo see` for the element map, coordinate clicks for presses, and
+`peekaboo paste` (clipboard) for field input. Entries file lives OUTSIDE
+the repo: [{"name": "Costco", "url": "https://signin.costco.com/",
+            "username": "...", "password": "..."}]
+
+Traps encoded here, all learned the hard way:
+  * `--on` element clicks silently no-op on this WebKit/SwiftUI hybrid —
+    every click goes through frame-center coordinates instead.
+  * the store holds ONE credential per domain — a second save overwrites.
+    Dedup here is by domain label; the entries file should carry one
+    chosen account per domain.
+  * the row list virtualizes — ~12 rows exist in the AX tree at once and
+    the Add button scrolls away with them. Row detection scans while
+    scrolling; a list with no visible Add is still a list.
+  * clicks post to screen coordinates, so the app must be frontmost —
+    `open -a` does not raise an already-running app, only AppleScript
+    `activate` does. `window focus --bring-to-current-space` pulls the
+    Settings window onto the visible Space and above the main window.
+  * values go through the clipboard — keystroke layout never touches a
+    password's specials, and secrets never hit argv beyond `paste`.
+
+Usage: muse-vault-fill entries.json [--app Muse] [--window Settings]
+Never prints secret values. Idempotent: skips domains already stored.
+"""
+
+import argparse
+import atexit
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from urllib.parse import urlparse
+
+NON_LOGIN_LABELS = {"Add", "Cancel", "Save", "Go back", "Edit", "Delete",
+                    "Close", "Secure store", "Passwords", "Get started"}
+
+# Detail-view chrome — the username value sits among these static strings;
+# anything else on a detail page is the stored username.
+STATIC_DETAIL_LABELS = NON_LOGIN_LABELS | {
+    "Settings", "Password", "New Password", "Login details", "Username",
+    "scroll area", "HTML content", "Password saved", "Agent permissions",
+    "Use this login automatically", "Always ask before using this login",
+    "Secure credentials store website logins", "group", "main",
+    "Securely store passwords for your agent to use.",
+    "close button", "zoom button", "minimize button",
+    "General", "Connectors", "File system access", "Dictation", "Wallet",
+    "Permissions", "Messaging channels", "Devices", "Data controls",
+    "Help & support", "Legal info", "Log out", "Notifications alt+T",
+}
+
+
+def in_bounds(frame, bx, by, bw, bh):
+    # The snapshot uimap also carries the app MENU tree — menu-bar menus at
+    # y≈0, items at (0, screenH). Filter to window content only, or a stray
+    # 'Edit'/'Delete' menu entry reads as a detail view that is not there.
+    if not frame:
+        return False
+    (x, y), (w, h) = frame
+    return x < bx + bw and x + w > bx and y < by + bh and y + h > by
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("entries", help="path to entries.json")
+    ap.add_argument("--app", default="Muse")
+    ap.add_argument("--window", default="Settings")
+    ap.add_argument("--settle", type=float, default=0.4,
+                    help="seconds to wait after each click/paste")
+    args = ap.parse_args()
+
+    entries_path = os.path.expanduser(args.entries)
+    entries = json.load(open(entries_path))
+    log_path = entries_path + ".fill.log"
+
+    # hold display+user-activity assertions for the run — windows on a
+    # sleeping display capture as "not on any available display"
+    caf = subprocess.Popen(["caffeinate", "-du"]) \
+        if shutil.which("caffeinate") else None
+    if caf:
+        atexit.register(caf.terminate)
+
+    def pb(*cmd, timeout=60):
+        r = subprocess.run(
+            ["peekaboo", *cmd, "--app", args.app] if cmd[0] != "see" else
+            ["peekaboo", *cmd],
+            capture_output=True, text=True, timeout=timeout)
+        return r.stdout + r.stderr
+
+    def activate_app():
+        # `open -a` does not raise a running app — AppleScript activate does.
+        if shutil.which("osascript"):
+            subprocess.run(
+                ["osascript", "-e",
+                 f'tell application "{args.app}" to activate'],
+                capture_output=True)
+
+    def window_id():
+        # Settings window's CG id, resolved fresh — --window-title matching
+        # is flaky and ids rotate when the window is recreated.
+        try:
+            wins = json.loads(pb("list", "windows", "--json", timeout=30)
+                              )["data"]["windows"]
+        except (json.JSONDecodeError, KeyError, subprocess.TimeoutExpired):
+            return None
+        for w in wins:
+            if w.get("title") == args.window:
+                return w.get("window_id")
+        return None
+
+    # win_top: last window-top y for relative thresholds. last_snap: the
+    # current snapshot id + its scroll-area element id (per-snapshot).
+    win_top, last_snap = {"y": 0}, {"sid": None, "scroll_el": None}
+
+    def see(refocused=False):
+        # ui_map for the Settings window, or None on failure.
+        wid = window_id()
+        if wid is None:
+            return None
+        try:
+            # the AX scan of this WebKit window is slow — 45s, not the 20s default
+            out = pb("see", "--app", args.app, "--window-id", str(wid),
+                     "--json", "--timeout-seconds", "45", "--path",
+                     "/tmp/muse-see.png", timeout=90)
+        except subprocess.TimeoutExpired:
+            out = ""
+        try:
+            data = json.loads(out)["data"]
+        except (json.JSONDecodeError, KeyError):
+            data = None
+        snap, uimap, bounds = {}, {}, None
+        if data:
+            last_snap["sid"] = data.get("snapshot_id")
+            uimap_path = data.get("ui_map")
+            if not (isinstance(uimap_path, str) and
+                    os.path.exists(uimap_path)):
+                uimap_path = os.path.expanduser(
+                    f"~/.peekaboo/snapshots/{last_snap['sid']}/snapshot.json")
+            try:
+                snap = json.load(open(uimap_path))
+                uimap = snap["uiMap"]
+            except (OSError, json.JSONDecodeError, KeyError):
+                uimap = {}
+            bounds = snap.get("windowBounds") if isinstance(snap, dict) \
+                else None
+            if bounds:
+                (bx, by), (bw, bh) = bounds
+                win_top["y"] = by
+                uimap = {k: e for k, e in uimap.items()
+                         if in_bounds(e.get("frame"), bx, by, bw, bh)}
+            # `scroll --on <id>` needs the scroll-area element id from THIS
+            # snapshot — element ids are per-snapshot
+            for k, e in uimap.items():
+                if (e.get("label") or e.get("title")) == "scroll area":
+                    last_snap["scroll_el"] = k
+                    break
+        if not uimap and not refocused:
+            # The WebKit AX tree only exists while the window is focused —
+            # raise the app, focus the window, retry once.
+            activate_app()
+            time.sleep(0.5)
+            pb("window", "focus", "--window-id", str(wid),
+               "--bring-to-current-space")
+            time.sleep(0.3)
+            return see(refocused=True)
+        if not uimap:
+            print(f"see: empty uimap (data={'ok' if data else 'none/err'}, "
+                  f"bounds={'yes' if bounds else 'no'})", file=sys.stderr)
+        return uimap
+
+    def center(e):
+        f = e["frame"]
+        return int(f[0][0] + f[1][0] / 2), int(f[0][1] + f[1][1] / 2)
+
+    def click_el(e):
+        x, y = center(e)
+        wid = window_id()
+        # --window-id focuses THAT window first — with only --app the main
+        # window raises, covers Settings, and eats the click. The app needs
+        # activate: clicks post to screen coords, frontmost app takes them.
+        activate_app()
+        if wid is not None:
+            pb("window", "focus", "--window-id", str(wid),
+               "--bring-to-current-space")
+            pb("click", "--window-id", str(wid), "--coords", f"{x},{y}")
+        else:
+            pb("click", "--coords", f"{x},{y}")
+        time.sleep(args.settle)
+
+    def paste(text):
+        wid = window_id()
+        if wid is not None:
+            pb("paste", "--window-id", str(wid), "--text", text)
+        else:
+            pb("paste", "--text", text)
+        time.sleep(args.settle)
+
+    def by_label(uimap, label, role=None):
+        for e in uimap.values():
+            if (e.get("label") or e.get("title")) == label and (
+                    role is None or e.get("role") == role):
+                return e
+        return None
+
+    def scroll_list(direction, amount=5):
+        # Bare `scroll` does not reach the inner list — the event must land
+        # on the 'scroll area' element from the current snapshot.
+        cmd = ["scroll", "--direction", direction, "--amount", str(amount)]
+        wid = window_id()
+        if wid is not None:
+            cmd += ["--window-id", str(wid)]
+        if last_snap["scroll_el"] and last_snap["sid"]:
+            cmd += ["--on", last_snap["scroll_el"],
+                    "--snapshot", last_snap["sid"]]
+        pb(*cmd)
+        time.sleep(0.4)
+
+    def row_labels(uimap):
+        """Domain row labels currently on screen, top to bottom."""
+        out = []
+        for e in uimap.values():
+            l = e.get("label") or e.get("title") or ""
+            if e.get("role") == "AXButton" and "." in l and \
+                    l not in NON_LOGIN_LABELS:
+                out.append((e["frame"][0][1], l))
+        return [l for _, l in sorted(out)]
+
+    def merge_ordered(ordered, vis):
+        # Append rows newly revealed at the bottom — the list is sorted,
+        # so align the visible slice on the known tail's largest overlap.
+        # Returns the number of new rows learned.
+        if not ordered:
+            ordered.extend(vis)
+            return len(vis)
+        k = 0
+        for kk in range(min(len(ordered), len(vis)), 0, -1):
+            if ordered[-kk:] == vis[:kk]:
+                k = kk
+                break
+        ordered.extend(vis[k:])
+        return len(vis) - k
+
+    def scan_rows(uimap):
+        # Ordered labels for the WHOLE store — scroll from the top and
+        # merge each visible slice (the list virtualizes ~12 rows).
+        ordered = []
+        merge_ordered(ordered, row_labels(uimap))
+        m = uimap
+        for _ in range(6):  # reach the top first
+            scroll_list("up", 10)
+            m = see()
+            if not m or state(m) != "list":
+                break
+            vis = row_labels(m)
+            merge_ordered(ordered, vis)
+            # first visible row is the global first → top reached
+            if not vis or vis[0] == ordered[0]:
+                break
+        stall = 0
+        for _ in range(40):
+            if not ordered:
+                break
+            scroll_list("down", 5)
+            m = see()
+            if not m or state(m) != "list":
+                break
+            if merge_ordered(ordered, row_labels(m)) == 0:
+                stall += 1
+                if stall >= 2:
+                    break
+            else:
+                stall = 0
+        return ordered
+
+    def state(uimap):
+        labels = {(e.get("label") or e.get("title")) for e in uimap.values()}
+        if {"URL", "Username", "Password"} <= labels and \
+                by_label(uimap, "URL", "AXTextField"):
+            return "dialog"
+        if "Edit" in labels or "Delete" in labels:
+            return "detail"
+        # a scrolled list has no visible Add — the domain rows are the
+        # tell. Detail views show the domain as AXUnknown, never AXButton.
+        if "Add" in labels or row_labels(uimap):
+            return "list"
+        return "other"
+
+    def domain_of(entry):
+        h = urlparse(entry["url"]).netloc or entry["url"]
+        # Muse labels a row by the registrable domain, not the full host:
+        # https://app.bchydro.com/... lists as "bchydro.com". The seed set
+        # uses single-label public suffixes only, so last-two-labels is
+        # the registrable form here.
+        parts = h.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else h
+
+    def domain_rows(uimap, domain):
+        return [e for e in uimap.values()
+                if e.get("role") == "AXButton"
+                and (e.get("label") or e.get("title") or "")
+                in (domain, "www." + domain)]
+
+    def open_settings():
+        activate_app()
+        time.sleep(1.5)
+        # re-verify before the menu click — it toggles a live window
+        # CLOSED, and a transient `list windows` miss reports it gone
+        if window_id() is not None or not shutil.which("osascript"):
+            return
+        subprocess.run(
+            ["osascript", "-e",
+             f'tell application "System Events" to tell process "{args.app}"'
+             f' to click menu item "Settings" of menu "{args.app}" of menu '
+             f'bar item "{args.app}" of menu bar 1'],
+            capture_output=True)
+        time.sleep(1.5)
+
+    def nav_back(uimap, st):
+        """One step toward the list from a detail/other Settings page."""
+        # 'Go back' on a detail view returns to the list. Elsewhere the
+        # selected 'Secure store' sidebar item is a no-op, so hop via
+        # 'General' — the sidebar frame stays valid for the second click.
+        if st == "detail":
+            b = by_label(uimap, "Go back", "AXButton")
+            if b:
+                click_el(b)
+                time.sleep(0.8)
+                return
+        for lbl in ("General", "Secure store"):
+            b = by_label(uimap, lbl, "AXButton")
+            if b:
+                click_el(b)
+                time.sleep(0.6)
+
+    def ensure_list():
+        """Land on the Secure store list from wherever Settings sits."""
+        for _ in range(10):
+            wid0 = window_id()
+            if wid0 is None:
+                # window genuinely missing — the menu item toggles a live
+                # window closed, so only reopen when it is truly gone
+                print("ensure_list: no window", file=sys.stderr)
+                open_settings()
+                time.sleep(1)
+                continue
+            uimap = see()
+            if not uimap:
+                time.sleep(1)
+                continue
+            st = state(uimap)
+            if st == "list":
+                return uimap
+            if st == "dialog":
+                b = by_label(uimap, "Cancel", "AXButton")
+                if b:
+                    click_el(b)
+                    continue
+            nav_back(uimap, st)
+        return None
+
+    def stored_username(uimap, domain):
+        # Open the row for `domain` (scrolling until visible) and return
+        # the username its detail view shows.
+        for _ in range(15):
+            rows = domain_rows(uimap, domain)
+            if rows:
+                click_el(rows[0])
+                time.sleep(0.8)
+                dm = see()
+                if not (dm and state(dm) == "detail"):
+                    return ""
+                vals = [e.get("label") or e.get("title") or ""
+                        for e in dm.values()]
+                user = next((v for v in vals
+                             if v and v not in STATIC_DETAIL_LABELS
+                             and v != domain), "")
+                nav_back(dm, "detail")
+                return user
+            scroll_list("down", 5)
+            uimap = see()
+            if not uimap or state(uimap) != "list":
+                return ""
+        return ""
+
+    def open_dialog():
+        for _ in range(10):
+            uimap = see()
+            if not uimap:
+                time.sleep(1)
+                continue
+            st = state(uimap)
+            if st == "dialog":
+                fields = [by_label(uimap, l, "AXTextField")
+                          for l in ("URL", "Username", "Password")]
+                if all(fields):
+                    return uimap
+                time.sleep(0.6)
+                continue
+            if st != "list":
+                nav_back(uimap, st)
+                continue
+            add = None
+            for e in uimap.values():
+                if (e.get("label") or e.get("title")) == "Add" and \
+                        e.get("role") == "AXButton" and \
+                        e["frame"][0][1] - win_top["y"] < 150:
+                    add = e
+            if add is None:
+                # the Add button scrolls away with the list — go back up
+                scroll_list("up", 10)
+                continue
+            click_el(add)
+            time.sleep(1.2)
+        return None
+
+    def fill_entry(entry):
+        uimap = open_dialog()
+        if uimap is None:
+            return "dialog never rendered"
+        for label, key in (("URL", "url"), ("Username", "username"),
+                           ("Password", "password")):
+            f = by_label(uimap, label, "AXTextField")
+            if f is None:
+                return f"{label} field missing"
+            click_el(f)
+            paste(entry[key])
+        add = None
+        for e in uimap.values():
+            if (e.get("label") or e.get("title")) == "Add" and \
+                    e.get("role") == "AXButton" and \
+                    e["frame"][0][1] - win_top["y"] > 200:
+                add = e
+        if add is None:
+            return "dialog Add button missing"
+        click_el(add)
+        time.sleep(1.5)
+        dom = domain_of(entry)
+        for _ in range(10):
+            um2 = see()
+            if um2 and state(um2) == "list" and domain_rows(um2, dom):
+                return "ok"
+            time.sleep(1)
+        # the row may be saved but scrolled off-screen — full scan before
+        # declaring failure (the list virtualizes ~12 rows at a time)
+        um3 = see()
+        if um3 and state(um3) == "list" and dom in scan_rows(um3):
+            return "ok"
+        return "not in list after save"
+
+    log = open(log_path, "a")
+
+    def emit(msg):
+        print(msg)
+        log.write(msg + "\n")
+        log.flush()
+
+    uimap = ensure_list()
+    if uimap is None:
+        emit("FATAL: could not reach the Secure store list")
+        sys.exit(1)
+    store = scan_rows(uimap)
+    emit(f"store scan: {len(store)} rows")
+
+    ok = fail = skip = 0
+    for i, e in enumerate(entries):
+        dom = domain_of(e)
+        cur = see()
+        if cur is None or state(cur) != "list":
+            # window died or the UI drifted off the list — land back on it
+            cur = ensure_list()
+            if cur is None:
+                fail += 1
+                emit(f"[{i}] {e['name']}: no secure store view")
+                continue
+        if dom in store:
+            user = stored_username(cur, dom)
+            skip += 1
+            emit(f"[{i}] {e['name']}: already in store"
+                 + (f" (user: {user})" if user else ""))
+            continue
+        try:
+            res = fill_entry(e)
+        except Exception as ex:
+            res = f"exception {ex.__class__.__name__}"
+        if res == "ok":
+            store.append(dom)
+        ok += res == "ok"
+        fail += res != "ok"
+        emit(f"[{i}] {e['name']}: {res}")
+    emit(f"DONE ok={ok} fail={fail} skip={skip}")
+    sys.exit(1 if fail else 0)
+
+
+if __name__ == "__main__":
+    main()
