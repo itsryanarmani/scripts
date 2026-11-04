@@ -39,6 +39,11 @@
 # Flags: --model M  --reasoning-effort L  --repo owner/name  --reuse bx_x  --keep
 set -euo pipefail
 export PATH="$HOME/.ascii/bin:$PATH"
+# BOX_BIN injects the box binary (tests point it at a stub) and BOX_CLI
+# carries the same injector to box-provider-readiness. Neither touches HOME.
+BOX_BIN="${BOX_BIN:-box}"
+export BOX_CLI="${BOX_CLI:-$BOX_BIN}"
+box() { command "$BOX_BIN" "$@"; }
 
 PROVIDER="${1:-}"; shift || true
 [[ -n "$PROVIDER" ]] || { echo "box-agent: first arg = provider (claude|codex|gemini|pi|kimi|cursor|devin)"; exit 2; }
@@ -69,7 +74,7 @@ onbox_cmd() {
     pi)     echo "PI_WORKER=1 pi -p --no-extensions --provider zai-api --model glm-5.3-flash" ;;
     kimi)   echo "kimi -m moonshot-ai/kimi-k3 -p" ;;
     cursor) echo "cursor-agent -p --trust --model composer-2.5" ;;
-    devin)  echo "env -u DEVIN_API_KEY -u DEVIN_TOKEN -u WINDSURF_API_KEY devin --model swe-1-7 --permission-mode accept-edits --respect-workspace-trust false -p --" ;;
+    devin)  echo "env -u DEVIN_API_KEY -u DEVIN_TOKEN -u WINDSURF_API_KEY devin --model swe-1.7 --permission-mode accept-edits --respect-workspace-trust false -p --" ;;
     *) return 1 ;;
   esac
 }
@@ -167,14 +172,40 @@ if [[ "$PROVIDER" == claude || "$PROVIDER" == codex ]]; then
     fi
   fi
 else
-  # ON-BOX CLI path. Clone with DIRECT-ARGV box exec (no shell string to mangle),
-  # then run the CLI. Requires the CLI already authed on the Box.
+  # ON-BOX CLI path. Prove canonical github identity/access from an explicit
+  # existing cwd BEFORE cloning, clone with the canonical personal token
+  # (never ambient), then prove full provider readiness in the checkout
+  # before the runner ships. Bootstrap failures exit 3/4 with the Box
+  # stopped by the EXIT trap; they are never source defects.
   CLI="${PROVIDER}"; [[ "$PROVIDER" == cursor ]] && CLI="cursor-agent"
   have="$(box exec "$BOX" --json -- command -v "$CLI" 2>/dev/null | jq -r '.stdout' | tr -d '[:space:]')" || true
   [[ -z "$have" ]] && { echo "box-agent: $CLI not found on the Box — install/auth it there first." >&2; exit 3; }
-  box exec "$BOX" -- mkdir -p /home/user/work >/dev/null 2>&1 || true
-  box exec "$BOX" -- rm -rf "$DIR" >/dev/null 2>&1 || true
-  box exec "$BOX" --json --timeout 180 -- gh repo clone "$REPO" "$DIR" >/dev/null 2>&1 || { echo "box-agent: clone failed" >&2; exit 4; }
+  PROBE_BASE="${BOX_PROBE_BASE:-/home/user}"
+  BOX_WORK="$PROBE_BASE/work"
+  READINESS_GATE="$(cd "$(dirname "$0")" && pwd)/box-provider-readiness"
+  [[ -x "$READINESS_GATE" ]] || { echo "box-agent: box-provider-readiness not found next to box-agent; refusing unwired dispatch" >&2; exit 3; }
+  box exec "$BOX" -- mkdir -p "$BOX_WORK" >/dev/null 2>&1 || true
+  "$READINESS_GATE" --box "$BOX" --cwd "$BOX_WORK" --repo "$REPO" --github-only || exit 3
+  clone_runner="$(mktemp)"
+  CLONE_REMOTE="$PROBE_BASE/box-agent-clone-$$.sh"
+  cat > "$clone_runner" <<RUNNER
+#!/usr/bin/env bash
+set -uo pipefail
+REPO="\${1:?}"; DEST="\${2:?}"; BASE="\${3:-/home/user}"
+GH_F="\$BASE/.agents/github-personal.token"
+[ -s "\$GH_F" ] || { echo "box-agent: canonical github token missing on the Box" >&2; exit 1; }
+GH_T="\$(cat "\$GH_F")"; [ -n "\$GH_T" ] || { echo "box-agent: canonical github token empty on the Box" >&2; exit 1; }
+rm -rf "\$DEST"
+exec env -u GH_TOKEN -u GITHUB_TOKEN GH_TOKEN="\$GH_T" GITHUB_TOKEN="\$GH_T" gh repo clone "\$REPO" "\$DEST"
+RUNNER
+  box scp "$clone_runner" "$BOX:$CLONE_REMOTE" >/dev/null 2>&1 \
+    || { rm -f "$clone_runner"; echo "box-agent: could not copy the clone runner to the Box" >&2; exit 4; }
+  rm -f "$clone_runner"
+  CLONE_RAW="$(box exec "$BOX" --cwd "$BOX_WORK" --json --timeout 180 -- bash "$CLONE_REMOTE" "$REPO" "$DIR" "$PROBE_BASE" 2>/dev/null)" \
+    || { echo "box-agent: clone failed (transport)" >&2; exit 4; }
+  CLONE_CODE="$(printf '%s' "$CLONE_RAW" | jq -r '.exitCode // 1' 2>/dev/null)" || CLONE_CODE=1
+  [[ "$CLONE_CODE" = "0" ]] || { echo "box-agent: clone failed" >&2; exit 4; }
+  "$READINESS_GATE" --box "$BOX" --provider "$PROVIDER" --cwd "$DIR" --repo "$REPO" || exit 3
   CMD="$(onbox_cmd "$PROVIDER")"
   echo "box-agent: running $PROVIDER CLI on the Box ($CLI) in $DIR"
   # `box exec` joins argv into a remote shell command string, so a quoted

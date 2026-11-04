@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# box-provider-readiness — prove a provider can run on a target Box BEFORE the
+# implementation worker is marked running.
+#
+# On the given (already recorded) Box it checks, in order:
+#   1. the Box answers `true` from an explicit --cwd (bounded retries reuse the
+#      recorded id through transient startup; this helper never creates a Box)
+#   2. the provider's actual binary is installed (`command -v`)
+#   3. its canonical personal credential file exists and is non-empty
+#      (`test -s`; values are never printed, never copied)
+#   4. the canonical personal github token beats any stale inherited
+#      GH_TOKEN/GITHUB_TOKEN (both scrubbed), proving REST identity equals
+#      pooriaarab (`gh api user`) and repo access (`git ls-remote` for --repo)
+#   5. a bounded probe through the real provider CLI computes unique
+#      arithmetic AND writes it to a file in a unique owned probe directory;
+#      both the reply and the file must equal the expected value exactly.
+#      Replies parse per provider: whole reply, trailing-line joins, then
+#      single lines; a JSON dict yields `result`/`output`/`content`/`text`/
+#      `message` (cursor's --output-format json `result`), else a bare
+#      string/number; unknown shapes fall back to the last line, never raw
+#
+# Only then the sentinel command after `--` runs (locally). Every failure
+# exits nonzero with the sentinel unreached. Provider failures are reported
+# as provider bootstrap failures, never as source defects.
+#
+# Canonical paths mirror box-setup/install-agent-clis.sh; invocation forms
+# mirror the box-work on-Box runner, except the muse probe omits --json
+# (plain digits are the reply contract) and uses the probe dir as workspace.
+# No `box env set*` here: credentials arrive through existing provisioning,
+# box-credentials stays false, and nothing here snapshots a secret.
+#
+# Usage:
+#   box-provider-readiness --box bx_id --provider muse [--model m]
+#     --cwd /home/user/<repo> [--repo owner/name] [--ready-secs 120]
+#     [--timeout 120] -- <sentinel...>
+#   box-provider-readiness --box bx_id --cwd /home/user/work --repo o/n
+#     --github-only proves canonical github identity/access before clone.
+# Without `--` it validates only. BOX_CLI injects the box binary for tests;
+# BOX_PROBE_BASE overrides the on-Box home (/home/user) for tests.
+set -uo pipefail
+
+BOX="${BOX_CLI:-box}"
+PROBE_BASE="${BOX_PROBE_BASE:-/home/user}"
+EXPECTED_GH_LOGIN="pooriaarab"
+PROVIDER=""; MODEL=""; BOXID=""; CWD=""; REPO=""
+READY_SECS=120; TIMEOUT=120; GITHUB_ONLY=0; SENTINEL=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --box) [ $# -ge 2 ] || { echo "box-provider-readiness: --box needs a value" >&2; exit 2; }; BOXID="$2"; shift 2 ;;
+    --provider) [ $# -ge 2 ] || { echo "box-provider-readiness: --provider needs a value" >&2; exit 2; }; PROVIDER="$2"; shift 2 ;;
+    --model) [ $# -ge 2 ] || { echo "box-provider-readiness: --model needs a value" >&2; exit 2; }; MODEL="$2"; shift 2 ;;
+    --cwd) [ $# -ge 2 ] || { echo "box-provider-readiness: --cwd needs a value" >&2; exit 2; }; CWD="$2"; shift 2 ;;
+    --repo) [ $# -ge 2 ] || { echo "box-provider-readiness: --repo needs a value" >&2; exit 2; }; REPO="$2"; shift 2 ;;
+    --ready-secs) [ $# -ge 2 ] || { echo "box-provider-readiness: --ready-secs needs a value" >&2; exit 2; }; READY_SECS="$2"; shift 2 ;;
+    --timeout) [ $# -ge 2 ] || { echo "box-provider-readiness: --timeout needs a value" >&2; exit 2; }; TIMEOUT="$2"; shift 2 ;;
+    --github-only) GITHUB_ONLY=1; shift ;;
+    -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
+    --) shift; SENTINEL=("$@"); break ;;
+    *) echo "box-provider-readiness: unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
+
+fail() { echo "box-provider-readiness: FAIL (provider bootstrap, not a source defect): $*" >&2; exit 1; }
+[ -n "$BOXID" ] || { echo "box-provider-readiness: --box is required" >&2; exit 2; }
+if [ "$GITHUB_ONLY" = 1 ]; then [ -n "$REPO" ] || { echo "box-provider-readiness: --github-only needs --repo owner/name" >&2; exit 2; }
+else [ -n "$PROVIDER" ] || { echo "box-provider-readiness: --provider is required" >&2; exit 2; }; fi
+[ -n "$CWD" ] || { echo "box-provider-readiness: --cwd is required (explicit cwd, never implicit)" >&2; exit 2; }
+for _v in "$READY_SECS" "$TIMEOUT"; do
+  case "$_v" in ''|*[!0-9]*) echo "box-provider-readiness: --ready-secs/--timeout need positive integers (got '$_v')" >&2; exit 2 ;; esac
+  [ -n "${_v//0/}" ] || { echo "box-provider-readiness: --ready-secs/--timeout must be above zero (got '$_v')" >&2; exit 2; }
+  [ "$_v" -le 1800 ] || { echo "box-provider-readiness: --ready-secs/--timeout exceed the 1800s bound (got '$_v')" >&2; exit 2; }; done; unset _v
+[ -z "$REPO" ] || case "$REPO" in */*) : ;; *) echo "box-provider-readiness: --repo wants owner/name (got '$REPO')" >&2; exit 2 ;; esac
+command -v python3 >/dev/null 2>&1 || { echo "box-provider-readiness: python3 is required" >&2; exit 2; }
+
+# Binary, canonical personal credential file, pinned model route per provider.
+# Models mirror box-work and box-setup/install-agent-clis.sh exactly.
+provider_field() { # <provider> <field>
+  case "$1:$2" in
+    muse:bin) echo "muse" ;; muse:cred) echo ".config/muse/auth.json" ;; muse:model) echo "muse-spark-1.3-contributor" ;;
+    pi:bin) echo "pi" ;; pi:cred) echo ".pi/agent/auth.json" ;; pi:model) echo "glm-5.3-flash" ;;
+    gemini:bin) echo "gemini" ;; gemini:cred) echo ".gemini-personal/.gemini/.env" ;; gemini:model) echo "gemini-3.8-flash" ;;
+    cursor:bin) echo "cursor-agent" ;; cursor:cred) echo ".agents/cursor.env" ;; cursor:model) echo "composer-2.5" ;;
+    devin:bin) echo "devin" ;; devin:cred) echo ".local/share/devin/credentials.toml" ;; devin:model) echo "swe-1.7" ;;
+    kimi:bin) echo "kimi" ;; kimi:cred) echo ".kimi-code/config.toml" ;; kimi:model) echo "moonshot-ai/kimi-k3" ;;
+    codex:bin) echo "codex" ;; codex:cred) echo ".codex-personal/auth.json" ;;
+    *) return 1 ;;
+  esac
+}
+if [ "$GITHUB_ONLY" = 0 ]; then
+BIN="$(provider_field "$PROVIDER" bin)" || { echo "box-provider-readiness: unsupported provider '$PROVIDER' (supported: muse pi gemini cursor devin kimi codex; claude is native-only: use box prompt)" >&2; exit 2; }
+CRED_REL="$(provider_field "$PROVIDER" cred)"
+if PINNED="$(provider_field "$PROVIDER" model 2>/dev/null)"; then
+  [ -z "$MODEL" ] && MODEL="$PINNED"
+  [ "$MODEL" = "$PINNED" ] || fail "provider '$PROVIDER' needs model '$PINNED', not '$MODEL'"
+elif [ -n "$MODEL" ]; then echo "box-provider-readiness: provider '$PROVIDER' takes no --model" >&2; exit 2
+fi
+fi
+
+# Never log values: name paths only, and redact KEY/TOKEN-shaped assignments
+# plus Bearer tokens from any provider output echoed below.
+scrub() { sed -E -e 's/[A-Za-z_]*((KEY|TOKEN|SECRET)[A-Za-z_]*)=[^[:space:]]+/\1=[redacted]/g' -e 's/Bearer [^[:space:]]+/Bearer [redacted]/g'; }
+
+exec_json() { # <timeout> <argv...>: run on the Box, print the --json envelope
+  local t="$1"; shift
+  "$BOX" exec --cwd "$CWD" "$BOXID" --timeout "$t" --json -- "$@"
+}
+
+echo "box-provider-readiness: box=$BOXID provider=${PROVIDER:-github-only} model=${MODEL:-default} cwd=$CWD"
+start="$(date +%s)"
+while :; do
+  if "$BOX" exec --cwd "$CWD" "$BOXID" --timeout 20 -- true >/dev/null 2>&1; then break; fi
+  (( $(date +%s) - start < READY_SECS )) || fail "box $BOXID never answered within ${READY_SECS}s from $CWD (recorded id kept; retry, no duplicate created)"
+  sleep 5
+done
+
+if [ "$GITHUB_ONLY" = 0 ]; then
+HAVE="$(exec_json 20 command -v "$BIN" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("stdout","").strip())' 2>/dev/null)" || HAVE=""
+[ -n "$HAVE" ] || fail "binary '$BIN' not found on box $BOXID"
+echo "box-provider-readiness: binary present: $BIN"
+CRED_CODE="$(exec_json 20 test -s "$PROBE_BASE/$CRED_REL" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("exitCode",1))' 2>/dev/null)" || CRED_CODE=1
+[ "$CRED_CODE" = "0" ] \
+  || fail "canonical credential '$PROBE_BASE/$CRED_REL' missing or empty on box $BOXID; refusing ambient/shared fallback"
+echo "box-provider-readiness: canonical credential present: $PROBE_BASE/$CRED_REL"
+fi
+# GitHub identity uses the canonical personal token only. It is read on the
+# Box by the probe runner itself: never created, copied, or printed here. A
+# missing file fails explicitly so the coordinator can provision the owned Box.
+GH_TOKEN_FILE="$PROBE_BASE/.agents/github-personal.token"
+GH_CODE="$(exec_json 20 test -s "$GH_TOKEN_FILE" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("exitCode",1))' 2>/dev/null)" || GH_CODE=1
+[ "$GH_CODE" = "0" ] \
+  || fail "canonical github token '$GH_TOKEN_FILE' missing or empty on box $BOXID (coordinator provisions the owned Box); refusing ambient/shared fallback"
+echo "box-provider-readiness: canonical github token present: $GH_TOKEN_FILE"
+
+# Pre-clone gate: prove canonical github identity/access from an explicit
+# existing cwd before any clone. No provider probe runs here, so this is
+# safe to call with a cwd that exists while the checkout does not yet.
+if [ "$GITHUB_ONLY" = 1 ]; then
+GH_RUNNER="$(mktemp)"; GH_REMOTE="$PROBE_BASE/box-provider-github-$RANDOM-$$.sh"
+cat > "$GH_RUNNER" <<RUNNER
+#!/usr/bin/env bash
+set -uo pipefail
+GH_F="\$1"; GH_R="\$2"; GH_WANT="\$3"
+[ -s "\$GH_F" ] || { echo "box-provider-readiness: canonical github token missing on the Box" >&2; exit 1; }
+GH_T="\$(cat "\$GH_F")"; [ -n "\$GH_T" ] || { echo "box-provider-readiness: canonical github token empty on the Box" >&2; exit 1; }
+GH_L="\$(env -u GH_TOKEN -u GITHUB_TOKEN GH_TOKEN="\$GH_T" GITHUB_TOKEN="\$GH_T" gh api user --jq .login 2>&1)" || { printf '%s\n' "\$GH_L" >&2; echo "box-provider-readiness: github identity check failed (a stale/expired canonical token is a bootstrap failure)" >&2; exit 1; }
+[ "\$GH_L" = "\$GH_WANT" ] || { echo "box-provider-readiness: github identity '\$GH_L' is not the canonical personal account; refusing" >&2; exit 1; }
+env -u GH_TOKEN -u GITHUB_TOKEN git -c "http.extraHeader=Authorization: Bearer \$GH_T" ls-remote "https://github.com/\$GH_R.git" HEAD >/dev/null 2>&1 || { echo "box-provider-readiness: git ls-remote failed for \$GH_R" >&2; exit 1; }
+RUNNER
+"$BOX" scp "$GH_RUNNER" "$BOXID:$GH_REMOTE" >/dev/null 2>&1 || { rm -f "$GH_RUNNER"; fail "could not copy the github gate runner to box $BOXID"; }
+rm -f "$GH_RUNNER"
+GH_RAW="$(exec_json "$TIMEOUT" bash "$GH_REMOTE" "$GH_TOKEN_FILE" "$REPO" "$EXPECTED_GH_LOGIN" 2>/dev/null)" || { "$BOX" exec --cwd "$CWD" "$BOXID" -- rm -f "$GH_REMOTE" >/dev/null 2>&1; fail "github gate run on box $BOXID failed before returning (timeout or transport)"; }
+GH_ERR="$(printf '%s' "$GH_RAW" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("stderr",""))' 2>/dev/null)" || GH_ERR=""
+GH_EXIT="$(printf '%s' "$GH_RAW" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("exitCode",1))' 2>/dev/null)" || GH_EXIT=1
+"$BOX" exec --cwd "$CWD" "$BOXID" -- rm -f "$GH_REMOTE" >/dev/null 2>&1 || true
+[ "$GH_EXIT" = "0" ] || { printf '%s\n' "$GH_ERR" | scrub | tail -5 >&2; fail "github identity/access check failed on box $BOXID (a stale/expired canonical token is a bootstrap failure)"; }
+echo "box-provider-readiness: READY github=$EXPECTED_GH_LOGIN repo=$REPO box=$BOXID"
+if [ "${#SENTINEL[@]}" -gt 0 ]; then
+  echo "box-provider-readiness: running sentinel"
+  "${SENTINEL[@]}"
+fi
+exit 0
+fi
+
+A=$((RANDOM % 400 + 11)); B=$((RANDOM % 400 + 11)); EXPECTED=$((A * B)); NONCE="$(date +%s)-$$-$RANDOM"
+PROBEDIR=""; REMOTE=""
+# Unique owned probe files are removed on success AND failure (intended word
+# split: empty vars expand to nothing; the guard skips a bare rm -rf, SC2086).
+cleanup_remote() { if [ -n "$PROBEDIR" ] || [ -n "$REMOTE" ]; then "$BOX" exec --cwd "$CWD" "$BOXID" -- rm -rf $PROBEDIR $REMOTE >/dev/null 2>&1 || true; fi; }
+trap cleanup_remote EXIT
+PROBEDIR="$(exec_json 20 mktemp -d "$PROBE_BASE/.box-provider-readiness-XXXXXX" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("stdout","").strip())' 2>/dev/null)" || PROBEDIR=""
+case "$PROBEDIR" in "$PROBE_BASE"/.box-provider-readiness-*) : ;; *) fail "probe directory was not created under $PROBE_BASE" ;; esac
+RESULT="$PROBEDIR/result.txt"
+PROMPT="Compute $A*$B. Reply with only the number (digits, no other text). Also write that exact number (digits only, one line) to $RESULT using your file tools."
+B64PROMPT="$(printf '%s' "$PROMPT" | base64 | tr -d '\n')"
+
+RUNNER="$(mktemp)"; REMOTE="$PROBE_BASE/box-provider-probe-$NONCE.sh"
+# Correct export semantics per provider: cursor and gemini require their
+# canonical file exported (ambient never qualifies); devin scrubs API vars
+# so only the personal login authenticates via -p (no --prompt-file: the
+# devin binary is absent here, so the install script's -p route is used);
+# codex selects the personal profile via CODEX_HOME, never ambient. $MODEL
+# is the validated pinned route above, so claim and invocation agree.
+case "$PROVIDER" in
+  muse) CMD="brief_file=\"\$(mktemp)\"; printf '%s' \"\$P\" > \"\$brief_file\"; muse exec --yolo --model \"$MODEL\" --workspace \"$PROBEDIR\" --prompt-file \"\$brief_file\"; rc=\$?; rm -f \"\$brief_file\"; exit \$rc" ;;
+  pi) CMD="PI_WORKER=1 pi -p --no-extensions --provider zai-api --model \"$MODEL\" -a --tools read,grep,find,ls,edit,write,bash \"\$P\"" ;;
+  gemini) CMD="unset GEMINI_API_KEY; set -a; . \"$PROBE_BASE/.gemini-personal/.gemini/.env\"; set +a; [ -n \"\${GEMINI_API_KEY:-}\" ] || exit 1; env -u GOOGLE_GENAI_USE_VERTEXAI -u GOOGLE_APPLICATION_CREDENTIALS -u GOOGLE_CLOUD_PROJECT -u GOOGLE_CLOUD_LOCATION GEMINI_CLI_HOME=\"$PROBE_BASE/.gemini-personal\" GEMINI_API_KEY=\"\$GEMINI_API_KEY\" GEMINI_CLI_TRUST_WORKSPACE=true gemini --skip-trust --yolo -m \"$MODEL\" -p \"\$P\"" ;;
+  cursor) CMD="unset CURSOR_API_KEY; set -a; . \"$PROBE_BASE/.agents/cursor.env\"; set +a; [ -n \"\${CURSOR_API_KEY:-}\" ] || exit 1; cursor-agent -p --trust --force --model \"$MODEL\" --output-format json \"\$P\"" ;;
+  devin) CMD="env -u DEVIN_API_KEY -u DEVIN_TOKEN -u WINDSURF_API_KEY devin --model \"$MODEL\" --respect-workspace-trust false --permission-mode dangerous -p \"\$P\"" ;;
+  kimi) CMD="kimi -m \"$MODEL\" -p \"\$P\"" ;;
+  codex) CMD="env -u OPENAI_API_KEY -u OPENAI_BASE_URL CODEX_HOME=\"$PROBE_BASE/.codex-personal\" codex exec --skip-git-repo-check \"\$P\"" ;;
+esac
+cat > "$RUNNER" <<RUNNER
+#!/usr/bin/env bash
+set -uo pipefail
+P="\$(printf %s "\$1" | base64 -d)"
+GH_F="\$2"; GH_R="\${3:-}"; GH_WANT="\${4:-}"
+[ -s "\$GH_F" ] || { echo "box-provider-readiness: canonical github token missing on the Box" >&2; exit 1; }
+GH_T="\$(cat "\$GH_F")"; [ -n "\$GH_T" ] || { echo "box-provider-readiness: canonical github token empty on the Box" >&2; exit 1; }
+GH_L="\$(env -u GH_TOKEN -u GITHUB_TOKEN GH_TOKEN="\$GH_T" GITHUB_TOKEN="\$GH_T" gh api user --jq .login 2>&1)" || { printf '%s\n' "\$GH_L" >&2; echo "box-provider-readiness: github identity check failed (a stale/expired canonical token is a bootstrap failure)" >&2; exit 1; }
+[ "\$GH_L" = "\$GH_WANT" ] || { echo "box-provider-readiness: github identity '\$GH_L' is not the canonical personal account; refusing" >&2; exit 1; }
+if [ -n "\$GH_R" ]; then env -u GH_TOKEN -u GITHUB_TOKEN git -c "http.extraHeader=Authorization: Bearer \$GH_T" ls-remote "https://github.com/\$GH_R.git" HEAD >/dev/null 2>&1 || { echo "box-provider-readiness: git ls-remote failed for \$GH_R" >&2; exit 1; }; fi
+$CMD
+RUNNER
+"$BOX" scp "$RUNNER" "$BOXID:$REMOTE" >/dev/null 2>&1 || { rm -f "$RUNNER"; fail "could not copy the probe runner to box $BOXID"; }
+rm -f "$RUNNER"
+
+RAW="$(exec_json "$TIMEOUT" bash "$REMOTE" "$B64PROMPT" "$GH_TOKEN_FILE" "$REPO" "$EXPECTED_GH_LOGIN" 2>/dev/null)" || fail "probe run on box $BOXID failed before returning (timeout or transport)"
+REPLY="$(printf '%s' "$RAW" | python3 -c 'import sys,json; o=json.load(sys.stdin).get("stdout",""); exec("def pick(s):\n LS=[l.strip() for l in s.strip().splitlines() if l.strip()]\n CS=[s.strip()]+[chr(10).join(LS[i:]) for i in range(len(LS))]+LS[::-1]\n for x in CS:\n  try: d=json.loads(x)\n  except Exception: continue\n  v=\"\"\n  if type(d)==dict:\n   for k in (\"result\",\"output\",\"content\",\"text\",\"message\"):\n    w=d.get(k)\n    if type(w)==str and w.strip(): v=w.strip(); break\n    if type(w) in (int,float): v=str(w); break\n  elif type(d)==str and d.strip(): v=d.strip()\n  elif type(d) in (int,float): v=str(d)\n  if v: return v\n return LS[-1] if LS else \"\""); print(pick(o))' 2>/dev/null)" || REPLY=""
+ERR="$(printf '%s' "$RAW" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("stderr",""))' 2>/dev/null)" || ERR=""
+CODE="$(printf '%s' "$RAW" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("exitCode",1))' 2>/dev/null)" || CODE=1
+[ "$CODE" = "0" ] || { printf '%s\n' "$ERR" | scrub | tail -5 >&2; case "$ERR" in *github*|*ls-remote*) fail "github credential check failed on box $BOXID (a stale/expired canonical token is a bootstrap failure)" ;; *) fail "provider '$PROVIDER' probe exited $CODE on box $BOXID" ;; esac; }
+[ "$REPLY" = "$EXPECTED" ] || { printf '%s\n' "$ERR" | scrub | tail -5 >&2; fail "provider '$PROVIDER' replied '$(printf '%s' "$REPLY" | scrub | head -c 200)', expected '$EXPECTED'"; }
+GOT="$(exec_json 20 cat "$RESULT" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("stdout","").strip())' 2>/dev/null)" || GOT=""
+[ "$GOT" = "$EXPECTED" ] || fail "provider '$PROVIDER' wrote '$GOT' to the probe file, expected '$EXPECTED'"
+echo "box-provider-readiness: READY box=$BOXID provider=$PROVIDER model=${MODEL:-default} arithmetic=$EXPECTED file=ok"
+if [ "${#SENTINEL[@]}" -gt 0 ]; then
+  echo "box-provider-readiness: running sentinel"
+  "${SENTINEL[@]}"
+fi
