@@ -93,11 +93,19 @@ fresh; echo 1 > "$H/done-at"; start --rounds 3
 check "25: a job that ends inside the check exits 0" '[ $CODE -eq 0 ] && [[ "$OUT" == *"already finished"* ]]'
 
 race_ok=0
+race_outcomes=()
 for _ in 1 2 3 4 5; do
   fresh; echo 3 > "$H/agent-sleep"
   ( start; echo $CODE > "$T/race1" ) & ( start; echo $CODE > "$T/race2" ) & wait
-  if [ "$(cat "$T/race1" "$T/race2" | sort | tr "\n" " ")" = "0 1 " ]; then race_ok=1; break; fi
+  race_codes="$(cat "$T/race1" "$T/race2" | sort | tr "\n" " ")"
+  race_outcomes+=("$race_codes")
+  if [ "$race_codes" = "0 1 " ]; then race_ok=1; break; fi
 done
+if [ "$race_ok" -ne 1 ]; then
+  for attempt in "${!race_outcomes[@]}"; do
+    printf 'race attempt %s: exit codes %s\n' "$((attempt+1))" "${race_outcomes[$attempt]}"
+  done
+fi
 check "22: of two racing starts, exactly one runs" '[ "$race_ok" = 1 ]'
 run stop
 
