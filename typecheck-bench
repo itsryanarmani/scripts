@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Time a repo's typecheck before/after swapping tsc for tsc-rs.
+# Usage: typecheck-bench <repo-path> [--runs N] [--command 'bun run typecheck']
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: typecheck-bench <repo-path> [--runs N] [--command CMD]
+
+Runs CMD (default: bun run typecheck) N times (default: 1), prints wall seconds
+per run and median. Set TYPECHECK_BENCH_LABEL to tag lines in JSON output.
+
+Examples:
+  typecheck-bench . --runs 3
+  TYPECHECK_BENCH_LABEL=before typecheck-bench . --command 'wireit run typecheck'
+USAGE
+  exit 2
+}
+
+repo=""
+runs=1
+cmd="bun run typecheck"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --runs)
+      runs="${2:?}"
+      shift 2
+      ;;
+    --command)
+      cmd="${2:?}"
+      shift 2
+      ;;
+    -h | --help) usage ;;
+    *)
+      if [[ -z "$repo" ]]; then
+        repo="$1"
+        shift
+      else
+        echo "typecheck-bench: unknown arg: $1" >&2
+        usage
+      fi
+      ;;
+  esac
+done
+
+[[ -n "$repo" ]] || usage
+[[ -d "$repo" ]] || {
+  echo "typecheck-bench: not a directory: $repo" >&2
+  exit 1
+}
+
+label="${TYPECHECK_BENCH_LABEL:-run}"
+times=()
+
+cd "$repo"
+for ((i = 1; i <= runs; i++)); do
+  rm -rf .wireit 2>/dev/null || true
+  start=$(python3 -c 'import time; print(time.time())')
+  bash -lc "$cmd"
+  end=$(python3 -c 'import time; print(time.time())')
+  sec=$(python3 -c "print(round($end - $start, 2))")
+  times+=("$sec")
+  echo "${label} run ${i}/${runs}: ${sec}s"
+done
+
+python3 - "$label" "${times[@]}" <<'PY'
+import json, statistics, sys
+label, *raw = sys.argv[1:]
+vals = [float(x) for x in raw]
+med = statistics.median(vals)
+print(json.dumps({"label": label, "runs": len(vals), "seconds": vals, "median_seconds": med}))
+PY
