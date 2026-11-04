@@ -5,17 +5,16 @@ The numbers below describe those runs, not expected savings on another runner.
 
 ## Measure first
 
-1. Audit the last 100–150 runs. Split time into queue wait, setup, and execution.
+1. As a starting point, audit the last 100–150 runs. Split time into queue wait, setup, and execution.
    Deduplicate rerun copies by job name, runner, start time, and end time.
    Calculate percentiles from successful runs only. Report failures separately.
 2. Measure cache restore cost on the real runner before adding a cache.
    A per-site compiler cache took a median 24 s to restore and saved about 8 s.
-   The measured net effect across the run was a 35 s loss.
    A browser cache saved about 0 s. A cache hit is not a saving.
 3. Never key a cache with many writers on the commit SHA. Each commit adds
    another copy against the 10 GB quota and pushes useful entries out.
-4. Quote measured results only. Three projections changed from 11.9 min saved,
-   to 3–4 min saved, to a net loss. A projected saving is not a result.
+4. One projected saving was revised downward twice and then measured as a loss.
+   Quote measured numbers only.
 
 ## Shorten the path
 
