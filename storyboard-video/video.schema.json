@@ -178,7 +178,7 @@
     "budget": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "capUsd": {"type": "number", "minimum": 0, "description": "Record of the spending limit. veo does not enforce it yet."},
+        "capUsd": {"type": "number", "minimum": 0, "description": "veo refuses when its estimate plus recorded spend would pass this."},
         "spend": {
           "type": "array",
           "items": {
@@ -191,7 +191,7 @@
         },
         "approvals": {
           "type": "array",
-          "description": "A human yes at each gate. Video spend waits for the stills approval; veo does not check it yet.",
+          "description": "A human yes at each gate. veo refuses to run without a stills approval.",
           "items": {
             "type": "object", "required": ["stage", "at"], "additionalProperties": false,
             "properties": {
