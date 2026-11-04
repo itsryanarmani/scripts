@@ -6,21 +6,32 @@
 #   boat-hub new REPO [-- boat new args]   new box from REPO-ready; joins the tailnet, wires the hub
 #
 # Needs: boat CLI, a named environment per repo, and these files (never printed, never committed):
-#   HUB_KEY_FILE         hub key           (default $HOME/.config/cliproxy-hub/key)
-#   TS_KEY_FILE          Tailscale auth key (default $HOME/.config/cliproxy-hub/tailscale-key)
-#   HUB_URL              tailnet URL of the hub (https)
+#   HUB_KEY_FILE         hub key           (default $HOME/.config/cliproxy-hub/key, else
+#                        $BOAT_HUB_SECRETS/cliproxy-hub-key)
+#   TS_KEY_FILE          Tailscale auth key (default $HOME/.config/cliproxy-hub/tailscale-key, else the
+#                        newest $BOAT_HUB_SECRETS/tailscale-authkey-boat-hub-*)
+#   HUB_URL              tailnet URL of the hub (https); default: HUB_URL in $BOAT_HUB_SECRETS/cliproxy-hub.env
+#   BOAT_HUB_SECRETS     folder with those files (default $HOME/Documents/Personal/.secrets)
+# A repo with no REPO-ready snapshot starts from hub-ready and clones the repo on first boot. A repo with
+# no environment uses BOAT_HUB_ENV (default: hub), which must pass the GitHub login.
 #   CLIPROXY_HUB_SCRIPT  path to cliproxy-hub (default: next to this script)
 # Keys go into a new box with `boat new --file`. The Tailscale key is shredded once the box has
 # joined. The hub key stays in the box's client config. A snapshot holds neither key and no
 # Tailscale identity, so every box joins as its own device.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")" && pwd)"   # follows a symlink on PATH
 CFG="$HOME/.config/cliproxy-hub"
-HUB_KEY_FILE="${HUB_KEY_FILE:-$CFG/key}"
-TS_KEY_FILE="${TS_KEY_FILE:-$CFG/tailscale-key}"
+SECRETS="${BOAT_HUB_SECRETS:-$HOME/Documents/Personal/.secrets}"
+newest() { ls -t "$@" 2>/dev/null | head -1 || true; }
+HUB_KEY_FILE="${HUB_KEY_FILE:-$([ -r "$CFG/key" ] && echo "$CFG/key" || echo "$SECRETS/cliproxy-hub-key")}"
+TS_KEY_FILE="${TS_KEY_FILE:-$([ -r "$CFG/tailscale-key" ] && echo "$CFG/tailscale-key" || newest "$SECRETS"/tailscale-authkey-boat-hub-*)}"
+if [ -z "${HUB_URL:-}" ] && [ -r "$SECRETS/cliproxy-hub.env" ]; then
+  HUB_URL="$(awk '/^HUB_URL=/{print substr($0,9); exit}' "$SECRETS/cliproxy-hub.env")"
+fi
 HUB_SCRIPT="${CLIPROXY_HUB_SCRIPT:-$HERE/cliproxy-hub}"
 BASE="${BOAT_HUB_BASE:-hub-ready}"
+FALLBACK_ENV="${BOAT_HUB_ENV:-hub}"
 TYPE="${BOAT_HUB_TYPE:-small}"
 
 snap() { printf '%s-ready' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"; }
@@ -104,6 +115,10 @@ if [ -d "$R" ] && ! git -C "$R" rev-parse --verify HEAD >/dev/null 2>&1; then
   if [ -d /tmp/rc/.git ]; then rm -rf "$R/.git" && mv /tmp/rc/.git "$R/.git" && git -C "$R" reset -q && git -C "$R" checkout -q -- . ; fi
   rm -rf /tmp/rc
 fi
+if [ ! -d "$R" ]; then
+  for _ in $(seq 1 12); do git -C "$R" rev-parse --verify HEAD >/dev/null 2>&1 && ! test -e "$R/.git/index.lock" && break; sleep 5; done   # an environment clones it late
+  [ -d "$R/.git" ] || gh repo clone "pooriaarab/__REPO__" "$R" -- -q 2>&1 | tail -1 || true
+fi
 if [ -d "$R/.git" ]; then git -C "$R" pull --ff-only -q || echo "WARN: __REPO__ is not at the latest main" >&2; else echo "WARN: no __REPO__ checkout" >&2; fi
 AP="$HOME/private-repo-b1e6"
 if [ -d "$AP/.git" ]; then git -C "$AP" pull --ff-only -q || echo "WARN: private-repo-b1e6 not updated" >&2
@@ -183,12 +198,28 @@ cmd_new() {
   [ -n "${HUB_URL:-}" ] || die "set HUB_URL (https tailnet URL of the hub)"
   printf '%s' "$HUB_URL" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?$' || die "HUB_URL must look like https://host[:port]"
   need "$HUB_KEY_FILE"; need "$TS_KEY_FILE"; need "$HUB_SCRIPT"
-  for a in "$@"; do case "$a" in --from|--from=*|--environment|--environment=*|--setup-file|--setup-file=*|--file|--file=*) die "boat-hub sets $a itself" ;; esac; done
+  for a in "$@"; do case "$a" in --from|--from=*|--environment|--environment=*|--setup-file|--setup-file=*|--file|--file=*|--json) die "boat-hub sets $a itself" ;; esac; done
   write_boot "$repo"
-  boat new --type "$TYPE" --from "$(snap "$repo")" --environment "$repo" \
-    --file "/tmp/hub/hub-key=$HUB_KEY_FILE" --file "/tmp/hub/tailscale-key=$TS_KEY_FILE" \
-    --file "/tmp/hub/boot.sh=$work/boot.sh" --file "/tmp/hub/cliproxy-hub=$HUB_SCRIPT" \
-    --setup-file "$work/first.sh" "$@"
+  extra=("$@")
+  # A repo with no environment of its own uses one that passes the GitHub login, so first boot can clone.
+  envargs=()
+  if boat env info "$repo" --json >/dev/null 2>&1; then envargs=(--environment "$repo")
+  elif boat env info "$FALLBACK_ENV" --json >/dev/null 2>&1; then envargs=(--environment "$FALLBACK_ENV")
+  else
+    envargs=(--no-env)   # never fall through to Boat's default environment
+    echo "boat-hub: no environment for $repo and no $FALLBACK_ENV environment; the box gets no GitHub login, so it will not clone $repo or private-repo-b1e6" >&2
+  fi
+  newbox() {   # newbox SNAPSHOT
+    boat new --json --type "$TYPE" --from "$1" ${envargs[@]+"${envargs[@]}"} \
+      --file "/tmp/hub/hub-key=$HUB_KEY_FILE" --file "/tmp/hub/tailscale-key=$TS_KEY_FILE" \
+      --file "/tmp/hub/boot.sh=$work/boot.sh" --file "/tmp/hub/cliproxy-hub=$HUB_SCRIPT" \
+      --setup-file "$work/first.sh" ${extra[@]+"${extra[@]}"}
+  }
+  out="$work/new.out"
+  if newbox "$(snap "$repo")" >"$out" 2>&1; then cat "$out"; return 0; fi
+  grep -q '"code":"snapshot_not_found"' "$out" || { cat "$out" >&2; return 1; }   # retry only for a missing snapshot
+  echo "boat-hub: no $(snap "$repo") snapshot; starting from $BASE and cloning $repo on first boot" >&2
+  newbox "$BASE"
 }
 
 [ "$#" -ge 1 ] || usage
