@@ -44,3 +44,29 @@ next lease. Older lease files without cleanup metadata skip temporary/container
 cleanup. Cleanup retains `_work/_tool`, Bun, Playwright and Docker images.
 Docker image pruning runs once a day.
 Broker/GitHub outages delay work until lease cleanup is acknowledged.
+
+## Switch the runner in one place
+
+Workflows should not hard-code a provider. Use a repository variable with a default:
+
+- `runs-on: ${{ vars.CI_RUNNER || 'boat' }}` for ordinary jobs.
+- `runs-on: ${{ vars.CI_RUNNER_LARGE || 'boat-8' }}` for heavy builds.
+
+To move a repository to another provider, set `CI_RUNNER` (and `CI_RUNNER_LARGE`).
+No workflow edit is needed. An unset variable falls back to the Boat label.
+
+`./ci-runner-indirect [--write] <repo-dir>...` rewrites literal `boat`, `boat-8` and
+`ubuntu-*` labels. It prints one `name<TAB>count` line per repo. Without `--write` it only counts.
+
+The script skips these on purpose:
+
+- macOS and Windows labels, `matrix` values, list values and existing expressions.
+- Lines inside `run: |` block scalars.
+- `-arm` labels such as `ubuntu-24.04-arm`.
+- JSON-style `"runs-on": "boat"` keys. Fix those by hand.
+
+A job that must stay hosted (a secret-heavy deploy, an alert, a `gitleaks-action` scan) needs
+`ubuntu-latest` put back after the rewrite. Tests that assert the literal label need the
+expression instead. Edits under `.github/workflows` may need a human-applied policy label.
+Run `actionlint` on each changed workflow before you push.
+

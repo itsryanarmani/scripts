@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Rewrite literal runs-on labels to a repo-variable indirection.
+
+boat / ubuntu-<version>|latest -> ${{ vars.CI_RUNNER || 'boat' }}
+boat-8                         -> ${{ vars.CI_RUNNER_LARGE || 'boat-8' }}
+macOS, nscloud, -arm, matrix, expression and list values are left alone.
+Lines inside block scalars (run: |) are never touched.
+Usage: ci-runner-indirect [--write] <repo-dir>...
+"""
+import re, sys, pathlib
+
+PAT = re.compile(r'^(?P<ind>\s*)runs-on:\s*(?P<q>["\']?)(?P<val>[A-Za-z0-9._-]+)(?P=q)(?P<tail>\s*#.*)?\s*$')
+BLOCK = re.compile(r':\s*[|>](?:[0-9][+-]?|[+-][0-9]?)?\s*(#.*)?$')
+LITERAL_UBUNTU = re.compile(r'^(ubuntu-latest|ubuntu-[0-9]+\.[0-9]+)$')
+MAP = {
+    'boat': "${{ vars.CI_RUNNER || 'boat' }}",
+    'boat-8': "${{ vars.CI_RUNNER_LARGE || 'boat-8' }}",
+}
+
+def target(val):
+    if val in MAP:
+        return MAP[val]
+    if LITERAL_UBUNTU.match(val):
+        return MAP['boat']
+    return None
+
+def indent_of(line):
+    return len(line) - len(line.lstrip(' '))
+
+def rewrite(lines):
+    out, n, block_ind = [], 0, None
+    for line in lines:
+        body = line.rstrip('\n')
+        if block_ind is not None:
+            if body.strip() == '' or indent_of(body) > block_ind:
+                out.append(line); continue
+            block_ind = None
+        m = PAT.match(body)
+        new = target(m.group('val')) if m else None
+        if new:
+            out.append(f"{m.group('ind')}runs-on: {new}{m.group('tail') or ''}\n"); n += 1
+        else:
+            out.append(line)
+        if BLOCK.search(body):
+            block_ind = indent_of(body)
+    return out, n
+
+def main(argv):
+    write = '--write' in argv
+    total = 0
+    for repo in [a for a in argv if not a.startswith('--')]:
+        wf = pathlib.Path(repo) / '.github' / 'workflows'
+        n = 0
+        for f in sorted(list(wf.glob('*.yml')) + list(wf.glob('*.yaml'))):
+            out, c = rewrite(f.read_text().splitlines(keepends=True))
+            if c and write:
+                f.write_text(''.join(out))
+            n += c
+        total += n
+        print(f"{pathlib.Path(repo).resolve().name}\t{n}")
+    print(f"TOTAL\t{total}", file=sys.stderr)
+
+main(sys.argv[1:])
