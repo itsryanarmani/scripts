@@ -1,26 +1,63 @@
 {
-  "title": "Lost Umbrella",
-  "theme": "Warm stop-motion claymation look, handmade miniature sets, symmetrical framing, soft 35mm grain, rainy-city pastels, golden practical lights.",
-  "cast": "JUNE: woman in her 30s, short grey bob, green raincoat, red umbrella with a white handle. PIP: a small round delivery robot with one blue eye and an orange flag.",
-  "edit": {"voice": "Charon", "scene_volume": 0.7},
+  "$schema": "../video.schema.json",
+  "schemaVersion": 1,
+  "meta": {
+    "title": "Lost Umbrella",
+    "logline": "A delivery robot returns a lost umbrella before its owner gets wet.",
+    "destinations": ["site hero", "x"],
+    "aspects": ["16:9"],
+    "durationTarget": 9,
+    "genre": "Claymation comedy",
+    "tone": "Warm, wry"
+  },
+  "brief": {
+    "message": "Lost things come home the same day.",
+    "cta": "Try it on your next commute.",
+    "framework": "PAS"
+  },
+  "theme": {
+    "style": "Warm stop-motion claymation look, handmade miniature sets, symmetrical framing, soft 35mm grain, rainy-city pastels, golden practical lights.",
+    "palette": ["#2f6f62", "#f1e4c8", "#d8433a"],
+    "negative": "No readable brand names or logos"
+  },
+  "cast": [
+    {"id": "june", "name": "JUNE", "role": "hero", "anchor": "woman in her 30s, short grey bob, green raincoat, red umbrella with a white handle"},
+    {"id": "pip", "name": "PIP", "role": "helper", "anchor": "small round delivery robot with one blue eye and an orange flag"}
+  ],
+  "story": {
+    "arc": "June leaves her umbrella on a tram. Pip finds it, works out whose it is, and brings it to her bus stop before the rain gets worse.",
+    "setupsPayoffs": [{"setup": 1, "payoff": 3, "what": "The red umbrella left on the seat is the one June opens at the end."}]
+  },
+  "models": {"image": "gemini-3-pro-image", "video": "veo-3.1-fast-generate-001", "tts": "gemini-3.1-flash-tts-preview"},
   "shots": [
-    {"id": 1, "stage": "HOOK", "title": "Left behind",
-     "action": "June runs off a tram. Her red umbrella stays on the seat.",
+    {"id": 1, "stage": "HOOK", "title": "Left behind", "purpose": "Sets up the umbrella.",
+     "action": "June runs off a tram. Her red umbrella stays on the seat.", "characters": ["june"],
+     "camera": {"size": "wide", "move": "slow push-in"},
      "vo": "Every day, a million umbrellas go missing.",
-     "image": "Wide shot of a pastel tram interior in the rain. JUNE hurries out of the doors; her red umbrella lies on the empty seat.",
-     "motion": "The doors close; the tram pulls away; the umbrella slides on the seat.",
-     "cut": [1, 3], "camera": "1+0.06*t/3"},
-    {"id": 2, "stage": "SOLUTION", "title": "Pip finds it",
-     "action": "Pip scans the seat, tags the umbrella and sets off through the rain.",
-     "vo": "Pip knows whose it is.",
-     "image": "Close shot of PIP rolling up to the tram seat, its blue eye scanning the red umbrella with a soft light.",
-     "motion": "Pip's eye scans, a small chime, Pip lifts the umbrella onto its back.",
-     "cut": [2, 3], "camera": "if(lt(t,1.2),1.0,1.12)", "scene_volume": 0.0},
-    {"id": 3, "stage": "PAYOFF", "title": "Reunited",
-     "action": "Pip finds June at a bus stop and hands back the umbrella.",
+     "prompts": {"still": "Wide shot of a pastel tram interior in the rain. JUNE hurries out of the doors; her red umbrella lies on the empty seat.",
+                 "motion": "The doors close; the tram pulls away; the umbrella slides on the seat."},
+     "edit": {"window": [1, 3], "zoom": "1+0.06*t/3"}},
+    {"id": 2, "stage": "SOLUTION", "title": "Pip finds it", "purpose": "The product moment.",
+     "action": "Pip scans the seat, tags the umbrella and sets off through the rain.", "characters": ["pip"],
+     "camera": {"size": "close", "move": "punch-in on the scan"},
+     "vo": "Pip knows whose it is.", "sfx": ["scan chime"],
+     "prompts": {"still": "Close shot of PIP rolling up to the tram seat, its blue eye scanning the red umbrella with a soft light.",
+                 "motion": "Pip's eye scans, a small chime, Pip lifts the umbrella onto its back."},
+     "edit": {"window": [2, 3], "zoom": "if(lt(t,1.2),1.0,1.12)", "sceneVolume": 0}},
+    {"id": 3, "stage": "PAYOFF", "title": "Reunited", "purpose": "Pays off the umbrella.",
+     "action": "Pip finds June at a bus stop and hands back the umbrella.", "characters": ["june", "pip"],
+     "camera": {"size": "medium", "move": "pull-out"},
      "vo": "Lost things, home by dinner.",
-     "image": "JUNE at a rainy bus stop, surprised and smiling as PIP holds up her red umbrella.",
-     "motion": "June takes the umbrella and opens it over both of them.",
-     "cut": [0, 3], "camera": "1.10-0.10*t/3", "transition": ["fade", 0.4], "still_picture": true}
-  ]
+     "onScreenText": [{"text": "Home by dinner.", "in": 1.0, "out": 2.6}],
+     "prompts": {"still": "JUNE at a rainy bus stop, surprised and smiling as PIP holds up her red umbrella.",
+                 "motion": "June takes the umbrella and opens it over both of them."},
+     "edit": {"window": [0, 3], "zoom": "1.10-0.10*t/3", "transition": {"type": "fade", "seconds": 0.4}, "useStill": true}}
+  ],
+  "audio": {
+    "voiceOver": {"voice": "Charon", "direction": "warm, wry narrator, brisk pace", "maxSpeed": 1.2},
+    "mix": {"sceneVolume": 0.7, "duck": {"threshold": 0.02, "ratio": 10, "attackMs": 15, "releaseMs": 350}, "targetLufs": -16, "truePeak": -1.5, "cutFadeMs": 80}
+  },
+  "render": {"outputs": [{"aspect": "16:9", "width": 1280, "height": 720, "fps": 24, "path": "out/film.mp4"}]},
+  "budget": {"capUsd": 5, "spend": [], "approvals": []},
+  "privacy": {"realPeople": false, "realBrands": false}
 }

@@ -36,23 +36,11 @@ nothing. Without `--confirm-spend`, `veo` prints a cost estimate and exits.
     "https://us-central1-aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=300" | grep -oE '"name": "[^"]*(image|veo|tts)[^"]*"'
   ```
 
-## board.json
+## The video project schema
 
-See [`examples/board.json`](examples/board.json). Top level: `title`, `theme` (the visual block
-every prompt repeats), `cast` (every character, described the same way every time), optional
-`edit.voice` and `edit.scene_volume`. Each shot:
-
-| Field | Meaning |
-| --- | --- |
-| `id`, `title`, `stage`, `action` | What happens, and where it sits in the arc (HOOK, PROBLEM, SOLUTION, PAYOFF, CTA) |
-| `image` | The still prompt: framing, who is in frame, props, readable text |
-| `motion` | The Veo prompt: what moves; quote any line a character says |
-| `vo` | The narrator line for this shot. Keep it shorter than the shot. |
-| `cut` | `[start, duration]` in seconds: the best window of the 8 s clip |
-| `camera` | Zoom as an ffmpeg expression in `t`: `1+0.06*t/3` pushes in, `if(lt(t,1.2),1,1.12)` punches in on a beat |
-| `transition` | `["fade", 0.4]` into this shot; any ffmpeg `xfade` type. Omit for a hard cut. |
-| `scene_volume` | Level of Veo's own sound; `0` mutes a clip where Veo invented speech |
-| `still_picture` | `true` shows the approved still instead of the clip (when Veo drifts) and keeps the clip's sound |
+[`video.schema.json`](video.schema.json) is the record for one video, from brief to release, and
+every field carries its own `description`. `check` names each failing path, and unknown fields
+fail so a typo cannot hide. [`examples/board.json`](examples/board.json) fills a three-shot film.
 
 ## What `cut` guards
 

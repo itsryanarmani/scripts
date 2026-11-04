@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "Video project", "type": "object", "required": ["schemaVersion", "meta", "theme", "cast", "shots"],
+  "additionalProperties": false,
+  "description": "One record per video: what it must say, who is in it, every shot's prompts and assets, the edit, the mix, how it was verified and what it cost. Each stage fills its part, so the next edit starts from this file.",
+  "properties": {
+    "$schema": {"type": "string"}, "schemaVersion": {"type": "integer", "enum": [1]},
+    "meta": {
+      "type": "object", "required": ["title"], "additionalProperties": false,
+      "properties": {
+        "title": {"type": "string", "minLength": 1}, "audience": {"type": "string"}, "durationTarget": {"type": "number", "minimum": 1, "description": "Seconds."},
+        "language": {"type": "string"}, "genre": {"type": "string"}, "tone": {"type": "string"},
+        "logline": {"type": "string", "description": "The whole film in one sentence."},
+        "destinations": {"type": "array", "items": {"type": "string"}, "description": "Where it ships: x, linkedin, site hero, store listing."},
+        "aspects": {"type": "array", "items": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:5"]}},
+        "releaseBy": {"type": "string", "description": "ISO date. Topical jokes expire, so tie them to this."}
+      }
+    },
+    "brief": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "cta": {"type": "string"}, "constraints": {"type": "array", "items": {"type": "string"}},
+        "message": {"type": "string", "description": "The one thing a viewer must remember."},
+        "framework": {"type": "string", "enum": ["PAS", "JTBD", "HBPC"], "description": "Problem-Agitate-Solution, Jobs To Be Done, or Hook-Build-Payoff-CTA."}
+      }
+    },
+    "theme": {
+      "type": "object", "required": ["style"], "additionalProperties": false,
+      "description": "The visual block every still and motion prompt repeats word for word.",
+      "properties": {
+        "style": {"type": "string", "minLength": 1}, "palette": {"type": "array", "items": {"type": "string"}}, "lighting": {"type": "string"}, "lens": {"type": "string"},
+        "motion": {"type": "string"},
+        "negative": {"type": "string", "description": "What must never appear: real logos, readable brand names, extra fingers."}
+      }
+    },
+    "cast": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["id", "name", "anchor"], "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "role": {"type": "string"}, "voice": {"type": "string"},
+          "anchor": {"type": "string", "minLength": 1, "description": "Exact identity words reused in every prompt: face, hair, outfit, props."}
+        }
+      }
+    },
+    "story": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "arc": {"type": "string", "description": "The story in one paragraph, cause to effect."},
+        "setupsPayoffs": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["setup", "payoff", "what"], "additionalProperties": false,
+            "properties": {"setup": {"type": "integer"}, "payoff": {"type": "integer"}, "what": {"type": "string"}}
+          }
+        },
+        "topical": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["ref", "checked"], "additionalProperties": false,
+            "properties": {"ref": {"type": "string"}, "checked": {"type": "string"}, "source": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"image": {"type": "string"}, "video": {"type": "string"}, "tts": {"type": "string"}, "music": {"type": "string"}, "listen": {"type": "string"}}
+    },
+    "shots": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["id", "stage", "title", "prompts", "edit"], "additionalProperties": false,
+        "properties": {
+          "id": {"type": "integer", "minimum": 1}, "title": {"type": "string", "minLength": 1}, "action": {"type": "string"},
+          "sfx": {"type": "array", "items": {"type": "string"}},
+          "stage": {"type": "string", "enum": ["HOOK", "PROBLEM", "AGITATE", "BUILD", "SOLUTION", "PAYOFF", "VAULT", "PROOF", "CTA"]},
+          "purpose": {"type": "string", "description": "Why this shot exists: what it sets up or pays off."},
+          "characters": {"type": "array", "items": {"type": "string"}, "description": "Cast ids in frame."},
+          "camera": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "angle": {"type": "string"}, "lens": {"type": "string"}, "move": {"type": "string"},
+              "size": {"type": "string", "enum": ["extreme-wide", "wide", "medium", "close", "extreme-close", "over-shoulder", "insert"]}
+            }
+          },
+          "dialogue": {
+            "type": "array",
+            "items": {
+              "type": "object", "required": ["character", "line"], "additionalProperties": false,
+              "properties": {"character": {"type": "string"}, "line": {"type": "string"}}
+            }
+          },
+          "vo": {"type": "string", "description": "Narrator line. Shorter than the shot."},
+          "onScreenText": {
+            "type": "array", "description": "Composited in a later step, never generated. Record only: cut does not draw text.",
+            "items": {
+              "type": "object", "required": ["text"], "additionalProperties": false,
+              "properties": {"text": {"type": "string"}, "in": {"type": "number"}, "out": {"type": "number"}}
+            }
+          },
+          "prompts": {
+            "type": "object", "required": ["still"], "additionalProperties": false,
+            "properties": {
+              "still": {"type": "string", "minLength": 1, "description": "Framing, who is in frame, props, readable text."},
+              "motion": {"type": "string", "description": "What moves. Quote any line a character says."}
+            }
+          },
+          "assets": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "still": {"type": "string"}, "clip": {"type": "string"},
+              "rejects": {"type": "array", "items": {"type": "string"}, "description": "Failed attempts, kept so the redo prompt can name what went wrong."}
+            }
+          },
+          "edit": {
+            "type": "object", "required": ["window"], "additionalProperties": false,
+            "properties": {
+              "window": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 2, "maxItems": 2, "description": "[start, duration] seconds of the clip."},
+              "zoom": {"type": "string", "description": "ffmpeg expression in t: 1+0.06*t/3 pushes in; if(lt(t,1.2),1,1.12) punches in on a beat."},
+              "transition": {
+                "type": "object", "required": ["type", "seconds"], "additionalProperties": false,
+                "properties": {"type": {"type": "string"}, "seconds": {"type": "number", "minimum": 0.05, "maximum": 2}}
+              },
+              "sceneVolume": {"type": "number", "minimum": 0, "maximum": 2, "description": "0 mutes a clip where the video model invented speech."},
+              "useStill": {"type": "boolean", "description": "Show the approved still instead of the clip; keep the clip's sound."}
+            }
+          },
+          "review": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "still": {"type": "string", "enum": ["pending", "approved", "redo"]}, "clip": {"type": "string", "enum": ["pending", "approved", "redo"]},
+              "notes": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "audio": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "voiceOver": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "voice": {"type": "string"}, "maxSpeed": {"type": "number", "minimum": 1, "maximum": 1.5},
+            "direction": {"type": "string", "description": "How the narrator reads: warm, wry, brisk."}
+          }
+        },
+        "music": {
+          "type": "object", "additionalProperties": false, "description": "Record only: cut does not mix music yet.",
+          "properties": {"prompt": {"type": "string"}, "instrumental": {"type": "boolean"}, "file": {"type": "string"}, "level": {"type": "number", "minimum": 0, "maximum": 2}}
+        },
+        "mix": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "sceneVolume": {"type": "number", "minimum": 0, "maximum": 2}, "targetLufs": {"type": "number", "minimum": -30, "maximum": -8},
+            "truePeak": {"type": "number", "minimum": -9, "maximum": 0}, "cutFadeMs": {"type": "number", "minimum": 0, "maximum": 500},
+            "duck": {
+              "type": "object", "additionalProperties": false,
+              "properties": {"threshold": {"type": "number", "minimum": 0.001, "maximum": 1}, "ratio": {"type": "number", "minimum": 1, "maximum": 20}, "attackMs": {"type": "number", "minimum": 0.01, "maximum": 2000}, "releaseMs": {"type": "number", "minimum": 0.01, "maximum": 9000}}
+            }
+          }
+        }
+      }
+    },
+    "render": {
+      "type": "object", "additionalProperties": false, "description": "Record of what was rendered. cut writes one 16:9 file, 1280x720 at 24 fps, to out/film.mp4.",
+      "properties": {
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["aspect", "path"], "additionalProperties": false,
+            "properties": {"aspect": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"}, "fps": {"type": "integer"}, "path": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "budget": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "capUsd": {"type": "number", "minimum": 0, "description": "Record of the spending limit. veo does not enforce it yet."},
+        "spend": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["step", "usd"], "additionalProperties": false,
+            "properties": {
+              "step": {"type": "string"}, "model": {"type": "string"}, "units": {"type": "string"}, "usd": {"type": "number", "minimum": 0},
+              "estimate": {"type": "boolean"}
+            }
+          }
+        },
+        "approvals": {
+          "type": "array",
+          "description": "A human yes at each gate. Video spend waits for the stills approval; veo does not check it yet.",
+          "items": {
+            "type": "object", "required": ["stage", "at"], "additionalProperties": false,
+            "properties": {
+              "by": {"type": "string", "description": "A role, not a name."}, "at": {"type": "string"},
+              "stage": {"type": "string", "enum": ["brief", "storyboard", "stills", "clips", "cut", "release"]}
+            }
+          }
+        }
+      }
+    },
+    "privacy": {"type": "object", "additionalProperties": false, "properties": {"realPeople": {"type": "boolean"}, "realBrands": {"type": "boolean"}, "notes": {"type": "string"}}}
+  }
+}
