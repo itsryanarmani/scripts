@@ -294,6 +294,7 @@ it returns a stale value after a write that worked, so look at the screen.
 
 | Tool | What it does |
 |---|---|
+| [`linkedin-cleanup/`](linkedin-cleanup/) | Delete your own LinkedIn comments and posts from your activity pages, paced and resumable. |
 | [`pinterest-privacy/`](pinterest-privacy/) | Make all your Pinterest boards secret, or delete them, with dry run and undo. |
 | [`reddit-cleanup/`](reddit-cleanup/) | Delete your own Reddit comments and optionally posts, with dry run, filters and a CSV backup. |
 | [`x-cleanup/`](x-cleanup/) | Delete your own X posts and replies from an archive or CSV of ids, paced in small batches, resumable. |
