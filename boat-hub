@@ -31,6 +31,41 @@ box_id() { python3 -c 'import sys,json
 for l in sys.stdin:
     if l.startswith("{") and json.loads(l).get("event")=="ready": print(json.loads(l)["id"]); break'; }
 
+# Run one command in a box. Print the remote output.
+# Return 0 only when that command succeeded.
+# Keep the text. A later step prints it when this returns non-zero.
+run_in_box() {
+  local id="$1" timeout="$2" remote="$3" raw rc
+  rc=0
+  raw=$(boat exec "$id" --timeout "$timeout" -- "$remote" 2>&1) || rc=$?
+  printf '%s' "$raw" | python3 -c 'import json,sys
+raw=sys.stdin.read()
+boat_rc=int(sys.argv[1])
+shown, code = raw, boat_rc
+for line in raw.splitlines():
+    s=line.strip()
+    if not s.startswith("{"):
+        continue
+    try:
+        d=json.loads(s)
+    except json.JSONDecodeError:
+        continue
+    if "exitCode" not in d:
+        continue
+    text=(d.get("stdout") or "")+(d.get("stderr") or "")
+    shown=text if text.strip() else raw
+    try:
+        code=int(d.get("exitCode"))
+    except (TypeError, ValueError):
+        code=1
+    break
+sys.stdout.write(shown)
+if shown and not shown.endswith("\n"):
+    sys.stdout.write("\n")
+sys.exit(0 if code==0 else 1)
+' "$rc"
+}
+
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 
 write_boot() {
@@ -102,9 +137,23 @@ cmd_warm() {
     printf '%s' "$repo" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' || { bad=1; echo "FAIL $repo (bad name)"; continue; }
     id=$(boat new --type "$TYPE" --name "warm-$repo" --ttl 1800 --from "$BASE" --environment "$repo" --json | box_id) || { bad=1; echo "FAIL $repo (create)"; continue; }
     [ -n "$id" ] || { bad=1; echo "FAIL $repo (no box)"; continue; }
+    # Prove GitHub login before the clone wait. A missing login used to look like a slow clone.
+    auth_out=$(run_in_box "$id" 30 "gh auth status" 2>&1) || {
+      bad=1
+      echo "FAIL $repo (GitHub is not logged in inside the box)"
+      printf '%s\n' "$auth_out"
+      boat delete "$id" --yes >/dev/null 2>&1 || true
+      continue
+    }
     # An environment that lists no repo clones nothing, so clone it here (gh uses the box's token).
     if boat env info "$repo" --json | python3 -c 'import sys,json; d=json.load(sys.stdin); sys.exit(0 if (d.get("environment") or d).get("selectedRepositories") else 1)'; then :; else
-      boat exec "$id" --timeout 600 -- "gh repo clone pooriaarab/$repo /home/user/$repo -- -q" >/dev/null 2>&1 || true
+      clone_out=$(run_in_box "$id" 600 "gh repo clone pooriaarab/$repo /home/user/$repo -- -q" 2>&1) || {
+        bad=1
+        echo "FAIL $repo (clone failed)"
+        printf '%s\n' "$clone_out"
+        boat delete "$id" --yes >/dev/null 2>&1 || true
+        continue
+      }
     fi
     # The environment clones the repo after the box is ready; wait, or the snapshot holds an empty folder.
     cloned=0

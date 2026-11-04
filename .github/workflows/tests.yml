@@ -176,6 +176,14 @@ jobs:
           set -euo pipefail
           ./disk-hygiene.test.sh
 
+      - name: Run boat-hub tests
+        id: boat-hub-tests
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ./boat-hub.test.sh
+
       # Every group above runs even after one fails, so one run names every
       # failure instead of only the first. This step turns the outcomes back
       # into a single verdict, and names the group that failed.
@@ -212,10 +220,11 @@ jobs:
           vm_orchestrate_tests: ${{ steps.vm-orchestrate-tests.outcome }}
           worktree_prune_tests: ${{ steps.worktree-prune-tests.outcome }}
           disk_hygiene_tests: ${{ steps.disk-hygiene-tests.outcome }}
+          boat_hub_tests: ${{ steps.boat-hub-tests.outcome }}
         run: |
           set -uo pipefail
           failed=0
-          for group in broker_e2e node_tests guard_tests prefix_tests hook_install_tests branch_pattern_tests rollout_label_tests fleet_ci_census_tests merge_throughput_tests demo_video_tests stack_lander_tests file_dep_restack_tests ship_sync_tests amo_sign_retry_tests warmup_sync_tests vm_orchestrate_tests worktree_prune_tests disk_hygiene_tests; do
+          for group in broker_e2e node_tests guard_tests prefix_tests hook_install_tests branch_pattern_tests rollout_label_tests fleet_ci_census_tests merge_throughput_tests demo_video_tests stack_lander_tests file_dep_restack_tests ship_sync_tests amo_sign_retry_tests warmup_sync_tests vm_orchestrate_tests worktree_prune_tests disk_hygiene_tests boat_hub_tests; do
             outcome="${!group}"
             printf '%-22s %s\n' "$group" "$outcome"
             [ "$outcome" = success ] || failed=1
