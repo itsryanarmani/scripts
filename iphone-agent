@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Client for a local hidagent. Fractions are 0..1, origin top-left.
+
+The pointer stays visible. This tool does not add jitter or hide input.
+"""
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BASE = os.environ.get("IPHONE_AGENT_URL", "http://127.0.0.1:8890").rstrip("/")
+
+
+def call(method, path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    if data:
+        req.add_header("content-type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=40) as res:
+            return res.status, res.read()
+    except urllib.error.HTTPError as err:
+        return err.code, err.read()
+    except OSError as err:
+        sys.exit(f"hidagent unreachable at {BASE}: {err}")
+
+
+def show(code, raw):
+    sys.stdout.buffer.write(raw)
+    if not raw.endswith(b"\n"):
+        sys.stdout.write("\n")
+    if code == 409:
+        raise SystemExit(3)
+    if code >= 400:
+        raise SystemExit(4)
+
+
+def fraction(text):
+    value = float(text)
+    if not 0.0 <= value <= 1.0:
+        sys.exit(f"fraction out of range: {text}")
+    return value
+
+
+def still():
+    deadline = time.time() + 4
+    previous = None
+    while time.time() < deadline:
+        code, raw = call("GET", "/api/frame.jpg")
+        if code != 200:
+            show(code, raw)
+        if previous == raw:
+            print("still")
+            return
+        previous = raw
+        time.sleep(0.35)
+    print("moving")
+
+
+def raw_line(text):
+    code, raw = call("POST", "/api/raw", {"text": text})
+    if code == 404:
+        sys.stderr.write("HIDAGENT_DEBUG is off\n")
+        raise SystemExit(2)
+    show(code, raw)
+
+
+def main(argv):
+    if len(argv) < 2:
+        sys.stderr.write(
+            "usage: iphone-agent status|shot|still|tap|swipe|scroll|"
+            "type|key|home|back|pointer-home|release|stop\n"
+        )
+        return 2
+    command = argv[1]
+    args = argv[2:]
+    confirm = "--confirm" in args
+    args = [arg for arg in args if arg != "--confirm"]
+
+    if command == "status":
+        code, raw = call("GET", "/api/status")
+        show(code, raw)
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            sys.exit("status body is not JSON")
+        ok = body.get("device") and body.get("screen") and body.get("calibrated")
+        return 0 if ok else 2
+    if command == "shot":
+        if len(args) != 1:
+            sys.exit("shot needs a path")
+        code, raw = call("GET", "/api/frame.jpg")
+        if code != 200:
+            show(code, raw)
+        try:
+            with open(args[0], "wb") as handle:
+                handle.write(raw)
+        except OSError as err:
+            sys.exit(f"cannot write {args[0]}: {err}")
+        print(args[0], len(raw))
+        return 0
+    if command == "still":
+        still()
+        return 0
+    if command == "tap":
+        code, raw = call("POST", "/api/tap", {"x": fraction(args[0]), "y": fraction(args[1])})
+        show(code, raw)
+        still()
+        return 0
+    if command == "swipe":
+        body = {
+            "x1": fraction(args[0]),
+            "y1": fraction(args[1]),
+            "x2": fraction(args[2]),
+            "y2": fraction(args[3]),
+        }
+        code, raw = call("POST", "/api/swipe", body)
+        show(code, raw)
+        still()
+        return 0
+    if command == "scroll":
+        body = {"x": fraction(args[0]), "y": fraction(args[1]), "lines": int(args[2])}
+        code, raw = call("POST", "/api/scroll", body)
+        show(code, raw)
+        still()
+        return 0
+    if command == "type":
+        if not confirm:
+            sys.stderr.write("type needs --confirm\n")
+            return 2
+        code, raw = call("POST", "/api/type", {"text": " ".join(args)})
+        show(code, raw)
+        return 0
+    if command == "key":
+        if not confirm:
+            sys.stderr.write("key needs --confirm\n")
+            return 2
+        code, raw = call("POST", "/api/key", {"text": args[0]})
+        show(code, raw)
+        return 0
+    if command == "home":
+        code, raw = call("POST", "/api/home")
+        show(code, raw)
+        still()
+        return 0
+    if command == "back":
+        code, raw = call("POST", "/api/back")
+        show(code, raw)
+        still()
+        return 0
+    if command == "pointer-home":
+        raw_line("home")
+        return 0
+    if command == "release":
+        raw_line("release")
+        return 0
+    if command == "stop":
+        code, raw = call("POST", "/api/agent/stop")
+        show(code, raw)
+        return 0
+    sys.exit(f"unknown command: {command}")
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv))
+    except (IndexError, ValueError) as err:
+        sys.exit(f"bad arguments: {err}")
