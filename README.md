@@ -278,3 +278,9 @@ it returns a stale value after a write that worked, so look at the screen.
 |---|---|
 | [`pinterest-privacy/`](pinterest-privacy/) | Make all your Pinterest boards secret, or delete them, with dry run and undo. |
 | [`reddit-cleanup/`](reddit-cleanup/) | Delete your own Reddit comments and optionally posts, with dry run, filters and a CSV backup. |
+
+## ble-bridge
+
+Send commands to the ESP32-S3 BLE mouse and keyboard board that controls iPhones.
+`./ble-bridge "list" "@1 home" "@1 click"`. Firmware, pairing and protocol are in
+[private-repo-32ef](https://github.com/pooriaarab/private-repo-32ef) `docs/ble-bridge.md`.

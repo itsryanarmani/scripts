@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Send commands to the ESP32-S3 BLE mouse/keyboard board over USB serial.
+
+Usage: ble-bridge [-p PORT] "list" "@1 home" "@1 move 10 0" "@1 click"
+
+Each argument is one command line. The board answers "ok" or "err <why>".
+Firmware and protocol: pooriaarab/private-repo-32ef, docs/ble-bridge.md.
+
+The port opens without a DTR change. A DTR toggle resets the board and
+prints boot text in place of the reply.
+"""
+import argparse, fcntl, glob, os, select, stat, sys, termios, time
+
+
+def open_port(path):
+    fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
+    a = termios.tcgetattr(fd)
+    # Raw mode: no ECHO (the host must not send board replies back as
+    # commands), no canonical mode, no newline translation.
+    a[0] = 0  # iflag
+    a[1] = 0  # oflag
+    a[2] = (a[2] & ~(termios.CSIZE | termios.PARENB | termios.CSTOPB | termios.HUPCL)) | termios.CS8 | termios.CLOCAL | termios.CREAD  # no HUPCL: keep DTR on close
+    a[3] = 0  # lflag
+    a[4] = a[5] = termios.B115200
+    a[6][termios.VMIN], a[6][termios.VTIME] = 0, 0
+    termios.tcsetattr(fd, termios.TCSANOW, a)
+    return fd
+
+
+def drain(fd):
+    """Discard stale input (boot text, late replies) before a command."""
+    termios.tcflush(fd, termios.TCIFLUSH)
+    while select.select([fd], [], [], 0.05)[0]:
+        if not os.read(fd, 512):
+            break
+
+
+def send(fd, line, timeout):
+    """Return the board's ok/err reply, or None on timeout.
+
+    Lines that do not start with ok or err (boot text) are skipped.
+    """
+    drain(fd)
+    os.write(fd, (line + "\n").encode())
+    buf, end = b"", time.time() + timeout
+    while time.time() < end:
+        if select.select([fd], [], [], 0.2)[0]:
+            buf += os.read(fd, 512)
+        *done, buf = buf.split(b"\n")
+        for raw in done:
+            t = raw.decode(errors="replace").strip()
+            if t == "ok" or t.startswith(("ok ", "err")):
+                return t
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("-p", "--port", help="serial port (default: first /dev/cu.usbmodem*)")
+    ap.add_argument("-t", "--timeout", type=float, default=10)
+    ap.add_argument("commands", nargs="+")
+    a = ap.parse_args()
+    port = a.port or next(iter(sorted(glob.glob("/dev/cu.usbmodem*"))), None)
+    if not port:
+        sys.exit("no board found: plug in the ESP32-S3")
+    # O_NOFOLLOW and no O_TRUNC: a planted symlink in /tmp is refused, not truncated
+    # O_NONBLOCK: a FIFO planted at this path cannot hang the open
+    lock = os.open(f"/tmp/ble-bridge-{os.getuid()}.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    st = os.fstat(lock)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+        sys.exit("refusing lock file: not a regular file owned by you")
+    with os.fdopen(lock, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # one command stream at a time
+        fd = open_port(port)
+        try:
+            rc = 0
+            for c in a.commands:
+                r = send(fd, c, a.timeout)
+                if r is None:
+                    # The board may still answer late. Stop, so a late reply
+                    # cannot be read as the result of a later command.
+                    print(f"{c} -> err no reply (stopping)")
+                    rc = 1
+                    break
+                print(f"{c} -> {r}")
+                rc |= r.startswith("err")
+        finally:
+            os.close(fd)
+    sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()
