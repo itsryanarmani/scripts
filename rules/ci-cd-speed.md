@@ -9,7 +9,8 @@ The numbers below describe those runs, not expected savings on another runner.
    Deduplicate rerun copies by job name, runner, start time, and end time.
    Calculate percentiles from successful runs only. Report failures separately.
 2. Measure cache restore cost on the real runner before adding a cache.
-   A per-site compiler cache took a median 24 s to restore and saved about 8 s.
+   A per-site compiler cache took a median 24 s to restore, against about 8 s
+   of build time saved.
    A browser cache saved about 0 s. A cache hit is not a saving.
 3. Never key a cache with many writers on the commit SHA. Each commit adds
    another copy against the 10 GB quota and pushes useful entries out.
