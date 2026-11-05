@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -I
 """Image-to-video with Veo 3.1 on Vertex (set VERTEX_PROJECT; optional CLOUDSDK_CONFIG).
-Usage: veo.py clips.json stilldir outdir [--only id,id]
+Usage: veo.py clips.json stilldir outdir [--only id,id] [--cap usd]
 clips.json: {"model":..., "secs":4, "style":"...", "clips":[{"id","still","motion"}]}
 Logs an estimate per clip to spend.jsonl next to clips.json. Never prints tokens."""
 import base64, json, os, subprocess, sys, tempfile, time, urllib.request, concurrent.futures as cf
@@ -17,6 +17,9 @@ def post(url, body):
 spec = json.load(open(sys.argv[1])); stills, out = sys.argv[2], sys.argv[3]; os.makedirs(out, exist_ok=True)
 only = sys.argv[sys.argv.index("--only")+1].split(",") if "--only" in sys.argv else None
 model = spec["model"]; secs = spec.get("secs", 4)
+cap = float(sys.argv[sys.argv.index("--cap")+1]) if "--cap" in sys.argv else None
+est = len([c for c in spec["clips"] if not only or c["id"] in only]) * secs * spec.get("usd_per_s", 0.15)
+if cap is not None and est > cap: sys.exit(f"estimated ${est:.2f} is over the cap ${cap:.2f}; nothing sent")
 BASE = f"https://us-central1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/us-central1/publishers/google/models/{model}"
 log = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "spend.jsonl")
 def run(c):

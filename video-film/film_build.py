@@ -5,8 +5,8 @@ Spec keys: bpm, total_beats, music{src,media_start,duck,duck_to}, shots[{id,kind
 texts[{id,lines,start,beats,cls(hook|low|top|big)}], sfx[{name,beat,vol}], flashes[beats], shakes{shot:beat},
 black_beat, speed_lines[from,to], panel{src,start,beats,alt}, end{start,beats,title,sub,url,note,mark_svg}, tag,
 palette{ink,paper,accent,card,accent_ink}, font{family,file}.
-Assets live next to the output file. Paths in the spec (shots, music, panel, font) are relative to it and include the
-folder, for example assets/clip.mp4. Sound effects are read from assets/sfx-<name>.mp3. mark_svg must carry id="endmark".
+Assets live next to the output file. A shot src is a file name inside assets/ (for example clip.mp4). The music, panel
+and font paths include the folder (for example assets/bed.mp3). Sound effects are read from assets/sfx-<name>.mp3. mark_svg must carry id="endmark".
 texts[].accent_last colors the last line with the accent. A text with cls "hook" is visible on frame 0. Every key shown
 above is required. Every time in the spec is in beats."""
 import html, json, sys
@@ -81,7 +81,7 @@ a(f'<div id="speed" class="clip speed" data-start="{t(SL[0])}" data-duration="{t
 for i,(tid,lines,sb,bt,cls,acc) in enumerate(TEXTS):
     ls="".join(f'<span class="l{" hl" if (acc and j==len(lines)-1) else ""}" id="{tid}-{j}">{x}</span>' for j,x in enumerate(lines))
     a(f'<div id="{tid}" class="clip" data-start="{t(sb)}" data-duration="{t(bt)}" data-track-index="{5 if i%2==0 else 7}"><div class="txt {cls}">{ls}</div></div>')
-# flashes (3 frames)
+# flashes (0.25 s on screen, fading over 0.22 s)
 for i,fb in enumerate(FLASH):
     a(f'<div id="fl{i}" class="clip flash" data-start="{t(fb)}" data-duration="0.25" data-track-index="{8+i}"></div>')
 a(f'<div id="tag" class="clip tag" style="left:auto;width:auto;height:auto" data-start="0" data-duration="{t(TOTAL)}" data-track-index="20">@@TAG@@</div>')

@@ -44,6 +44,7 @@ if __name__ == "__main__":
     # hero first (reference for the rest)
     order = sorted(shots, key=lambda s: s["id"] != "hero")
     if order and order[0]["id"] == "hero" and not hero_url:
+        if cap <= 0: sys.exit("cap hit, stopped before hero")
         i,c = run(order[0]); spent += c; log.write(json.dumps({"id":i,"usd":c,"t":time.time()})+"\n"); log.flush()
         hero_url = upload(f"{out}/hero.png"); order = order[1:]
     if any(s.get("ref") for s in order) and not hero_url: print("warning: no hero.png, so shots marked ref run without the reference")
