@@ -59,8 +59,13 @@ class Client:
         except ApiError:
             return {}
 
+def billing_range(a):
+    # The feed returns rows of one billing period when `from` is inside the old period, and `to` is exclusive: ask 35 days back and a day past the end, keep the asked days.
+    day = dt.date.fromisoformat(a.date)
+    return f'from={min(dt.date.fromisoformat(a.start), day - dt.timedelta(days=35))} to={day + dt.timedelta(days=1)}'
+
 def billing(c, a):
-    rows = c.rest(f'/accounts/{c.account}/billable-usage?from={a.start}&to={a.date}', 'billing.json')
+    rows = [r for r in c.rest(f'/accounts/{c.account}/billable-usage?{billing_range(a)}'.replace(' ', '&'), 'billing.json') if a.start <= str(r['ChargePeriodStart'])[:10] <= a.date]
     days = collections.defaultdict(lambda: {'lines': collections.defaultdict(float), 'period': ''})
     for r in rows:
         d = days[str(r['ChargePeriodStart'])[:10]]
@@ -162,6 +167,7 @@ def main():
     ap.add_argument('--section', help='comma list of: ' + ','.join(SECTIONS))
     ap.add_argument('--hourly', action='store_true', help='add the 48-hour hourly section')
     ap.add_argument('--json', action='store_true', help='machine output')
+    ap.add_argument('--show-range', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--env-file', help='file with CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID')
     ap.add_argument('--fixtures', help='read answers from this directory, no network')
     a = ap.parse_args()
@@ -172,6 +178,8 @@ def main():
         a.start = str(dt.date.fromisoformat(a.date) - dt.timedelta(days=a.days - 1))
     except ValueError:
         ap.error('--date must be YYYY-MM-DD')
+    if a.show_range:
+        sys.exit(print('billing request: ' + billing_range(a)))
     chosen = a.section.split(',') if a.section else SECTIONS[:4]
     if a.hourly and 'hourly' not in chosen:
         chosen.append('hourly')

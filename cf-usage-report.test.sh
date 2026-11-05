@@ -70,4 +70,11 @@ run python3 "$SCRIPT";                                               code "no cr
 printf 'CLOUDFLARE_API_TOKEN=tok-FILE456\nCLOUDFLARE_ACCOUNT_ID=acct9\n' > "$W/env"
 run python3 "$SCRIPT" --env-file "$W/env" --fixtures "$W/fx" --date 2026-11-02 --hourly; code "--env-file works" 0
 hasnt "token never printed"           "tok-FILE456"
+# The billing feed returns rows of ONE billing period when the range starts inside the old period: ask wide, keep only the asked days.
+run python3 "$SCRIPT" --fixtures "$W/fx" --date 2026-11-02 --days 3 --section billing --show-range
+has "asks a wide range, to is exclusive"  "from=2026-09-28 to=2026-11-03"
+run python3 "$SCRIPT" --fixtures "$W/fx" --date 2026-11-01 --days 1 --section billing
+has "keeps the asked day"             "2026-11-01  total 1.4000"
+hasnt "drops an earlier day"          "2026-10-31  total"
+hasnt "drops a later day"             "2026-11-02  total"
 echo "$pass passed, $fail failed"; [ $fail -eq 0 ]
