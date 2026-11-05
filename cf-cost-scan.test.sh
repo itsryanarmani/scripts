@@ -96,8 +96,8 @@ run --fail-on found "$W/clean";    code "--fail-on found, clean repo" 0
 run --fail-on nope "$W/bad";       code "bad usage" 2
 # Review fixes: one small repo per case, since a check reports only its first hit.
 nx() { echo '{"dependencies":{"next":"15.0.0"}}' | put $1/package.json; }
-for r in c1 c2 c3 c4 k1 k2 k3 s1 s2 jr1 jr2 l1 l2; do nx $r; done
-for r in l1 l2; do echo '{ "name": "x" }' | put $r/wrangler.jsonc; done
+for r in c1 c2 c3 c4 c5 c6 c7 c8 c9 k1 k2 k3 k4 k5 k6 k7 k8 k9 i1 i2 i3 i4 i5 s1 s2 s3 jr1 jr2 l1 l2 l3 p1; do nx $r; done
+for r in l1 l2 l3; do echo '{ "name": "x" }' | put $r/wrangler.jsonc; done
 CNT='env.DB.prepare("SELECT COUNT(*) AS n FROM l").first()'
 echo "export const n = () => $CNT;" | put c1/lib/facets.ts
 echo "export const n = cached(() => $CNT, [\"n\"]);" | put c2/lib/facets.ts
@@ -115,7 +115,6 @@ printf 'export const a = env.DB.prepare("WITH RECURSIVE t(n) AS (SELECT 1) SELEC
 echo 'export const a = env.DB.prepare("WITH RECURSIVE t AS (SELECT value FROM json_each(?)) SELECT 1 FROM t");' | put jr2/lib/t.ts
 echo 'export const GET = () => { try { run(); } catch (e) { } console.log("x"); return 1; };' | put l1/app/api/a/route.ts
 echo 'console.log("cli");' | put l2/scripts/index.ts
-echo 'export const GET = () => { if (process.env.NODE_ENV !== "production") console.log("d"); return 1; };' | put l2/app/api/g/route.ts
 echo 'export const GET = () => { try { run(); } catch (e) { if (e) { fix(); } console.info("f", e); } return 1; };' | put l2/app/api/n/route.ts
 PAD=$(printf 'x%.0s' $(seq 1 250))
 echo "export const GET = () => { try { run(); } catch (e) { /* $PAD */ console.info(\"f\", e); } return 1; };" | put l2/app/api/o/route.ts
@@ -132,6 +131,47 @@ run "$W/jr1"; row "fix8: split RECURSIVE/json_each clear" "jr1 | json-each-mater
 run "$W/jr2"; row "fix8: same-query RECURSIVE fires"    "jr2 | json-each-materialized | review | lib/t.ts:1 |"
 run "$W/l1"; row "fix6: log after a closed catch fires" "l1 | request-path-logs | review | app/api/a/route.ts:1 |"
 run "$W/l2"; row "fix6: scripts, NODE_ENV, nested and long catch clear" "l2 | request-path-logs | clear |"
+# Round 2: the reviewer's shapes. Calls on adjacent lines, no blank padding.
+fill() { printf '// x\n%.0s' $(seq 1 "$1"); }
+echo 'export const GET = () => { run().catch((e) => { console.log("x", e); }); return 1; };' | put l2/app/api/c/route.ts
+printf 'export const GET = () => {\n  if (process.env.NODE_ENV !== "production") { dbg(); }\n  console.log("x");\n  return 1;\n};\n' | put l3/app/api/a/route.ts
+printf 'const d = env.DB;\nfor (const id of ids) { await Promise.all(c.map(post)); }\n' | put p1/lib/p.ts
+printf '// cache-key: bounded\nexport const a = unstable_cache(f, ["list", slug]);\nexport const b = unstable_cache(g, ["city", city]);\n' | put k4/lib/d.ts
+printf '// cache-key: bounded\n\nexport const a = unstable_cache(f, ["list", slug]);\n' | put k5/lib/d.ts
+printf 'export const a = unstable_cache(f, ["list", slug]); // cache-key: bounded\n// cache-key: bounded\nexport const b = unstable_cache(g, ["city", city]);\n' | put k6/lib/d.ts
+printf 'export const a = unstable_cache(f, ["list", slug]); // cache-key: bounded\nexport const b = unstable_cache(g, ["city", city]);\n' | put k7/lib/d.ts
+echo 'export const a = cachedIf(isHead, f, ["x", slug, city, id]);' | put k8/lib/d.ts
+printf 'export const a = unstable_cache(g, ["a", site.id]);\nexport const b = unstable_cache(g, ["b", config.id]);\nexport const c = unstable_cache(g, ["c", cfg.id]);\nexport const d = unstable_cache(g, ["d", brand.id]);\nexport const e = unstable_cache(g, ["e", tenant.id]);\n' | put k9/lib/d.ts
+echo 'export const a = unstable_cache(g, ["x", listing.id]);' | put i1/lib/d.ts
+echo 'export const a = unstable_cache(g, ["x", request.id]);' | put i2/lib/d.ts
+echo 'export const a = unstable_cache(g, ["x", id]);' | put i3/lib/d.ts
+echo 'export const a = unstable_cache(g, ["x", searchParams.id]);' | put i4/lib/d.ts
+echo 'export const a = unstable_cache(g, ["x", a.listing.id]);' | put i5/lib/d.ts
+{ echo 'export const k = unstable_cache(loadCats, ["cats"]);'; fill 20; echo "export const n = () => $CNT;"; } | put c5/lib/f.ts
+{ echo "export const n = () => $CNT;"; fill 4; echo 'export const k = unstable_cache(f, ["k"]);'; } | put c6/lib/f.ts
+printf 'const r = await fetch(u, { next: { revalidate: 0 } });\nexport const n = () => %s;\n' "$CNT" | put c7/lib/f.ts
+printf 'export const revalidate = false;\nexport const n = () => %s;\n' "$CNT" | put c8/lib/f.ts
+{ echo 'export const k = unstable_cache(f, ["k"]);'; fill 12; echo "export const n = () => $CNT;"; } | put c9/lib/f.ts
+{ echo 'export const k = unstable_cache(loadCats, ["cats"]);'; fill 20; echo 'export const q = env.DB.prepare("SELECT * FROM licences");'; } | put s3/lib/q.ts
+run "$W/l2"; row "r2: .catch callback and nested catch clear" "l2 | request-path-logs | clear |"
+run "$W/l3"; row "r2: NODE_ENV block does not guard a later log" "l3 | request-path-logs | review | app/api/a/route.ts:3 |"
+run "$W/p1"; row "r2: Promise.all in a loop is batching" "p1 | d1-n-plus-one | clear |"
+run "$W/k4"; row "r2: adjacent loaders, comment covers one" "k4 | cache-key-unbounded | review | lib/d.ts:3 |"
+run "$W/k5"; row "r2: blank line between comment and call" "k5 | cache-key-unbounded | review | lib/d.ts:3 |"
+run "$W/k6"; row "r2: same-line and line-above comments clear" "k6 | cache-key-unbounded | clear |"
+run "$W/k7"; row "r2: trailing comment does not cover next line" "k7 | cache-key-unbounded | review | lib/d.ts:2 |"
+run "$W/k8"; row "r2: cachedIf is never reported" "k8 | cache-key-unbounded | clear |"
+run "$W/k9"; row "r2: site config cfg brand tenant ids clear" "k9 | cache-key-unbounded | clear |"
+for r in i1 i2 i3 i4 i5; do run "$W/$r"; row "r2: $r id key fires" "$r | cache-key-unbounded | review | lib/d.ts:1 |"; done
+run "$W/c5"; row "r2: far cached loader does not clear COUNT" "c5 | count-star-uncached | review | lib/f.ts:22 |"
+run "$W/c6"; row "r2: hint 5 lines below clears COUNT" "c6 | count-star-uncached | clear |"
+run "$W/c7"; row "r2: next revalidate 0 fires" "c7 | count-star-uncached | review | lib/f.ts:2 |"
+run "$W/c8"; row "r2: revalidate = false is a hint" "c8 | count-star-uncached | clear |"
+run "$W/c9"; row "r2: hint 13 lines above fires" "c9 | count-star-uncached | review | lib/f.ts:14 |"
+run "$W/s3"; row "r2: far cached loader does not clear select" "s3 | select-unbounded | review | lib/q.ts:22 |"
+run "$W/bad"
+grep -qF "scans the table" <<<"$OUT" && no "r2: no unmeasured scan claim" || ok "r2: no unmeasured scan claim"
+grep -qF "in a route" <<<"$OUT" && no "r2: texts say app code" || ok "r2: texts say app code"
 run "$W/bad"
 row "fix7: log text says may bill"    "may bill a log event on every request when Workers observability is on"
 row "fix7: log text says what was measured" "Only invocation logs were measured"

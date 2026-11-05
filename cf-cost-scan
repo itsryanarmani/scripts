@@ -15,7 +15,7 @@ SKIP = {'node_modules', '.git', '.next', '.open-next', '.vercel', '.turbo', '.sv
 CODE = ('.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts')
 WRANGLER = ('wrangler.jsonc', 'wrangler.json', 'wrangler.toml')
 CACHE_HINT = re.compile(r'revalidate|unstable_cache|cache-control|s-maxage|force-static|caches\.default', re.I)
-DATA_CACHE = re.compile(r'unstable_cache|cachedIf\(|\bcached\(|revalidate\s*=\s*[1-9]\d*|revalidate\s*:')
+DATA_CACHE = re.compile(r'unstable_cache\(|cachedIf\(|\bcached\(|revalidate\s*[=:]\s*(?:false\b|[1-9])')
 D1_USE = re.compile(r'\.prepare\(|\benv\.DB\b|getCloudflareContext')
 
 # name -> (needs, why it costs)
@@ -30,9 +30,9 @@ CHECKS = {
     'static-txt-route': ('next', 'A route that serves robots.txt, llms.txt, ai.txt or security.txt runs the Worker; a static file does not.'),
     'cache-key-unbounded': ('next', 'A data-cache key built from a request value makes one billed KV write per distinct value. Add a `cache-key: bounded` comment when the set is small.'),
     'd1-n-plus-one': ('d1', 'A D1 query awaited in a loop runs once per item; each run reads rows and adds latency. Batch or join instead.'),
-    'select-unbounded': ('d1', 'SELECT * or a select with no WHERE and no LIMIT in a route handler can read a whole table on every request.'),
+    'select-unbounded': ('d1', 'SELECT * or a select with no WHERE and no LIMIT in app code can read many rows on every request.'),
     'json-each-materialized': ('d1', 'json_each with MATERIALIZED or a recursive CTE is a query shape to check; one such query family read 173M rows in 16 hours (MEASURED).'),
-    'count-star-uncached': ('d1', 'COUNT(*) in a route with no cache scans the table on every request. Store the count at import.'),
+    'count-star-uncached': ('d1', 'COUNT(*) with no cache nearby can read many rows on every request (about 255 rows a run for the measured facet counts). Store the count at import.'),
     'request-path-logs': ('wrangler', 'console.log or console.info in the request path may bill a log event on every request when Workers observability is on. Only invocation logs were measured in this work, not console logs.'),
     'minify-true': ('wrangler', 'minify: true may raise cold-start CPU. One fleet test saw no change in CPU per request at scale, so the effect is unconfirmed.'),
 }
@@ -60,25 +60,31 @@ def in_catch(t, pos):
         elif t[i] == '{':
             if depth:
                 depth -= 1
-            elif re.search(r'\bcatch\s*(\([^)]*\))?\s*$', t[max(0, i - 80):i]):
+            elif re.search(r'\bcatch\s*(\([^)]*\))?\s*$|\.catch\s*\(\s*(?:async\s*)?(?:function\s*\w*\s*)?(?:\([^)]*\)|\w+)\s*(?:=>)?\s*$', t[max(0, i - 80):i]):
                 return True
     return False
 
+def cached_near(t, pos):
+    """True when a cache hint sits within 12 lines above or 6 lines below the line at pos."""
+    n = t.count('\n', 0, pos)
+    return bool(DATA_CACHE.search('\n'.join(t.split('\n')[max(0, n - 12):n + 7])))
+
 def unbounded(rel, t, m):
-    line = t.count('\n', 0, m.start())
-    near = '\n'.join(t.split('\n')[max(0, line - 3):line + 1])
-    return 'cache-key: bounded' not in near and not re.match(r'cachedIf\(\s*head\s*,', m.group(0))
+    """A `cache-key: bounded` comment covers one call: same line, or a comment-only line directly above."""
+    lines, n = t.split('\n'), t.count('\n', 0, m.start())
+    above = lines[n - 1] if n else ''
+    return 'cache-key: bounded' not in lines[n] and not (
+        'cache-key: bounded' in above and re.match(r'\s*(//|/\*|\*)', above))
 
 def full_select(rel, t, m):
     stmt = t[m.start():m.end() + re.search(r'["\'`;]|$', t[m.end():]).start()]
-    return not NOT_APP.search(rel) and not DATA_CACHE.search(t) and not re.search(
+    return not NOT_APP.search(rel) and not cached_near(t, m.start()) and not re.search(
         r'\bLIMIT\b|\bWHERE\s+(?:id|slug|key)\s*=', stmt, re.I)
 USES_D1 = lambda rel, t, m: D1_USE.search(t)
-UNCACHED_COUNT = lambda rel, t, m: not NOT_APP.search(rel) and not DATA_CACHE.search(t)
-REQUEST_LOG = lambda rel, t, m: ((ROUTE.search(rel) or ENTRY.search(rel)) and not NOT_APP.search(rel) and not in_catch(t, m.start())
-                                 and not re.search(r'NODE_ENV\s*!==?\s*["\']production', t[max(0, m.start() - 150):m.start()]))
+UNCACHED_COUNT = lambda rel, t, m: not NOT_APP.search(rel) and not cached_near(t, m.start())
+REQUEST_LOG = lambda rel, t, m: ((ROUTE.search(rel) or ENTRY.search(rel)) and not NOT_APP.search(rel) and not in_catch(t, m.start()))
 LOOP_QUERY = (r'(?:\b(?:for|while)\s*\([^)]*\)\s*\{[^{}]*\bawait\b[^{}]*'
-              r'|\.map\(\s*async\b[^;]{0,200}?)\.(?:prepare|first|all)\(')
+              r'|\.map\(\s*async\b[^;]{0,200}?)(?<!Promise)\.(?:prepare|first|all)\(')
 # name -> (file set, regex, flags, status on a hit, filter). A guess from text is `review`, never `found`.
 RULES = {
     'link-prefetch': ('code', r'<Link\b(?:=>|[^>])*>', 0, 'review', NOT_PREFETCH_OFF),
@@ -88,7 +94,7 @@ RULES = {
     'invocation-logs': ('wr', r'invocation_logs["\']?\s*[:=]\s*true', 0, 'found', None),
     'cron-every-minute': ('wr', r'["\']\s*(\*|\*/1)(\s+\*){4}\s*["\']', 0, 'review', None),
     'static-txt-route': ('code', '^', 0, 'found', TXT),
-    'cache-key-unbounded': ('code', r'\b(?:unstable_cache|cachedIf|cached)\([^;]{0,300}?\[[^\]]*(?:\b(?:slug|city|query|q|userId)\b|(?<![.\w])id\b|\b(?:params|req|request|searchParams)\.id\b)[^\]]*\]', 0, 'review', unbounded),
+    'cache-key-unbounded': ('code', r'\b(?:unstable_cache|cached)\([^;]{0,300}?\[[^\]]*(?:\b(?:slug|city|query|q|userId)\b|(?<![.\w])id\b|\b(?!(?:site|config|cfg|brand|tenant)\.id\b)\w+\.id\b)[^\]]*\]', 0, 'review', unbounded),
     'd1-n-plus-one': ('code', LOOP_QUERY, 0, 'review', USES_D1),
     'select-unbounded': ('code', r'SELECT\s+\*|SELECT\s[^"\'`;]*?\bFROM\s+\w+\s*(?=["\'`])', 0, 'review', full_select),
     'json-each-materialized': ('code', r'MATERIALIZED[\s\S]{0,600}?json_each\(|WITH\s+RECURSIVE[^;"\'`]{0,600}?json_each\(|json_each\([\s\S]{0,600}?MATERIALIZED', re.I, 'review', None),
