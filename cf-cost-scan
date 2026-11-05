@@ -6,6 +6,7 @@ Status is found (a fact in the code), review (a guess to check), clear or n-a.
 Exit 0 always, unless `--fail-on found` is set and a check is found (exit 1). Bad usage exits 2.
 """
 import argparse
+import functools
 import math
 import os
 import re
@@ -15,6 +16,11 @@ SKIP = {'node_modules', '.git', '.next', '.open-next', '.vercel', '.turbo', '.sv
 CODE = ('.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts')
 WRANGLER = ('wrangler.jsonc', 'wrangler.json', 'wrangler.toml')
 CACHE_HINT = re.compile(r'revalidate|unstable_cache|cache-control|s-maxage|force-static|caches\.default', re.I)
+HINT_CALL = re.compile(r'\b(?:unstable_cache|cachedIf|cached)\s*\(')
+FILE_REVALIDATE = re.compile(r'\bexport\s+const\s+revalidate\s*=\s*([^;\n]+)')
+PAGE_FILE = re.compile(r'(^|/)(page|route|layout)\.[tj]sx?$')
+BOUNDED = 'cache-key: bounded'
+KEYVAR = r'\b(?:slug|city|query|q|userId|country|region|category|place|state)\b|(?<![.\w])id\b|\b(?!(?:site|config|cfg|brand|tenant)\.id\b)\w+\.id\b'
 D1_USE = re.compile(r'\.prepare\(|\benv\.DB\b|getCloudflareContext')
 
 # name -> (needs, why it costs)
@@ -27,18 +33,108 @@ CHECKS = {
     'invocation-logs': ('wrangler', 'Routine per-request invocation logs bill one log event for every request.'),
     'cron-every-minute': ('wrangler', 'A cron every minute is 1,440 Worker runs a day, plus whatever each run reads or writes.'),
     'static-txt-route': ('next', 'A route that serves robots.txt, llms.txt, ai.txt or security.txt runs the Worker; a static file does not.'),
+    'cache-key-unbounded': ('next', 'A data-cache key built from a request value makes one billed KV write per distinct value. Add a `cache-key: bounded` comment when the set is small.'),
+    'd1-n-plus-one': ('d1', 'A D1 query awaited in a loop runs once per item; each run reads rows and adds latency. Batch or join instead.'),
+    'select-unbounded': ('d1', 'SELECT * or a select with no WHERE and no LIMIT in app code can read many rows on every request.'),
+    'json-each-materialized': ('d1', 'json_each with MATERIALIZED or a recursive CTE is a query shape to check; one such query family read 173M rows in 16 hours (MEASURED).'),
+    'count-star-uncached': ('d1', 'COUNT(*) with no cache nearby can read many rows on every request (about 255 rows a run for the measured facet counts). Store the count at import.'),
+    'request-path-logs': ('wrangler', 'console.log or console.info in the request path may bill a log event on every request when Workers observability is on. Only invocation logs were measured in this work, not console logs.'),
+    'minify-true': ('wrangler', 'minify: true may raise cold-start CPU. One fleet test saw no change in CPU per request at scale, so the effect is unconfirmed.'),
 }
 
 def walk(root):
     for base, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in SKIP]
-        for f in files:
+        dirs[:] = sorted(d for d in dirs if d not in SKIP)
+        for f in sorted(files):
             yield os.path.join(base, f)
 
 NOT_PREFETCH_OFF = lambda rel, t, m: 'prefetch={false}' not in m.group(0)
 SHORT = lambda rel, t, m: 0 < math.prod(map(int, re.findall(r'\d+', m.group(1)))) < 3600
 SITEMAP = lambda rel, t, m: 'sitemap' in rel and D1_USE.search(t) and not CACHE_HINT.search(t)
 TXT = lambda rel, t, m: re.search(r'(^|/)(robots|llms|ai|security)\.txt/route\.[tj]sx?$', rel)
+ROUTE = re.compile(r'(^|/)(route|page)\.[tj]sx?$|(^|/)api/')
+ENTRY = re.compile(r'(^|/)(middleware|worker|index)\.[tj]sx?$')
+NOT_APP = re.compile(r'(^|/)(tests?|__tests__|scripts|bin|migrations?)/|\.(test|spec)\.')
+
+def in_catch(t, pos):
+    """Walk back out of the enclosing blocks; True when one is a catch block. Braces in strings fool it."""
+    depth = 0
+    for i in range(pos - 1, -1, -1):
+        if t[i] == '}':
+            depth += 1
+        elif t[i] == '{':
+            if depth:
+                depth -= 1
+            elif re.search(r'\bcatch\s*(\([^)]*\))?\s*$|\.catch\s*\(\s*(?:async\s*)?(?:function\s*\w*\s*)?(?:\([^)]*\)|\w+)\s*(?:=>)?\s*$', t[max(0, i - 80):i]):
+                return True
+    return False
+
+@functools.lru_cache(maxsize=4)
+def mask(t):
+    """Same length as t, with comments and string contents blanked; newlines stay."""
+    out, i, n, q = [], 0, len(t), None
+    while i < n:
+        c, two = t[i], t[i:i + 2]
+        if q is None and two in ('//', '/*'):
+            end = t.find('\n' if two == '//' else '*/', i + 2)
+            end = n if end < 0 else end + (0 if two == '//' else 2)
+            out.append(re.sub(r'[^\n]', ' ', t[i:end]))
+            i = end
+            continue
+        if q is None:
+            q = c if c in '"\'`' else None
+            out.append(c)
+        elif c == '\\':
+            out.append(' ' * len(t[i:i + 2]))
+            i += 2
+            continue
+        elif c == q:
+            q = None
+            out.append(c)
+        elif c == '\n':
+            q = q if q == '`' else None
+            out.append(c)
+        else:
+            out.append(' ')
+        i += 1
+    return ''.join(out)
+
+@functools.lru_cache(maxsize=4)
+def hint_spans(t):
+    """(open, close) paren positions of each unstable_cache, cachedIf or cached call; a call that never closes is left out."""
+    m, spans = mask(t), []
+    for h in HINT_CALL.finditer(m):
+        depth = 0
+        for i in range(h.end() - 1, len(m)):
+            depth += (m[i] == '(') - (m[i] == ')')
+            if depth == 0:
+                spans.append((h.end() - 1, i))
+                break
+    return spans
+
+def covered(rel, t, pos):
+    """True when a cache hint covers the statement at pos: it sits inside a hint call, or a page, route or layout file sets a revalidate above 0."""
+    if PAGE_FILE.search(rel) and any(not re.fullmatch(r'0+', v.strip()) for v in FILE_REVALIDATE.findall(mask(t))):
+        return True
+    return any(o < pos < c for o, c in hint_spans(t))
+
+def unbounded(rel, t, m):
+    """A bounded comment covers one call: any line of the call, or a comment-only line directly above."""
+    lines, n, e = t.split('\n'), t.count('\n', 0, m.start()), t.count('\n', 0, m.end())
+    code = mask(t).split('\n')
+    above = n and BOUNDED in lines[n - 1] and not code[n - 1].strip()
+    seg = mask(t)[m.start():m.end()]
+    return bool(re.search(KEYVAR, seg[seg.rfind('['):])) and not (above or BOUNDED in '\n'.join(lines[n:e + 1]))
+
+def full_select(rel, t, m):
+    stmt = t[m.start():m.end() + re.search(r'["\'`;]|$', t[m.end():]).start()]
+    return not NOT_APP.search(rel) and not covered(rel, t, m.start()) and not re.search(
+        r'\bLIMIT\b|\bWHERE\s+(?:id|slug|key)\s*=', stmt, re.I)
+USES_D1 = lambda rel, t, m: D1_USE.search(t)
+UNCACHED_COUNT = lambda rel, t, m: not NOT_APP.search(rel) and not covered(rel, t, m.start())
+REQUEST_LOG = lambda rel, t, m: ((ROUTE.search(rel) or ENTRY.search(rel)) and not NOT_APP.search(rel) and not in_catch(t, m.start()))
+LOOP_QUERY = (r'(?:\b(?:for|while)\s*\([^)]*\)\s*\{[^{}]*\bawait\b[^{}]*'
+              r'|\.map\(\s*async\b[^;]{0,200}?)(?<!Promise)\.(?:prepare|first|all)\(')
 # name -> (file set, regex, flags, status on a hit, filter). A guess from text is `review`, never `found`.
 RULES = {
     'link-prefetch': ('code', r'<Link\b(?:=>|[^>])*>', 0, 'review', NOT_PREFETCH_OFF),
@@ -48,6 +144,13 @@ RULES = {
     'invocation-logs': ('wr', r'invocation_logs["\']?\s*[:=]\s*true', 0, 'found', None),
     'cron-every-minute': ('wr', r'["\']\s*(\*|\*/1)(\s+\*){4}\s*["\']', 0, 'review', None),
     'static-txt-route': ('code', '^', 0, 'found', TXT),
+    'cache-key-unbounded': ('code', r'\b(?:unstable_cache|cached)\([^;]{0,300}?\[[^\]]*(?:' + KEYVAR + r')[^\]]*\]', 0, 'review', unbounded),
+    'd1-n-plus-one': ('code', LOOP_QUERY, 0, 'review', USES_D1),
+    'select-unbounded': ('code', r'SELECT\s+\*|SELECT\s[^"\'`;]*?\bFROM\s+\w+\s*(?=["\'`])', 0, 'review', full_select),
+    'json-each-materialized': ('code', r'MATERIALIZED[\s\S]{0,600}?json_each\(|WITH\s+RECURSIVE[^;"\'`]{0,600}?json_each\(|json_each\([\s\S]{0,600}?MATERIALIZED', re.I, 'review', None),
+    'count-star-uncached': ('code', r'COUNT\(\s*\*\s*\)', re.I, 'review', UNCACHED_COUNT),
+    'request-path-logs': ('code', r'console\.(?:log|info)\(', 0, 'review', REQUEST_LOG),
+    'minify-true': ('wr', r'["\']?minify["\']?\s*[:=]\s*true', 0, 'review', None),
 }
 
 def first(files, regex, flags, pick):
@@ -61,7 +164,7 @@ def first(files, regex, flags, pick):
 def scan(path):
     root = os.path.abspath(path)
     files, pkg = {'code': [], 'wr': []}, ''
-    for full in walk(root):
+    for full in sorted(walk(root)):
         rel, name = os.path.relpath(full, root), os.path.basename(full)
         if name not in WRANGLER and not name.endswith(CODE) and name != 'package.json':
             continue
@@ -75,7 +178,8 @@ def scan(path):
             pkg += text
         else:
             files['wr' if name in WRANGLER else 'code'].append((rel, text))
-    has = {'next': bool(re.search(r'"next"\s*:', pkg)), 'wrangler': bool(files['wr'])}
+    has = {'next': bool(re.search(r'"next"\s*:', pkg)), 'wrangler': bool(files['wr']),
+           'd1': any(D1_USE.search(t) for _, t in files['code'])}
     out = {}
     for name, (kind, regex, flags, status, pick) in RULES.items():
         loc = first(files[kind], regex, flags, pick)
