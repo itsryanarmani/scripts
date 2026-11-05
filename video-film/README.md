@@ -18,8 +18,8 @@ The skill that explains when and why: `ship-demo-video` (style `anime-heavy-cut`
 ## Run order
 1. `ws_image.py` for the hero, look at it, then the rest. Build a contact sheet. Fix stray text.
 2. `veo.py` on the hero shots only. One camera move and one action per clip.
-3. `lyria.py` for the bed. `npx hyperframes beats bed.mp3 --json` for the beat grid.
+3. `lyria.py` for the bed (it writes WAV). Convert it: `ffmpeg -i bed.wav -b:a 192k bed.mp3`. Then `npx hyperframes beats bed.mp3 --json` for the beat grid.
 4. Put assets in `assets/`, write the spec, run `film_build.py spec.json index.html`.
 5. `npx hyperframes check`, then `snapshot --at ...`, then `render --quality high`, then `loudnorm` to about -16 LUFS.
 
-Keys come from the environment. The tools never print a key. Veo and Lyria bill the cloud project you name.
+`veo.py` needs `ffmpeg` and `gcloud` on `PATH`. Prices in the examples (`usd_per_s` 0.15 for Veo 3.1 Fast, about $0.06 per Lyria bed) are estimates from one run on 2026-11-05, so check the current price list. Keys come from the environment. The tools never print a key. Veo and Lyria bill the cloud project you name.

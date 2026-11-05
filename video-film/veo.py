@@ -2,11 +2,13 @@
 """Image-to-video with Veo 3.1 on Vertex (set VERTEX_PROJECT; optional CLOUDSDK_CONFIG).
 Usage: veo.py clips.json stilldir outdir [--only id,id]
 clips.json: {"model":..., "secs":4, "style":"...", "clips":[{"id","still","motion"}]}
-Logs an estimate per clip to ../spend.jsonl. Never prints tokens."""
-import base64, json, os, subprocess, sys, time, urllib.request, concurrent.futures as cf
+Logs an estimate per clip to spend.jsonl next to clips.json. Never prints tokens."""
+import base64, json, os, subprocess, sys, tempfile, time, urllib.request, concurrent.futures as cf
+if len(sys.argv) < 4 or "VERTEX_PROJECT" not in os.environ:
+    sys.exit("usage: VERTEX_PROJECT=<id> veo.py clips.json stilldir outdir [--only a,b]")
 PROJECT = os.environ["VERTEX_PROJECT"]  # the cloud project that bills Veo
 def token():
-    env = dict(os.environ, CLOUDSDK_CONFIG=os.environ.get("CLOUDSDK_CONFIG", os.path.expanduser("~/.config/gcloud")), PATH="/opt/homebrew/bin:"+os.environ.get("PATH",""))
+    env = dict(os.environ, CLOUDSDK_CONFIG=os.environ.get("CLOUDSDK_CONFIG", os.path.expanduser("~/.config/gcloud")))
     return subprocess.check_output(["gcloud","auth","print-access-token"], env=env, text=True).strip()
 def post(url, body):
     req = urllib.request.Request(url, json.dumps(body).encode(), {"Authorization": f"Bearer {token()}", "x-goog-user-project": PROJECT, "Content-Type": "application/json"})
@@ -18,8 +20,8 @@ model = spec["model"]; secs = spec.get("secs", 4)
 BASE = f"https://us-central1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/us-central1/publishers/google/models/{model}"
 log = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "spend.jsonl")
 def run(c):
-    jpg = f"/tmp/veo-{c['id']}.jpg"
-    subprocess.run(["sips","-s","format","jpeg","-s","formatOptions","90",f"{stills}/{c['still']}.png","--out",jpg], check=True, capture_output=True)
+    jpg = os.path.join(tempfile.mkdtemp(), f"{c['id']}.jpg")
+    subprocess.run(["ffmpeg","-loglevel","error","-y","-i",f"{stills}/{c['still']}.png","-q:v","3",jpg], check=True)
     prompt = (f"Start from the supplied frame. Keep the character, outfit and art style unchanged. {c['motion']} "
               f"{spec['style']} Ends on a held pose.")
     try:

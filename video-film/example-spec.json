@@ -25,8 +25,8 @@
   {"id": "t1", "lines": ["ONE COMPLAINT.", "ONE FORM REPLY."], "start": 0, "beats": 7, "cls": "hook"},
   {"id": "t2", "lines": ["ALONE,", "NOBODY COUNTS."], "start": 11, "beats": 4, "cls": "low"},
   {"id": "t3", "lines": ["ACME"], "start": 16, "beats": 3, "cls": "big"},
-  {"id": "t4", "lines": ["MANY COMPLAINTS.", "ONE PROPOSAL."], "start": 19, "beats": 4, "cls": "low"},
-  {"id": "t5", "lines": ["ONE FAIR", "DEMAND."], "start": 30, "beats": 4, "cls": "low"},
+  {"id": "t4", "accent_last": true, "lines": ["MANY COMPLAINTS.", "ONE PROPOSAL."], "start": 19, "beats": 4, "cls": "low"},
+  {"id": "t5", "accent_last": true, "lines": ["ONE FAIR", "DEMAND."], "start": 30, "beats": 4, "cls": "low"},
   {"id": "t6", "lines": ["PROPOSAL", "RECEIVED."], "start": 40, "beats": 4, "cls": "low"},
   {"id": "t7", "lines": ["REAL.", "TRY IT."], "start": 44, "beats": 4, "cls": "top"},
   {"id": "t8", "lines": ["YOU ARE NOT ALONE", "ON THE PAGE."], "start": 48, "beats": 6, "cls": "low"}

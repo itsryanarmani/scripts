@@ -19,7 +19,9 @@ def gen(model, body):
     raise TimeoutError(rid)
 def upload(path):
     import subprocess
-    out = subprocess.run(["curl","-s","-X","POST",f"{API}/media/upload/binary","-H",f"Authorization: Bearer {KEY}","-F",f"file=@{path}"],capture_output=True,text=True).stdout
+    # The key goes in on stdin so it never shows in the process list.
+    out = subprocess.run(["curl","-s","-X","POST",f"{API}/media/upload/binary","-K","-","-F",f"file=@{path}"],
+                         input=f'header = "Authorization: Bearer {KEY}"\n',capture_output=True,text=True).stdout
     return json.loads(out)["data"]["download_url"]
 if __name__ == "__main__":
     spec = json.load(open(sys.argv[1])); out = sys.argv[2]; os.makedirs(out, exist_ok=True)
@@ -43,11 +45,14 @@ if __name__ == "__main__":
     order = sorted(shots, key=lambda s: s["id"] != "hero")
     if order and order[0]["id"] == "hero" and not hero_url:
         i,c = run(order[0]); spent += c; log.write(json.dumps({"id":i,"usd":c,"t":time.time()})+"\n"); log.flush()
-        os.replace(f"{out}/hero.png", f"{out}/hero.png"); hero_url = upload(f"{out}/hero.png"); order = order[1:]
-    with cf.ThreadPoolExecutor(4) as ex:
-        for f in cf.as_completed([ex.submit(run,s) for s in order]):
-            try:
-                i,c = f.result(); spent += c; log.write(json.dumps({"id":i,"usd":c,"t":time.time()})+"\n"); log.flush(); print("ok",i)
-            except Exception as e: print("fail", e)
-            if spent > cap: print("cap hit"); break
+        hero_url = upload(f"{out}/hero.png"); order = order[1:]
+    if any(s.get("ref") for s in order) and not hero_url: print("warning: no hero.png, so shots marked ref run without the reference")
+    # Submit in batches of 4 and stop between batches, so the cap really stops the spend.
+    for k in range(0, len(order), 4):
+        if spent >= cap: print("cap hit, stopped before", order[k]["id"]); break
+        with cf.ThreadPoolExecutor(4) as ex:
+            for f in cf.as_completed([ex.submit(run,s) for s in order[k:k+4]]):
+                try:
+                    i,c = f.result(); spent += c; log.write(json.dumps({"id":i,"usd":c,"t":time.time()})+"\n"); log.flush(); print("ok",i)
+                except Exception as e: print("fail", e)
     print("spent ~", round(spent,3))
