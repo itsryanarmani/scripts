@@ -27,6 +27,13 @@ CHECKS = {
     'invocation-logs': ('wrangler', 'Routine per-request invocation logs bill one log event for every request.'),
     'cron-every-minute': ('wrangler', 'A cron every minute is 1,440 Worker runs a day, plus whatever each run reads or writes.'),
     'static-txt-route': ('next', 'A route that serves robots.txt, llms.txt, ai.txt or security.txt runs the Worker; a static file does not.'),
+    'cache-key-unbounded': ('next', 'A data-cache key built from a request value makes one billed KV write per distinct value. Add a `cache-key: bounded` comment when the set is small.'),
+    'd1-n-plus-one': ('d1', 'A D1 query awaited in a loop runs once per item; each run reads rows and adds latency. Batch or join instead.'),
+    'select-unbounded': ('d1', 'SELECT * or a select with no WHERE and no LIMIT in a route handler can read a whole table on every request.'),
+    'json-each-materialized': ('d1', 'json_each with MATERIALIZED or a recursive CTE scans the whole list per run; one such query family read 173M rows in 16 hours.'),
+    'count-star-uncached': ('d1', 'COUNT(*) in a route with no cache scans the table on every request. Store the count at import.'),
+    'request-path-logs': ('wrangler', 'console.log or console.info in the request path bills log events for every request.'),
+    'minify-true': ('wrangler', 'minify: true may raise cold-start CPU. One fleet test saw no change in CPU per request at scale, so the effect is unconfirmed.'),
 }
 
 def walk(root):
@@ -39,6 +46,16 @@ NOT_PREFETCH_OFF = lambda rel, t, m: 'prefetch={false}' not in m.group(0)
 SHORT = lambda rel, t, m: 0 < math.prod(map(int, re.findall(r'\d+', m.group(1)))) < 3600
 SITEMAP = lambda rel, t, m: 'sitemap' in rel and D1_USE.search(t) and not CACHE_HINT.search(t)
 TXT = lambda rel, t, m: re.search(r'(^|/)(robots|llms|ai|security)\.txt/route\.[tj]sx?$', rel)
+ROUTE = re.compile(r'(^|/)(route|page)\.[tj]sx?$|(^|/)api/')
+ENTRY = re.compile(r'(^|/)(middleware|worker|index)\.[tj]sx?$')
+IN_CATCH = re.compile(r'catch\s*(\([^)]*\))?\s*\{[^}]*$')
+UNBOUNDED = lambda rel, t, m: 'cache-key: bounded' not in t
+USES_D1 = lambda rel, t, m: D1_USE.search(t)
+IN_ROUTE = lambda rel, t, m: ROUTE.search(rel)
+UNCACHED_ROUTE = lambda rel, t, m: ROUTE.search(rel) and not CACHE_HINT.search(t)
+REQUEST_LOG = lambda rel, t, m: (ROUTE.search(rel) or ENTRY.search(rel)) and not IN_CATCH.search(t[max(0, m.start() - 200):m.start()])
+LOOP_QUERY = (r'(?:\b(?:for|while)\s*\([^)]*\)\s*\{[^{}]*\bawait\b[^{}]*'
+              r'|\.map\(\s*async\b[^;]{0,200}?)\.(?:prepare|first|all)\(')
 # name -> (file set, regex, flags, status on a hit, filter). A guess from text is `review`, never `found`.
 RULES = {
     'link-prefetch': ('code', r'<Link\b(?:=>|[^>])*>', 0, 'review', NOT_PREFETCH_OFF),
@@ -48,6 +65,13 @@ RULES = {
     'invocation-logs': ('wr', r'invocation_logs["\']?\s*[:=]\s*true', 0, 'found', None),
     'cron-every-minute': ('wr', r'["\']\s*(\*|\*/1)(\s+\*){4}\s*["\']', 0, 'review', None),
     'static-txt-route': ('code', '^', 0, 'found', TXT),
+    'cache-key-unbounded': ('code', r'\b(?:unstable_cache|cachedIf|cached)\([^;]{0,300}?\[[^\]]*\b(?:slug|city|query|q|userId|id)\b[^\]]*\]', 0, 'review', UNBOUNDED),
+    'd1-n-plus-one': ('code', LOOP_QUERY, 0, 'review', USES_D1),
+    'select-unbounded': ('code', r'SELECT\s+\*|SELECT\s[^"\'`;]*?\bFROM\s+\w+\s*(?=["\'`])', 0, 'review', IN_ROUTE),
+    'json-each-materialized': ('code', r'(?:MATERIALIZED|WITH\s+RECURSIVE)[\s\S]{0,600}?json_each\(|json_each\([\s\S]{0,600}?MATERIALIZED', re.I, 'review', None),
+    'count-star-uncached': ('code', r'COUNT\(\s*\*\s*\)', re.I, 'review', UNCACHED_ROUTE),
+    'request-path-logs': ('code', r'console\.(?:log|info)\(', 0, 'review', REQUEST_LOG),
+    'minify-true': ('wr', r'["\']?minify["\']?\s*[:=]\s*true', 0, 'review', None),
 }
 
 def first(files, regex, flags, pick):
@@ -75,7 +99,8 @@ def scan(path):
             pkg += text
         else:
             files['wr' if name in WRANGLER else 'code'].append((rel, text))
-    has = {'next': bool(re.search(r'"next"\s*:', pkg)), 'wrangler': bool(files['wr'])}
+    has = {'next': bool(re.search(r'"next"\s*:', pkg)), 'wrangler': bool(files['wr']),
+           'd1': any(D1_USE.search(t) for _, t in files['code'])}
     out = {}
     for name, (kind, regex, flags, status, pick) in RULES.items():
         loc = first(files[kind], regex, flags, pick)
