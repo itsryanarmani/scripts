@@ -6,6 +6,7 @@ Status is found (a fact in the code), review (a guess to check), clear or n-a.
 Exit 0 always, unless `--fail-on found` is set and a check is found (exit 1). Bad usage exits 2.
 """
 import argparse
+import functools
 import math
 import os
 import re
@@ -15,7 +16,11 @@ SKIP = {'node_modules', '.git', '.next', '.open-next', '.vercel', '.turbo', '.sv
 CODE = ('.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts')
 WRANGLER = ('wrangler.jsonc', 'wrangler.json', 'wrangler.toml')
 CACHE_HINT = re.compile(r'revalidate|unstable_cache|cache-control|s-maxage|force-static|caches\.default', re.I)
-DATA_CACHE = re.compile(r'unstable_cache\(|cachedIf\(|\bcached\(|revalidate\s*[=:]\s*(?:false\b|[1-9])')
+HINT_CALL = re.compile(r'\b(?:unstable_cache|cachedIf|cached)\s*\(')
+FILE_REVALIDATE = re.compile(r'\bexport\s+const\s+revalidate\s*=\s*([^;\n]+)')
+PAGE_FILE = re.compile(r'(^|/)(page|route|layout)\.[tj]sx?$')
+BOUNDED = 'cache-key: bounded'
+KEYVAR = r'\b(?:slug|city|query|q|userId|country|region|category|place|state)\b|(?<![.\w])id\b|\b(?!(?:site|config|cfg|brand|tenant)\.id\b)\w+\.id\b'
 D1_USE = re.compile(r'\.prepare\(|\benv\.DB\b|getCloudflareContext')
 
 # name -> (needs, why it costs)
@@ -39,8 +44,8 @@ CHECKS = {
 
 def walk(root):
     for base, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in SKIP]
-        for f in files:
+        dirs[:] = sorted(d for d in dirs if d not in SKIP)
+        for f in sorted(files):
             yield os.path.join(base, f)
 
 NOT_PREFETCH_OFF = lambda rel, t, m: 'prefetch={false}' not in m.group(0)
@@ -64,24 +69,69 @@ def in_catch(t, pos):
                 return True
     return False
 
-def cached_near(t, pos):
-    """True when a cache hint sits within 12 lines above or 6 lines below the line at pos."""
-    n = t.count('\n', 0, pos)
-    return bool(DATA_CACHE.search('\n'.join(t.split('\n')[max(0, n - 12):n + 7])))
+@functools.lru_cache(maxsize=4)
+def mask(t):
+    """Same length as t, with comments and string contents blanked; newlines stay."""
+    out, i, n, q = [], 0, len(t), None
+    while i < n:
+        c, two = t[i], t[i:i + 2]
+        if q is None and two in ('//', '/*'):
+            end = t.find('\n' if two == '//' else '*/', i + 2)
+            end = n if end < 0 else end + (0 if two == '//' else 2)
+            out.append(re.sub(r'[^\n]', ' ', t[i:end]))
+            i = end
+            continue
+        if q is None:
+            q = c if c in '"\'`' else None
+            out.append(c)
+        elif c == '\\':
+            out.append(' ' * len(t[i:i + 2]))
+            i += 2
+            continue
+        elif c == q:
+            q = None
+            out.append(c)
+        elif c == '\n':
+            q = q if q == '`' else None
+            out.append(c)
+        else:
+            out.append(' ')
+        i += 1
+    return ''.join(out)
+
+@functools.lru_cache(maxsize=4)
+def hint_spans(t):
+    """(open, close) paren positions of each unstable_cache, cachedIf or cached call; a call that never closes is left out."""
+    m, spans = mask(t), []
+    for h in HINT_CALL.finditer(m):
+        depth = 0
+        for i in range(h.end() - 1, len(m)):
+            depth += (m[i] == '(') - (m[i] == ')')
+            if depth == 0:
+                spans.append((h.end() - 1, i))
+                break
+    return spans
+
+def covered(rel, t, pos):
+    """True when a cache hint covers the statement at pos: it sits inside a hint call, or a page, route or layout file sets a revalidate above 0."""
+    if PAGE_FILE.search(rel) and any(not re.fullmatch(r'0+', v.strip()) for v in FILE_REVALIDATE.findall(mask(t))):
+        return True
+    return any(o < pos < c for o, c in hint_spans(t))
 
 def unbounded(rel, t, m):
-    """A `cache-key: bounded` comment covers one call: same line, or a comment-only line directly above."""
-    lines, n = t.split('\n'), t.count('\n', 0, m.start())
-    above = lines[n - 1] if n else ''
-    return 'cache-key: bounded' not in lines[n] and not (
-        'cache-key: bounded' in above and re.match(r'\s*(//|/\*|\*)', above))
+    """A bounded comment covers one call: any line of the call, or a comment-only line directly above."""
+    lines, n, e = t.split('\n'), t.count('\n', 0, m.start()), t.count('\n', 0, m.end())
+    code = mask(t).split('\n')
+    above = n and BOUNDED in lines[n - 1] and not code[n - 1].strip()
+    seg = mask(t)[m.start():m.end()]
+    return bool(re.search(KEYVAR, seg[seg.rfind('['):])) and not (above or BOUNDED in '\n'.join(lines[n:e + 1]))
 
 def full_select(rel, t, m):
     stmt = t[m.start():m.end() + re.search(r'["\'`;]|$', t[m.end():]).start()]
-    return not NOT_APP.search(rel) and not cached_near(t, m.start()) and not re.search(
+    return not NOT_APP.search(rel) and not covered(rel, t, m.start()) and not re.search(
         r'\bLIMIT\b|\bWHERE\s+(?:id|slug|key)\s*=', stmt, re.I)
 USES_D1 = lambda rel, t, m: D1_USE.search(t)
-UNCACHED_COUNT = lambda rel, t, m: not NOT_APP.search(rel) and not cached_near(t, m.start())
+UNCACHED_COUNT = lambda rel, t, m: not NOT_APP.search(rel) and not covered(rel, t, m.start())
 REQUEST_LOG = lambda rel, t, m: ((ROUTE.search(rel) or ENTRY.search(rel)) and not NOT_APP.search(rel) and not in_catch(t, m.start()))
 LOOP_QUERY = (r'(?:\b(?:for|while)\s*\([^)]*\)\s*\{[^{}]*\bawait\b[^{}]*'
               r'|\.map\(\s*async\b[^;]{0,200}?)(?<!Promise)\.(?:prepare|first|all)\(')
@@ -94,7 +144,7 @@ RULES = {
     'invocation-logs': ('wr', r'invocation_logs["\']?\s*[:=]\s*true', 0, 'found', None),
     'cron-every-minute': ('wr', r'["\']\s*(\*|\*/1)(\s+\*){4}\s*["\']', 0, 'review', None),
     'static-txt-route': ('code', '^', 0, 'found', TXT),
-    'cache-key-unbounded': ('code', r'\b(?:unstable_cache|cached)\([^;]{0,300}?\[[^\]]*(?:\b(?:slug|city|query|q|userId)\b|(?<![.\w])id\b|\b(?!(?:site|config|cfg|brand|tenant)\.id\b)\w+\.id\b)[^\]]*\]', 0, 'review', unbounded),
+    'cache-key-unbounded': ('code', r'\b(?:unstable_cache|cached)\([^;]{0,300}?\[[^\]]*(?:' + KEYVAR + r')[^\]]*\]', 0, 'review', unbounded),
     'd1-n-plus-one': ('code', LOOP_QUERY, 0, 'review', USES_D1),
     'select-unbounded': ('code', r'SELECT\s+\*|SELECT\s[^"\'`;]*?\bFROM\s+\w+\s*(?=["\'`])', 0, 'review', full_select),
     'json-each-materialized': ('code', r'MATERIALIZED[\s\S]{0,600}?json_each\(|WITH\s+RECURSIVE[^;"\'`]{0,600}?json_each\(|json_each\([\s\S]{0,600}?MATERIALIZED', re.I, 'review', None),
@@ -114,7 +164,7 @@ def first(files, regex, flags, pick):
 def scan(path):
     root = os.path.abspath(path)
     files, pkg = {'code': [], 'wr': []}, ''
-    for full in walk(root):
+    for full in sorted(walk(root)):
         rel, name = os.path.relpath(full, root), os.path.basename(full)
         if name not in WRANGLER and not name.endswith(CODE) and name != 'package.json':
             continue
