@@ -294,6 +294,7 @@ it returns a stale value after a write that worked, so look at the screen.
 
 | Tool | What it does |
 |---|---|
+| [`instagram-cleanup/`](instagram-cleanup/) | Delete your own Instagram comments in batches via Your Activity, with backoff on errors, resumable. |
 | [`linkedin-cleanup/`](linkedin-cleanup/) | Delete your own LinkedIn comments and posts from your activity pages, paced and resumable. |
 | [`pinterest-pins-cleanup/`](pinterest-pins-cleanup/) | Delete the Pins you created, after checking each one is yours, paced and resumable. |
 | [`pinterest-privacy/`](pinterest-privacy/) | Make all your Pinterest boards secret, or delete them, with dry run and undo. |
