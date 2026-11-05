@@ -1,0 +1,71 @@
+{
+ "bpm": 140,
+ "total_beats": 60,
+ "music": {"src": "assets/bed-a.mp3", "media_start": 0.435, "duck": [14.4, 16], "duck_to": 0.12},
+ "shots": [
+  {"id": "hero", "kind": "video", "src": "clip-hero.mp4", "start": 0, "beats": 7, "motion": null},
+  {"id": "eyes", "kind": "img", "src": "eyes.jpg", "start": 7, "beats": 1, "motion": "punch"},
+  {"id": "send", "kind": "img", "src": "send.jpg", "start": 8, "beats": 1, "motion": "pan"},
+  {"id": "void", "kind": "img", "src": "void.jpg", "start": 9, "beats": 1, "motion": "push"},
+  {"id": "stamp", "kind": "img", "src": "stamp.jpg", "start": 10, "beats": 1, "motion": "punch"},
+  {"id": "grid", "kind": "img", "src": "grid.jpg", "start": 11, "beats": 4, "motion": "push"},
+  {"id": "button", "kind": "video", "src": "clip-button.mp4", "start": 16, "beats": 7, "motion": "shake"},
+  {"id": "win", "kind": "img", "src": "win.jpg", "start": 23, "beats": 1, "motion": "punch"},
+  {"id": "stream", "kind": "video", "src": "clip-stream.mp4", "start": 24, "beats": 2, "motion": null},
+  {"id": "spiral", "kind": "video", "src": "clip-spiral.mp4", "start": 26, "beats": 2, "motion": null},
+  {"id": "scroll", "kind": "video", "src": "clip-scroll.mp4", "start": 28, "beats": 2, "motion": null},
+  {"id": "proposal", "kind": "img", "src": "proposal.jpg", "start": 30, "beats": 4, "motion": "push"},
+  {"id": "charge", "kind": "video", "src": "clip-charge.mp4", "start": 34, "beats": 2, "motion": null},
+  {"id": "crowd", "kind": "img", "src": "crowd.jpg", "start": 36, "beats": 1, "motion": "punch"},
+  {"id": "tower", "kind": "video", "src": "clip-tower.mp4", "start": 37, "beats": 3, "motion": "shake"},
+  {"id": "gate", "kind": "img", "src": "gate.jpg", "start": 40, "beats": 4, "motion": "pull"},
+  {"id": "sunrise", "kind": "video", "src": "clip-sunrise.mp4", "start": 48, "beats": 6, "motion": null}
+ ],
+ "texts": [
+  {"id": "t1", "lines": ["ONE COMPLAINT.", "ONE FORM REPLY."], "start": 0, "beats": 7, "cls": "hook"},
+  {"id": "t2", "lines": ["ALONE,", "NOBODY COUNTS."], "start": 11, "beats": 4, "cls": "low"},
+  {"id": "t3", "lines": ["ACME"], "start": 16, "beats": 3, "cls": "big"},
+  {"id": "t4", "lines": ["MANY COMPLAINTS.", "ONE PROPOSAL."], "start": 19, "beats": 4, "cls": "low"},
+  {"id": "t5", "lines": ["ONE FAIR", "DEMAND."], "start": 30, "beats": 4, "cls": "low"},
+  {"id": "t6", "lines": ["PROPOSAL", "RECEIVED."], "start": 40, "beats": 4, "cls": "low"},
+  {"id": "t7", "lines": ["REAL.", "TRY IT."], "start": 44, "beats": 4, "cls": "top"},
+  {"id": "t8", "lines": ["YOU ARE NOT ALONE", "ON THE PAGE."], "start": 48, "beats": 6, "cls": "low"}
+ ],
+ "sfx": [
+  {"name": "whoosh", "beat": 6.75, "vol": 0.5},
+  {"name": "pop", "beat": 8, "vol": 0.5},
+  {"name": "stamp", "beat": 10, "vol": 0.6},
+  {"name": "whoosh", "beat": 10.8, "vol": 0.45},
+  {"name": "riser", "beat": 13.2, "vol": 0.5},
+  {"name": "slam", "beat": 16, "vol": 0.6},
+  {"name": "impact", "beat": 16, "vol": 0.6},
+  {"name": "whoosh", "beat": 22.8, "vol": 0.45},
+  {"name": "whoosh", "beat": 23.8, "vol": 0.4},
+  {"name": "whoosh", "beat": 25.8, "vol": 0.4},
+  {"name": "whoosh", "beat": 27.8, "vol": 0.4},
+  {"name": "ring", "beat": 30, "vol": 0.45},
+  {"name": "whoosh", "beat": 33.8, "vol": 0.45},
+  {"name": "whoosh", "beat": 36.7, "vol": 0.4},
+  {"name": "impact", "beat": 37, "vol": 0.6},
+  {"name": "ring", "beat": 40, "vol": 0.45},
+  {"name": "pop", "beat": 44, "vol": 0.5},
+  {"name": "ring", "beat": 48, "vol": 0.4},
+  {"name": "pop", "beat": 54, "vol": 0.5}
+ ],
+ "flashes": [
+  16,
+  37,
+  10
+ ],
+ "shakes": {"button": 16, "tower": 37},
+ "black_beat": 15,
+ "speed_lines": [
+  23,
+  40
+ ],
+ "panel": {"src": "assets/proof.jpg", "start": 44, "beats": 4, "alt": "A real screenshot of the product"},
+ "end": {"start": 54, "beats": 6, "title": "Acme", "sub": "One line promise", "url": "example.com/acme", "note": "Simulated demo. Counts are illustrative.", "mark_svg": "<svg class=\"mark\" id=\"endmark\" viewBox=\"0 0 32 32\" aria-hidden=\"true\"><rect x=\"5\" y=\"5\" width=\"22\" height=\"22\" rx=\"4\" fill=\"#ff5b14\" stroke=\"currentColor\" stroke-width=\"2.2\"/></svg>"},
+ "tag": "SIMULATED",
+ "palette": {"ink": "#15120f", "paper": "#f3eee3", "accent": "#ff5b14", "card": "#d4b07d", "accent_ink": "#a83700"},
+ "font": {"family": "Barlow Condensed", "file": "fonts/barlowcondensed-700.woff2"}
+}
