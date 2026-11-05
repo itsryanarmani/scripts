@@ -85,6 +85,8 @@ Not part of the diagnosis order above.
 | `fleet-ci-census` | Per repo and workflow: run count, p50/p95 wall time, total minutes, failure and cancellation rates. JSON by default; `--markdown` ranks by total minutes. A run count at the page cap is a floor, not a total. See [fleet-ci-census.md](fleet-ci-census.md). |
 | `append-point-scan` | Flag shared append points from repo contents alone: freshness gates, enumerated scripts, ordinal registries, committed junk. Answers what WILL conflict once a repo gets busy. `./append-point-scan <dir-or-owner/repo>`. |
 | `merge-hotspots` | Rank files by share of recent commits and mark derived vs source. Churn is not contention: a busy file only serializes merges when several PRs touch it. `./merge-hotspots <dir-or-owner/repo>`. |
+| `cf-usage-report` | Read-only Cloudflare cost report for one account: billing per day, D1 rows, and Workers CPU with the heavy-tail share. It reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the environment or `--env-file` and never prints them. A section the token cannot read prints `unavailable: <reason>`. `--json` for machines, `--fixtures <dir>` to run with no network. |
+| `cf-cost-scan` | Scan local repos for 8 patterns that raise the Cloudflare bill, such as default link prefetch, short revalidate windows and every-minute crons. Prints `repo \| check \| status \| file:line \| why it costs`. `./cf-cost-scan <dir>...`. It always exits 0; `--fail-on found` exits 1 for CI. |
 | `reviewer-venues/` | Dataset of 287 fee-free peer-review opportunities (CSV; JSON via the filter) with `filter_venues.py` to filter by region, field, venue type and application route. See [reviewer-venues/README.md](reviewer-venues/README.md). |
 
 ## Guides

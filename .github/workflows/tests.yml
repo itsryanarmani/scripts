@@ -101,6 +101,8 @@ jobs:
           set -euo pipefail
           ./fleet-ci-census.test.sh
           ./ci-pr-latency.test.sh
+          ./cf-usage-report.test.sh
+          ./cf-cost-scan.test.sh
 
       - name: Run merge-throughput tests
         id: merge-throughput-tests
