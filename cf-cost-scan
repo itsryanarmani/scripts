@@ -2,16 +2,17 @@
 """Scan local repos for patterns that raise the Cloudflare bill. Read-only.
 
 Prints `repo | check | status | file:line | why it costs`.
-Status is found, review, warning, clear or n-a. Exit 0 always, unless
-`--fail-on found` is set and a check is found (exit 1). Bad usage exits 2.
+Status is found (a fact in the code), review (a guess to check), clear or n-a.
+Exit 0 always, unless `--fail-on found` is set and a check is found (exit 1). Bad usage exits 2.
 """
 import argparse
+import math
 import os
 import re
 import sys
 
-SKIP = {'node_modules', '.git', '.next', '.open-next', 'dist', 'build', '.wrangler', 'coverage'}
-CODE = ('.ts', '.tsx', '.js', '.jsx', '.mjs')
+SKIP = {'node_modules', '.git', '.next', '.open-next', '.vercel', '.turbo', '.svelte-kit', '.wrangler', 'coverage', 'dist', 'build', 'out'}
+CODE = ('.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts')
 WRANGLER = ('wrangler.jsonc', 'wrangler.json', 'wrangler.toml')
 CACHE_HINT = re.compile(r'revalidate|unstable_cache|cache-control|s-maxage|force-static|caches\.default', re.I)
 D1_USE = re.compile(r'\.prepare\(|\benv\.DB\b|getCloudflareContext')
@@ -24,11 +25,8 @@ CHECKS = {
     'short-revalidate': ('next', 'A short window re-runs the D1 query often for data that changes only by import.'),
     'sitemap-d1-uncached': ('next', 'A sitemap with no cache queries D1 on every crawler hit, and crawlers hit it all day.'),
     'invocation-logs': ('wrangler', 'Routine per-request invocation logs bill one log event for every request.'),
-    'minify-opennext': ('wrangler', 'Measured: minify on an OpenNext Worker raised cold-start CPU by about 40 percent locally. Verify before you keep it.'),
     'cron-every-minute': ('wrangler', 'A cron every minute is 1,440 Worker runs a day, plus whatever each run reads or writes.'),
     'static-txt-route': ('next', 'A route that serves robots.txt, llms.txt, ai.txt or security.txt runs the Worker; a static file does not.'),
-    'placement-region': ('wrangler', 'Pinning a region on a live Worker caused 3 s responses in one test. Measure before you keep it.'),
-    'd1-full-scan': ('next', 'COUNT(*) or GROUP BY in a route handler can read the whole table on every request.'),
 }
 
 def walk(root):
@@ -38,24 +36,19 @@ def walk(root):
             yield os.path.join(base, f)
 
 NOT_PREFETCH_OFF = lambda rel, t, m: 'prefetch={false}' not in m.group(0)
-SHORT = lambda rel, t, m: 0 < int(m.group(1)) < 3600
+SHORT = lambda rel, t, m: 0 < math.prod(map(int, re.findall(r'\d+', m.group(1)))) < 3600
 SITEMAP = lambda rel, t, m: 'sitemap' in rel and D1_USE.search(t) and not CACHE_HINT.search(t)
-TXT = lambda rel, t, m: re.search(r'(^|/)(robots|llms|ai|security)(\.txt(/route)?)?\.[tj]sx?$', rel)
-ROUTE = lambda rel, t, m: re.search(r'(^|/)route\.[tj]sx?$|pages/api/', rel)
-# name -> (file set, regex, flags, status on a hit, filter)
+TXT = lambda rel, t, m: re.search(r'(^|/)(robots|llms|ai|security)\.txt/route\.[tj]sx?$', rel)
+# name -> (file set, regex, flags, status on a hit, filter). A guess from text is `review`, never `found`.
 RULES = {
-    'link-prefetch': ('code', r'<Link\b[^>]*>', 0, 'found', NOT_PREFETCH_OFF),
-    'json-cache-key': ('code', r'(unstable_cache|cached)\([\s\S]{0,300}?JSON\.stringify', 0, 'found', None),
-    'short-revalidate': ('code', r'revalidate\s*[:=]\s*(\d+)', 0, 'found', SHORT),
-    'sitemap-d1-uncached': ('code', '^', 0, 'found', SITEMAP),
+    'link-prefetch': ('code', r'<Link\b(?:=>|[^>])*>', 0, 'review', NOT_PREFETCH_OFF),
+    'json-cache-key': ('code', r'\b(unstable_cache|cached)\([\s\S]{0,300}?JSON\.stringify', 0, 'review', None),
+    'short-revalidate': ('code', r'revalidate\s*[:=]\s*((?:\d+\s*\*\s*)*\d+)', 0, 'review', SHORT),
+    'sitemap-d1-uncached': ('code', '^', 0, 'review', SITEMAP),
     'invocation-logs': ('wr', r'invocation_logs["\']?\s*[:=]\s*true', 0, 'found', None),
-    'minify-opennext': ('wr', r'["\']?minify["\']?\s*[:=]\s*true', 0, 'review', lambda rel, t, m: OPENNEXT[0]),
-    'cron-every-minute': ('wr', r'["\']\*\s\*\s\*\s\*\s\*["\']', 0, 'found', None),
+    'cron-every-minute': ('wr', r'["\']\s*(\*|\*/1)(\s+\*){4}\s*["\']', 0, 'review', None),
     'static-txt-route': ('code', '^', 0, 'found', TXT),
-    'placement-region': ('wr', r'placement\W[\s\S]{0,120}?\b(region|hint)\b', 0, 'warning', None),
-    'd1-full-scan': ('code', r'SELECT\s+COUNT\(\*\)|GROUP\s+BY', re.I, 'review', ROUTE),
 }
-OPENNEXT = [False]
 
 def first(files, regex, flags, pick):
     """Return 'rel:line' of the first match that passes pick, or None."""
@@ -83,12 +76,11 @@ def scan(path):
         else:
             files['wr' if name in WRANGLER else 'code'].append((rel, text))
     has = {'next': bool(re.search(r'"next"\s*:', pkg)), 'wrangler': bool(files['wr'])}
-    OPENNEXT[0] = bool(re.search(r'opennextjs|open-next', pkg + ''.join(t for _, t in files['wr'])))
     out = {}
     for name, (kind, regex, flags, status, pick) in RULES.items():
         loc = first(files[kind], regex, flags, pick)
         out[name] = (status, loc) if loc else ('clear', '-')
-    out['rsc-guard'] = ('clear', '-') if first(files['code'], '_rsc', 0, None) else ('found', '-')
+    out['rsc-guard'] = ('clear', '-') if first(files['code'], '_rsc', 0, None) else ('review', '-')
     return [(n, *(out[n] if has[CHECKS[n][0]] else ('n-a', '-')), CHECKS[n][1]) for n in CHECKS]
 
 def main():

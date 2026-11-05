@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Print a read-only Cloudflare cost report: billing, D1, Workers, KV, hourly.
+"""Print a read-only Cloudflare cost report: billing, D1, Workers.
 
 Reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment, or
 from --env-file. Never prints either. A section the token cannot read prints
 `unavailable: <reason>` and the report goes on.
-Exit codes: 0 done, 2 bad usage, 3 no credentials.
+Exit codes: 0 done, 2 bad usage, 3 no credentials, 4 every section unavailable.
 """
 import argparse, collections, datetime as dt, json, os, re, sys, urllib.error, urllib.request
 
 API = 'https://api.cloudflare.com/client/v4'
-SECTIONS = ['billing', 'd1', 'workers', 'kv', 'hourly']
+SECTIONS = ['billing', 'd1', 'workers']
 TOP = 6
+LIMIT = 10000
 
 class ApiError(Exception):
     pass
@@ -40,18 +41,27 @@ class Client:
         data = self.get(path, fixture)
         if not isinstance(data, dict) or data.get('success') is False or not isinstance(data.get('result'), list):
             raise ApiError('API refused the request')
+        info = data.get('result_info') or {}
+        if (info.get('total_pages') or 1) > 1 or info.get('cursor'):
+            raise ApiError('answer has more than one page; result incomplete')
         return data['result']
 
     def gql(self, key, field, dims, sums, flt, extra=''):
-        q = ('query($account: string!) { viewer { accounts(filter: {accountTag: $account}) { %s(limit: 10000, filter: {%s})'
-             ' { dimensions {%s} sum {%s} %s } } } }' % (field, flt, dims, sums, extra))
+        q = ('query($account: string!) { viewer { accounts(filter: {accountTag: $account}) { %s(limit: %d, filter: {%s})'
+             ' { dimensions {%s} sum {%s} %s } } } }' % (field, LIMIT, flt, dims, sums, extra))
         data = self.get('/graphql', f'graphql-{key}.json', {'query': q, 'variables': {'account': self.account}})
         if data.get('errors'):
-            raise ApiError('GraphQL: ' + str(data['errors'][0].get('message', 'error'))[:140].replace(self.token, '***'))
+            msg = str(data['errors'][0].get('message', 'error'))
+            for secret in filter(None, (self.token, self.account)):
+                msg = msg.replace(secret, '***')
+            raise ApiError('GraphQL: ' + msg[:140])
         try:
-            return data['data']['viewer']['accounts'][0][field]
+            rows = data['data']['viewer']['accounts'][0][field]
         except (KeyError, IndexError, TypeError):
             raise ApiError('GraphQL: empty answer') from None
+        if len(rows) >= LIMIT:
+            raise ApiError(f'GraphQL: {field} hit the {LIMIT} row limit; result truncated')
+        return rows
 
     def names(self, path, fixture, key, label):
         try:
@@ -65,22 +75,27 @@ def billing_range(a):
     return f'from={min(dt.date.fromisoformat(a.start), day - dt.timedelta(days=35))} to={day + dt.timedelta(days=1)}'
 
 def billing(c, a):
-    rows = [r for r in c.rest(f'/accounts/{c.account}/billable-usage?{billing_range(a)}'.replace(' ', '&'), 'billing.json') if a.start <= str(r['ChargePeriodStart'])[:10] <= a.date]
+    start, end, one = dt.date.fromisoformat(a.start), dt.date.fromisoformat(a.date), dt.timedelta(days=1)
+    # Keep one day before the range: the newest day is judged against it.
+    rows = [r for r in c.rest(f'/accounts/{c.account}/billable-usage?{billing_range(a)}'.replace(' ', '&'), 'billing.json')
+            if str(start - one) <= str(r['ChargePeriodStart'])[:10] <= a.date]
     days = collections.defaultdict(lambda: {'lines': collections.defaultdict(float), 'period': ''})
     for r in rows:
         d = days[str(r['ChargePeriodStart'])[:10]]
         d['lines'][r['ChargeDescription']] += float(r.get('BilledCost') or 0)
         d['period'] = str(r.get('BillingPeriodStart', ''))[:10]
-    out, seen_cpu, prev = [], False, None
-    for day in sorted(days):
-        d = days[day]
-        has_cpu = any(re.search('cpu', k, re.I) for k in d['lines'])
+    cpu = lambda day: day in days and any(k.startswith('Workers CPU') for k in days[day]['lines'])
+    out, prev = [], None
+    for n in range((end - start).days + 1):
+        day = str(start + n * one)
+        d = days.get(day, {'lines': {}, 'period': prev})
         top = sorted(d['lines'].items(), key=lambda kv: -kv[1])[:TOP]
-        out.append({'day': day, 'total': round(sum(d['lines'].values()), 6), 'partial': seen_cpu and not has_cpu,
+        out.append({'day': day, 'missing': day not in days, 'total': round(sum(d['lines'].values()), 6),
+                    'partial': day == a.date and day in days and not cpu(day) and cpu(str(end - one)),
                     'new_period': prev is not None and d['period'] != prev,
                     'top': [{'line': k, 'cost': round(v, 6)} for k, v in top]})
-        seen_cpu, prev = seen_cpu or has_cpu, d['period']
-    return {'days': out, 'range_total': round(sum(x['total'] for x in out), 6)}
+        prev = d['period']
+    return {'days': out, 'range_total': round(sum(x['total'] for x in out), 6), 'missing': sum(x['missing'] for x in out)}
 
 def d1(c, a):
     rng = f'date_geq: "{a.start}", date_leq: "{a.date}"'
@@ -106,66 +121,38 @@ def workers(c, a):
             'heavy_tail_pct': round(100 * tail / total, 1) if total else 0.0,
             'top': sorted(rows, key=lambda r: -r['cpu_ms'])[:10]}
 
-def window(hours):
-    now = dt.datetime.now(dt.timezone.utc)
-    return f'datetime_geq: "{(now - dt.timedelta(hours=hours)):%Y-%m-%dT%H}:00:00Z", datetime_leq: "{now:%Y-%m-%dT%H:%M:%SZ}"'
-
-def kv(c, a):
-    groups = c.gql('kv', 'kvOperationsAdaptiveGroups', 'namespaceId datetimeHour', 'requests', window(24) + ', actionType: "write"')
-    names = c.names(f'/accounts/{c.account}/storage/kv/namespaces', 'kv-namespaces.json', 'id', 'title')
-    ns, hours = collections.Counter(), collections.Counter()
-    for g in groups:
-        ns[g['dimensions']['namespaceId']] += g['sum']['requests']
-        hours[g['dimensions']['datetimeHour'][:13] + ':00'] += g['sum']['requests']
-    return {'namespaces': [{'name': names.get(k, k), 'writes': v} for k, v in ns.most_common(TOP)],
-            'hours': [{'hour': h, 'writes': hours[h]} for h in sorted(hours)]}
-
-def hourly(c, a):
-    groups = c.gql('hourly', 'workersInvocationsAdaptive', 'datetimeHour', 'requests cpuTimeUs', window(48))
-    return {'hours': sorted(({'hour': g['dimensions']['datetimeHour'][:13] + ':00', 'requests': g['sum']['requests'],
-                              'cpu_ms': g['sum']['cpuTimeUs'] / 1000} for g in groups), key=lambda x: x['hour'])}
-
 def render(name, d):
     if name == 'billing':
         print('Cost per day = sum of BilledCost of that day. Each row is one day, so days are not cumulative.')
-        print('The newest day is published late. A partial day shows only some lines.')
+        print('The newest day is published late. A maybe partial day lacks a Workers CPU line that the day before had.')
         print('A new billing period restores the free allowance, so its first day looks cheaper.')
         for x in d['days']:
-            tags = ''.join(f'  [{t}]' for t, on in (('new period', x['new_period']), ('partial', x['partial'])) if on)
+            if x['missing']:
+                print(f"{x['day']}  missing")
+                continue
+            tags = ''.join(f'  [{t}]' for t, on in (('new period', x['new_period']), ('maybe partial', x['partial'])) if on)
             print(f"{x['day']}  total {x['total']:.4f}{tags}")
             for t in x['top']:
                 print(f"    {t['cost']:10.4f}  {t['line']}")
-        print(f"range total {d['range_total']:.4f}")
+        print(f"range total {d['range_total']:.4f}" + (f"  [incomplete: {d['missing']} missing]" if d['missing'] else ''))
     elif name == 'd1':
-        print('A full-day sum matches the bill.')
         for x in d['daily']:
             print(f"{x['date']}  rows read {x['rowsRead']}  rows written {x['rowsWritten']}")
         print('Biggest databases on the report day:')
         for x in d['top']:
             print(f"    {x['rowsRead']:>12}  {x['name']}")
-    elif name == 'workers':
+    else:
         print(f"fleet requests {d['requests']}  fleet CPU ms {d['cpu_ms']:.0f}")
-        print(f"HEAVY-TAIL SHARE {d['heavy_tail_pct']}%" + ('  (high: usually cold starts)' if d['heavy_tail_pct'] > 50 else ''))
+        print(f"HEAVY-TAIL SHARE at least {d['heavy_tail_pct']}%" + ('  (high: usually cold starts)' if d['heavy_tail_pct'] > 50 else ''))
         print('    script  requests  cpu_ms  cpu/req  p50  p99')
         for r in d['top']:
             print(f"    {r['script']}  {r['requests']}  {r['cpu_ms']:.0f}  {r['cpu_per_request']:.2f}  {r['p50_ms']:.2f}  {r['p99_ms']:.2f}")
-    elif name == 'kv':
-        print('KV writes by namespace, last 24 hours:')
-        for x in d['namespaces']:
-            print(f"    {x['writes']:>10}  {x['name']}")
-        print('KV writes per hour:')
-        for x in d['hours']:
-            print(f"    {x['hour']} {x['writes']}")
-    else:
-        for x in d['hours']:
-            print(f"{x['hour']}  requests {x['requests']}  cpu_ms {x['cpu_ms']:.0f}")
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--date', help='report day, YYYY-MM-DD (default: yesterday UTC)')
     ap.add_argument('--days', type=int, default=7, help='billing days ending on --date (default 7)')
     ap.add_argument('--section', help='comma list of: ' + ','.join(SECTIONS))
-    ap.add_argument('--hourly', action='store_true', help='add the 48-hour hourly section')
     ap.add_argument('--json', action='store_true', help='machine output')
     ap.add_argument('--show-range', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--env-file', help='file with CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID')
@@ -180,9 +167,7 @@ def main():
         ap.error('--date must be YYYY-MM-DD')
     if a.show_range:
         sys.exit(print('billing request: ' + billing_range(a)))
-    chosen = a.section.split(',') if a.section else SECTIONS[:4]
-    if a.hourly and 'hourly' not in chosen:
-        chosen.append('hourly')
+    chosen = a.section.split(',') if a.section else SECTIONS
     if any(s not in SECTIONS for s in chosen):
         ap.error('--section takes: ' + ','.join(SECTIONS))
     env = dict(os.environ)
@@ -204,11 +189,12 @@ def main():
     for name in chosen:
         try:
             results[name] = globals()[name](client, a)
-        except (ApiError, KeyError, TypeError, ValueError) as e:
+        except (ApiError, AttributeError, KeyError, TypeError, ValueError) as e:
             results[name] = {'unavailable': str(e) if isinstance(e, ApiError) else 'unexpected answer shape'}
+    status = 4 if all('unavailable' in r for r in results.values()) else 0
     if a.json:
         print(json.dumps(results, indent=2))
-        return 0
+        return status
     for name in chosen:
         print(f'== {name.upper()} ({a.date}) ==')
         if 'unavailable' in results[name]:
@@ -216,7 +202,7 @@ def main():
         else:
             render(name, results[name])
         print()
-    return 0
+    return status
 
 if __name__ == '__main__':
     sys.exit(main())
