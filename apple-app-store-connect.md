@@ -129,6 +129,14 @@ Open **Pricing and Availability** at `/apps/{appId}/distribution/pricing`.
 The availability confirmation can save automatically.
 Do not assume that another **Save** button exists on its detail page.
 Worldwide selection does not bypass territory-specific legal requirements.
+
+To exclude the EU, deselect its current member states individually.
+Use the [official EU member list](https://european-union.europa.eu/principles-countries-history/eu-countries_en); Europe includes countries outside the EU.
+Select **Next**, then **Confirm**. Reload the availability detail.
+Verify each excluded row shows **Not Available**. Verify that other intended territories remain selected.
+Apple permits [availability changes later](https://developer.apple.com/help/app-store-connect/manage-your-apps-availability/manage-availability-for-your-app-on-the-app-store/).
+Re-add EU storefronts when the owner chooses and the applicable requirements are met.
+Do not declare non-trader status merely to avoid EU distribution. Preserve the owner's actual business facts.
 Keep manual release selected on the version page.
 Check Mac and Vision availability separately; do not claim untested compatibility.
 
