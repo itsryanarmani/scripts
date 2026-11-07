@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Read-only Cloudflare traffic probes for a cost cut. Each answers one question.
+
+  cf-traffic-probe ua-cpu FILE...            CPU by crawler NAME and by route kind, from `wrangler tail --format json` output
+  cf-traffic-probe hourly-cpu SCRIPT...      requests and CPU ms per request per UTC hour, last 30 hours, per Worker script
+  cf-traffic-probe kv-ops write|read         KV operations per day, per hour and per namespace, last 3 days (names resolved)
+  cf-traffic-probe kv-storage                KV bytes and keys per namespace, biggest first, with the share that is cache entries
+  cf-traffic-probe d1-top [HOURS]            the D1 query shapes that read the most rows (default 24 hours), with database names
+  cf-traffic-probe zone-traffic DOMAIN...    requests by status, country and user agent for zones (Free-plan fields only)
+
+Reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment, or from --env-file. Never prints either.
+`--fixtures DIR` reads canned answers (graphql-<name>.json, kv-namespaces.json, d1-databases.json, zone-<domain>.json) so a
+test needs no network. `ua-cpu` is offline. Exit codes: 0 done, 2 bad usage, 3 no credentials, 4 the API refused.
+
+Traps this tool already handles:
+  - `wrangler tail --format json` writes pretty-printed objects back to back, not one per line. ua-cpu decodes the stream.
+  - Analytics namespace ids have dashes and the REST API ids do not. kv-ops and kv-storage strip the dashes before they match.
+  - A Free zone cannot read client ASN or the query string. zone-traffic asks only for fields a Free zone has.
+"""
+import argparse, collections, datetime as dt, json, os, re, sys, urllib.error, urllib.request
+
+API = 'https://api.cloudflare.com/client/v4'
+BOT = re.compile(r'([A-Za-z0-9_.\-]*(?:bot|crawler|spider)[A-Za-z0-9_.\-]*|Barkrowler|python-requests|curl|Go-http-client|axios|okhttp|scrapy)', re.I)
+
+class ApiError(Exception):
+    pass
+
+class Client:
+    def __init__(self, account, token, fixtures):
+        self.account, self.token, self.fixtures = account, token, fixtures
+
+    def call(self, path, fixture, body=None):
+        if self.fixtures:
+            try:
+                return json.load(open(os.path.join(self.fixtures, fixture), encoding='utf-8'))
+            except OSError:
+                raise ApiError('fixture missing: ' + fixture) from None
+        req = urllib.request.Request(API + path, data=json.dumps(body).encode() if body else None,
+                                     headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json', 'User-Agent': 'curl/8.7.1'})
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            raise ApiError(f'HTTP {e.code}' + (' (token lacks permission)' if e.code in (401, 403) else '')) from None
+        except (ValueError, OSError):
+            raise ApiError('network or JSON failure') from None
+
+    def gql(self, name, query, variables):
+        data = self.call('/graphql', f'graphql-{name}.json', {'query': query, 'variables': variables})
+        if data.get('errors'):
+            msg = str(data['errors'][0].get('message', 'error'))
+            for secret in filter(None, (self.token, self.account)):
+                msg = msg.replace(secret, '***')
+            raise ApiError('GraphQL: ' + msg[:160])
+        return data['data']['viewer']
+
+    def pages(self, path, fixture):
+        """All pages of a REST list (names of namespaces and databases)."""
+        out, page = [], 1
+        while True:
+            data = self.call(f'{path}{"&" if "?" in path else "?"}per_page=100&page={page}', fixture)
+            if not isinstance(data, dict) or data.get('success') is False or not isinstance(data.get('result'), list):
+                raise ApiError('API refused the request')
+            out += data['result']
+            if self.fixtures or page >= ((data.get('result_info') or {}).get('total_pages') or 1):
+                return out
+            page += 1
+
+def iso(t):
+    return t.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+def credentials(env_file):
+    env = dict(os.environ)
+    if env_file:
+        for line in open(env_file, encoding='utf-8'):
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                k, v = line.replace('export ', '').split('=', 1)
+                env[k.strip()] = v.strip().strip('"').strip("'")
+    return env.get('CLOUDFLARE_API_TOKEN') or env.get('CF_API_TOKEN'), env.get('CLOUDFLARE_ACCOUNT_ID')
+
+def decode(text):
+    """Objects of a tail file, back to back. A truncated last object is dropped."""
+    dec, i, out = json.JSONDecoder(), 0, []
+    while i < len(text):
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+        try:
+            obj, i = dec.raw_decode(text, i)
+        except ValueError:
+            break
+        out.append(obj)
+    return [o for o in out if isinstance(o, dict) and 'outcome' in o]
+
+def crawler_name(ua):
+    if not ua:
+        return 'no user agent'
+    m = BOT.search(ua)
+    if m:
+        return m.group(1)
+    return 'browser-like' if 'Mozilla/' in ua else ua[:30]
+
+def route_kind(url):
+    m = re.match(r'https?://[^/]+(/[^?]*)', url or '')
+    path = m.group(1) if m else '?'
+    if '/category/' in path:
+        return 'city or category page'
+    if re.match(r'/(claim|suggest-edit|login)', path):
+        return 'claim, edit or login'
+    if path.startswith('/search'):
+        return 'search'
+    return 'listing page' if path.count('/') >= 3 else 'other'
+
+def ua_cpu(files, top):
+    by, kinds, total = collections.defaultdict(lambda: [0, 0]), collections.defaultdict(lambda: [0, 0]), [0, 0]
+    for f in files:
+        for e in decode(open(f, encoding='utf-8').read()):
+            req = (e.get('event') or {}).get('request') or {}
+            cpu = e.get('cpuTime') or 0
+            for table, key in ((by, crawler_name((req.get('headers') or {}).get('user-agent'))), (kinds, route_kind(req.get('url')))):
+                table[key][0] += 1
+                table[key][1] += cpu
+            total[0] += 1
+            total[1] += cpu
+    if not total[0]:
+        print('no events in the files')
+        return 0
+    print('events %d, CPU ms %d' % tuple(total))
+    for title, table in (('crawler', by), ('route kind', kinds)):
+        print('%-26s %7s %9s %6s %8s' % (title, 'events', 'cpu_ms', 'share', 'ms/req'))
+        for k, (n, c) in sorted(table.items(), key=lambda kv: -kv[1][1])[:top]:
+            print('%-26s %7d %9d %5.1f%% %8.0f' % (k[:26], n, c, 100 * c / max(total[1], 1), c / n))
+        print()
+    return 0
+
+def hourly_cpu(cl, scripts):
+    now = dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    q = ('query($a: string!, $s: Time!, $e: Time!) { viewer { accounts(filter: {accountTag: $a}) { workersInvocationsAdaptive(limit: 10000, '
+         'filter: {datetime_geq: $s, datetime_lt: $e}, orderBy: [datetimeHour_ASC]) { dimensions {scriptName datetimeHour} sum {requests cpuTimeUs} } } } }')
+    rows = cl.gql('hourly-cpu', q, {'a': cl.account, 's': iso(now - dt.timedelta(hours=30)), 'e': iso(now)})['accounts'][0]['workersInvocationsAdaptive']
+    data = collections.defaultdict(dict)
+    for r in rows:
+        n = r['dimensions']['scriptName']
+        if n in scripts:
+            data[n][r['dimensions']['datetimeHour'][5:13]] = (r['sum']['requests'], r['sum']['cpuTimeUs'] / 1000)
+    print('%-12s ' % 'MM-DDTHH' + ' '.join('%-22s' % s[:22] for s in scripts))
+    for h in sorted({h for d in data.values() for h in d}):
+        cells = ['%-22s' % ('%6d req %4.0f ms/req' % (v[0], v[1] / max(v[0], 1)) if (v := data[s].get(h)) else '-') for s in scripts]
+        print('%-12s %s' % (h, ' '.join(cells)))
+    return 0
+
+def namespace_names(cl):
+    return {n['id'].replace('-', ''): n['title'] for n in cl.pages(f'/accounts/{cl.account}/storage/kv/namespaces', 'kv-namespaces.json')}
+
+def kv_ops(cl, action):
+    now = dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    start = (now - dt.timedelta(days=3)).replace(hour=0)
+    q = ('query($a: string!, $s: Time!, $e: Time!, $t: string!) { viewer { accounts(filter: {accountTag: $a}) { kvOperationsAdaptiveGroups(limit: 10000, '
+         'filter: {datetime_geq: $s, datetime_lt: $e, actionType: $t}, orderBy: [datetimeHour_ASC]) { sum {requests} dimensions {datetimeHour namespaceId} } } } }')
+    rows = cl.gql('kv-ops', q, {'a': cl.account, 's': iso(start), 'e': iso(now), 't': action})['accounts'][0]['kvOperationsAdaptiveGroups']
+    names = namespace_names(cl)
+    day, hour, ns = collections.Counter(), collections.defaultdict(collections.Counter), collections.defaultdict(collections.Counter)
+    for r in rows:
+        h, n = r['dimensions']['datetimeHour'], r['sum']['requests']
+        day[h[:10]] += n
+        hour[h[:10]][h[11:13]] += n
+        ns[h[:10]][r['dimensions']['namespaceId'].replace('-', '')] += n
+    for d in sorted(day):
+        print(d, action + ' ops', day[d])
+        for k, n in ns[d].most_common(4):
+            print('    %-44s %9d  %4.1f%%' % (names.get(k, k[:12])[:44], n, 100 * n / day[d]))
+    print('hourly (UTC hour: ops)')
+    for d in sorted(hour):
+        print(d, ' '.join('%s:%d' % (h, hour[d][h]) for h in sorted(hour[d])))
+    return 0
+
+def kv_storage(cl):
+    now = dt.datetime.utcnow()
+    q = ('query($a: string!) { viewer { accounts(filter: {accountTag: $a}) { kvStorageAdaptiveGroups(limit: 5000, filter: {date_geq: "%s", date_lt: "%s"}, '
+         'orderBy: [date_DESC]) { max {byteCount keyCount} dimensions {namespaceId date} } } } }' % ((now - dt.timedelta(days=1)).strftime('%Y-%m-%d'), now.strftime('%Y-%m-%d')))
+    rows = cl.gql('kv-storage', q, {'a': cl.account})['accounts'][0]['kvStorageAdaptiveGroups']
+    names, latest = namespace_names(cl), {}
+    for r in rows:
+        latest.setdefault(r['dimensions']['namespaceId'].replace('-', ''), (r['max']['byteCount'], r['max']['keyCount']))
+    total = sum(b for b, _ in latest.values())
+    cache = sum(b for k, (b, _) in latest.items() if 'inc-cache' in names.get(k, ''))
+    print('KV total %.2f GB, %d keys, %d namespaces; cache entries (inc-cache) %.2f GB; $0.50 per GB-month over 1 GB' % (total / 1e9, sum(n for _, n in latest.values()), len(latest), cache / 1e9))
+    for k, (b, n) in sorted(latest.items(), key=lambda kv: -kv[1][0])[:10]:
+        print('  %-46s %8.0f MB %9d keys %6.1f KB/key' % (names.get(k, '(not listed) ' + k[:8])[:46], b / 1e6, n, b / max(n, 1) / 1e3))
+    return 0
+
+def d1_top(cl, hours):
+    now = dt.datetime.utcnow()
+    q = ('query($a: string!, $s: Time!, $e: Time!) { viewer { accounts(filter: {accountTag: $a}) { d1QueriesAdaptiveGroups(limit: 40, '
+         'filter: {datetime_geq: $s, datetime_lt: $e}, orderBy: [sum_rowsRead_DESC]) { dimensions {query databaseId} sum {rowsRead} count } } } }')
+    rows = cl.gql('d1-top', q, {'a': cl.account, 's': iso(now - dt.timedelta(hours=hours)), 'e': iso(now)})['accounts'][0]['d1QueriesAdaptiveGroups']
+    names = {d['uuid']: d['name'] for d in cl.pages(f'/accounts/{cl.account}/d1/database', 'd1-databases.json')}
+    print('top %d query shapes, last %dh, rows read %d' % (len(rows), hours, sum(r['sum']['rowsRead'] for r in rows)))
+    for r in rows[:18]:
+        print('%12d rows %7d runs %7.0f rows/run  %-30s %s' % (r['sum']['rowsRead'], r['count'], r['sum']['rowsRead'] / max(r['count'], 1),
+              names.get(r['dimensions']['databaseId'], r['dimensions']['databaseId'])[:30], re.sub(r'\s+', ' ', r['dimensions']['query'])[:120]))
+    return 0
+
+def zone_traffic(cl, domains):
+    now = dt.datetime.utcnow()
+    q = ('query($z: string!, $s: Time!, $e: Time!) { viewer { zones(filter: {zoneTag: $z}) { '
+         'st: httpRequestsAdaptiveGroups(limit: 8, filter: {datetime_geq: $s, datetime_lt: $e}, orderBy: [count_DESC]) { count dimensions {edgeResponseStatus} } '
+         'co: httpRequestsAdaptiveGroups(limit: 10, filter: {datetime_geq: $s, datetime_lt: $e}, orderBy: [count_DESC]) { count dimensions {clientCountryName} } '
+         'ua: httpRequestsAdaptiveGroups(limit: 12, filter: {datetime_geq: $s, datetime_lt: $e}, orderBy: [count_DESC]) { count dimensions {userAgent} } } } }')
+    st, co, ua = collections.Counter(), collections.Counter(), collections.Counter()
+    for d in domains:
+        zones = cl.call('/zones?name=' + d, f'zone-{d}.json')
+        if not zones.get('result'):
+            raise ApiError('no zone named ' + d)
+        z = cl.gql(f'zone-traffic-{d}', q, {'z': zones['result'][0]['id'], 's': iso(now - dt.timedelta(hours=24)), 'e': iso(now)})['zones'][0]
+        for g in z['st']:
+            st[g['dimensions']['edgeResponseStatus']] += g['count']
+        for g in z['co']:
+            co[g['dimensions']['clientCountryName']] += g['count']
+        for g in z['ua']:
+            ua[crawler_name(g['dimensions']['userAgent'] or '')] += g['count']
+    tot = sum(st.values()) or 1
+    print('zones', domains, 'requests %d, status' % tot, dict(st.most_common(6)))
+    for title, c in (('countries', co), ('crawlers and agents', ua)):
+        print(title)
+        for k, n in c.most_common(10):
+            print('  %7d %5.1f%%  %s' % (n, 100 * n / tot, k))
+    return 0
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--env-file')
+    ap.add_argument('--fixtures')
+    ap.add_argument('--top', type=int, default=12)
+    ap.add_argument('probe', choices=['ua-cpu', 'hourly-cpu', 'kv-ops', 'kv-storage', 'd1-top', 'zone-traffic'])
+    ap.add_argument('args', nargs='*')
+    a = ap.parse_args()
+    if a.probe == 'ua-cpu':
+        if not a.args:
+            ap.error('ua-cpu needs at least one file')
+        return ua_cpu(a.args, a.top)
+    token, account = credentials(a.env_file)
+    if not a.fixtures and not (token and account):
+        print('set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or pass --env-file', file=sys.stderr)
+        return 3
+    cl = Client(account, token, a.fixtures)
+    try:
+        if a.probe == 'hourly-cpu':
+            return hourly_cpu(cl, a.args) if a.args else ap.error('hourly-cpu needs script names')
+        if a.probe == 'kv-ops':
+            return kv_ops(cl, a.args[0]) if a.args and a.args[0] in ('read', 'write') else ap.error('kv-ops needs read or write')
+        if a.probe == 'kv-storage':
+            return kv_storage(cl)
+        if a.probe == 'd1-top':
+            return d1_top(cl, int(a.args[0]) if a.args else 24)
+        return zone_traffic(cl, a.args) if a.args else ap.error('zone-traffic needs domains')
+    except ApiError as e:
+        print('unavailable: ' + str(e), file=sys.stderr)
+        return 4
+
+if __name__ == '__main__':
+    sys.exit(main())
