@@ -5,7 +5,7 @@ Run `npm ci && npm run typecheck` here. Set `APP_ID`, `APP_INSTALLATION_ID`, `AP
 and `POOL_TOKEN` in an ignored `.dev.vars` for `npm run dev`. Production secrets
 use `wrangler secret put`; deployment is an operator action.
 
-Register a `workflow_job` hook to `/webhook` on private `pooriaarab` repositories.
+Register a `workflow_job` hook to `/webhook` on private `itsryanarmani` repositories.
 Only `boat`, `boat-8`, and `boat-deploy` jobs enter the queue. Public repositories are ignored.
 Use `Authorization: Bearer <POOL_TOKEN>` for these endpoints:
 

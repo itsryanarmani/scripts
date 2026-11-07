@@ -53,7 +53,7 @@ grep -Fq './gh-app create --name pooriaarab-demo-fleet' "$test_dir/output"
 for perm in contents=write pull_requests=write issues=write workflows=write actions=read checks=read statuses=read; do
   grep -Fq -- "--perm $perm" "$test_dir/output"
 done
-grep -Fq './gh-app install pooriaarab-demo-fleet --owner pooriaarab' "$test_dir/output"
+grep -Fq './gh-app install pooriaarab-demo-fleet --owner itsryanarmani' "$test_dir/output"
 grep -Fq './gh-app token pooriaarab-demo-fleet-app' "$test_dir/output"
 [[ ! -e "$test_dir/calls" ]]
 reject plan ../demo
@@ -84,9 +84,9 @@ printf 'APP_ID=$(touch "%s")\nAPP_SLUG=pooriaarab-demo-fleet\nAPP_INSTALLATION_I
   "$test_dir/executed" > "$folder/app.env"
 reject verify demo
 [[ ! -e "$test_dir/executed" ]]
-printf 'canonical_repo\tshort\npooriaarab/demo\tdemo\n' > "$test_dir/manifest.tsv"
+printf 'canonical_repo\tshort\nitsryanarmani/demo\tdemo\n' > "$test_dir/manifest.tsv"
 run batch-status "$test_dir/manifest.tsv"
 grep -Fq 'summary	total=1	ready=1	missing=0' "$test_dir/output"
-printf 'pooriaarab/x\tBad\n' > "$test_dir/bad-manifest.tsv"
+printf 'itsryanarmani/x\tBad\n' > "$test_dir/bad-manifest.tsv"
 reject batch-status "$test_dir/bad-manifest.tsv"
 printf 'PASS: per-repo rollout smoke (plan, config, online, secret filtering, batch-status)\n'

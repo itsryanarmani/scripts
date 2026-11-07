@@ -4,7 +4,9 @@ const labels = [...poolLabels, 'boat-deploy'];
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const b64url = (bytes: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const pause = (ms: number) => new Promise(r => setTimeout(r, ms));
-const repoPattern = /^pooriaarab\/[A-Za-z0-9_.-]+$/;
+const repoPattern = /^itsryanarmani\/[A-Za-z0-9_.-]+$/;
+// Remove old-owner lease acceptance after 2026-11-21; running runners hold old lease files.
+const savedLeaseRepoPattern = /^(?:itsryanarmani|pooriaarab)\/[A-Za-z0-9_.-]+$/;
 async function signature(raw: string, header: string | null, secret: string) {
   if (!secret || !/^sha256=[a-f0-9]{64}$/.test(header ?? '')) return false;
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
@@ -149,8 +151,8 @@ export class BrokerDO {
       if (!job) return;
       this.rows('INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)', key, job.label === 'boat-deploy' ? Math.min(2, streak + 1) : 0);
       const id = crypto.randomUUID();
-      lease = { id, job: job.id, repo: job.repo, label: job.label, name: `boat-${box.slice(0, 16)}-${id}`, created: Date.now(), pending: 1 };
-      this.rows('INSERT INTO leases(id,job,repo,name,created) VALUES(?,?,?,?,?)', id, job.id, job.repo, lease.name, lease.created);
+      lease = { id, job: job.id, repo: job.repo.replace(/^pooriaarab\//, 'itsryanarmani/'), label: job.label, name: `boat-${box.slice(0, 16)}-${id}`, created: Date.now(), pending: 1 };
+      this.rows('INSERT INTO leases(id,job,repo,name,created) VALUES(?,?,?,?,?)', id, job.id, lease.repo, lease.name, lease.created);
       this.rows('UPDATE jobs SET lease=? WHERE id=?', id, job.id);
     });
     if (!lease) return null;
@@ -219,7 +221,7 @@ export class BrokerDO {
     }
     if (path === '/done' && req.method === 'POST') {
       const b: any = await req.json();
-      if (typeof b.lease_id !== 'string' || !Number.isSafeInteger(b.runner_id) || !repoPattern.test(b.repo)) return json({ error: 'Invalid lease' }, 400);
+      if (typeof b.lease_id !== 'string' || !Number.isSafeInteger(b.runner_id) || !savedLeaseRepoPattern.test(b.repo)) return json({ error: 'Invalid lease' }, 400);
       const lease = this.rows('SELECT * FROM leases WHERE id=? AND repo=? AND runner=?', b.lease_id, b.repo, b.runner_id)[0];
       if (!lease) return json({ deleted: true });
       this.rows('UPDATE leases SET closing=1 WHERE id=?', lease.id);

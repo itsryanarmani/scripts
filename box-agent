@@ -34,7 +34,7 @@
 # USAGE (run inside the personal repo, or pass --repo owner/name):
 #   box-agent codex "add a --json flag and update the README"
 #   box-agent claude --model opus "refactor the parser"
-#   box-agent gemini --repo pooriaarab/foo "fix the typo"
+#   box-agent gemini --repo itsryanarmani/foo "fix the typo"
 #   box-agent pi "..."      # pi/kimi/gemini/cursor/devin = on-box CLI path
 # Flags: --model M  --reasoning-effort L  --repo owner/name  --reuse bx_x  --keep
 set -euo pipefail

@@ -50,9 +50,9 @@ function fixture(parent = 'completed', lookupStatus = 200, jobLookupStatus = 200
       mintedLabels.push(body.labels);
       return Response.json({ runner: { id: 7 }, encoded_jit_config: 'dummy-jit-secret' });
     }
-    if (path === '/repos/pooriaarab/fixture') return Response.json({ private: true });
+    if (path === '/repos/itsryanarmani/fixture') return Response.json({ private: true });
     if (path.includes('/actions/jobs/')) return jobLookupStatus === 200 ? Response.json(knownJobs.get(Number(path.split('/').at(-1))) ?? { id: 101, run_id: 100, status: 'queued', labels: ['boat'] }) : Response.json({}, { status: jobLookupStatus });
-    if (path === '/repos/pooriaarab/fixture/actions/runs/100') {
+    if (path === '/repos/itsryanarmani/fixture/actions/runs/100') {
       return lookupStatus === 200 ? Response.json({ id: 100, status: parentState }) : Response.json({ error: 'lookup refused' }, { status: lookupStatus });
     }
     if (path.includes('/actions/runs?')) {
@@ -68,7 +68,7 @@ function fixture(parent = 'completed', lookupStatus = 200, jobLookupStatus = 200
   async function seed(extra = {}, retained = true) {
     const job = { id: 101, run_id: 100, status: 'queued', labels: ['boat'], ...extra };
     knownJobs.set(job.id, job);
-    const body = JSON.stringify({ action: 'queued', repository: { private: true, full_name: 'pooriaarab/fixture' }, workflow_job: job });
+    const body = JSON.stringify({ action: 'queued', repository: { private: true, full_name: 'itsryanarmani/fixture' }, workflow_job: job });
     const signature = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
     const response = await request('/webhook', { method: 'POST', body, headers: { 'x-github-event': 'workflow_job', 'x-hub-signature-256': signature } });
     assert.equal(response.status, 200);
@@ -84,6 +84,52 @@ async function scenario(name, check) {
   catch (error) { results.push({ name, passed: false, durationMs: Math.round(performance.now() - started), error: error.message }); }
 }
 try {
+  // Migration failures: saved leases must complete twice, foreign owners stay
+  // blocked, and jobs queued before the rename must mint under the new owner.
+  for (const owner of ['pooriaarab', 'itsryanarmani']) {
+    await scenario(`${owner} saved lease completes and retries after removal`, async () => {
+      const f = fixture('in_progress');
+      try {
+        const lease = { lease_id: 'saved-lease', repo: `${owner}/fixture`, runner_id: 7 };
+        f.broker.rows('INSERT INTO leases(id,job,repo,name,runner,created,pending) VALUES(?,?,?,?,?,?,0)',
+          lease.lease_id, 101, lease.repo, 'saved-runner', lease.runner_id, Date.now());
+        const statuses = [];
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const response = await f.request('/done', { method: 'POST', body: JSON.stringify(lease) });
+          statuses.push(response.status);
+          assert.equal(response.status, 200);
+          assert.deepEqual(await response.json(), { deleted: true });
+          assert.equal(f.broker.rows('SELECT * FROM leases').length, 0);
+        }
+        return { statuses, leasesRemaining: 0 };
+      } finally { f.db.close(); }
+    });
+  }
+  await scenario('saved old-owner job mints only for the new owner', async () => {
+    const f = fixture('in_progress');
+    try {
+      await f.seed();
+      f.broker.rows('UPDATE jobs SET repo=?', 'pooriaarab/fixture');
+      const response = await f.request('/lease?label=boat&box=fixture');
+      assert.equal(response.status, 200);
+      const lease = await response.json();
+      assert.equal(lease.repo, 'itsryanarmani/fixture');
+      assert.equal(f.broker.rows('SELECT repo FROM leases')[0].repo, lease.repo);
+      return { status: response.status, repo: lease.repo };
+    } finally { f.db.close(); }
+  });
+  await scenario('saved-lease exception does not admit other owners or old webhooks', async () => {
+    const f = fixture();
+    try {
+      const done = await f.request('/done', { method: 'POST', body: JSON.stringify({ lease_id: 'saved', repo: 'other/fixture', runner_id: 7 }) });
+      assert.equal(done.status, 400);
+      const body = JSON.stringify({ repository: { private: true, full_name: 'pooriaarab/fixture' }, workflow_job: { id: 101 } });
+      const signature = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
+      const webhook = await f.request('/webhook', { method: 'POST', body, headers: { 'x-github-event': 'workflow_job', 'x-hub-signature-256': signature } });
+      assert.equal(webhook.status, 400);
+      return { foreignDone: done.status, oldWebhook: webhook.status };
+    } finally { f.db.close(); }
+  });
   async function claim(f, label = 'boat-8') {
     const response = await f.request(`/lease?label=${label}&box=fixture`);
     assert.equal(response.status, 200);

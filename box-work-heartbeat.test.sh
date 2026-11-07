@@ -114,7 +114,7 @@ setup() {
     "$FAKEBOX/.agents" "$FAKEBOX/.local/bin" "$FAKEBOX/$REPONAME"
   REPO="$T/repo"
   git init -q "$REPO" 2>/dev/null
-  git -C "$REPO" remote add origin "https://github.com/pooriaarab/$REPONAME.git"
+  git -C "$REPO" remote add origin "https://github.com/itsryanarmani/$REPONAME.git"
   printf 'bx_test123\n' > "$T/xdg/box-work/$REPONAME.id"
   : > "$T/exec.log"
   : > "$FAKEHOME/.agents/agent-clis.env"

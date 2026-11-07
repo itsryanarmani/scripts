@@ -78,7 +78,7 @@ See GitHub's [manifest flow](https://docs.github.com/en/apps/sharing-github-apps
 
 GitHub returns a PKCS#1 key. WebCrypto imports the key as PKCS#8.
 The helper uses `openssl pkcs8 -topk8 -nocrypt` to convert it.
-The [Boat Worker change](https://github.com/pooriaarab/scripts/pull/527) uses this pattern:
+The [Boat Worker change](https://github.com/itsryanarmani/scripts/pull/527) uses this pattern:
 
 1. Read `APP_ID`, `APP_INSTALLATION_ID`, and `APP_PRIVATE_KEY` from Worker secrets.
 2. Decode the PKCS#8 PEM body into DER bytes.

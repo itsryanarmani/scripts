@@ -36,7 +36,7 @@ for root in "${ROOTS[@]}"; do
     d="$(dirname "$gitdir")"
     case "$d" in *"/worktrees/"*|*/node_modules/*) continue ;; esac
     remote="$(git -C "$d" remote get-url origin 2>/dev/null || true)"
-    case "$remote" in *pooriaarab/*) : ;; *) continue ;; esac
+    case "$remote" in *itsryanarmani/*) : ;; *) continue ;; esac
     name="$(basename -s .git "$remote")"
     case " $seen " in *" $name "*) continue ;; esac
     seen="$seen $name"

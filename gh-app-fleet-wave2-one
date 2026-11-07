@@ -74,7 +74,7 @@ PY
 fi
 
 cd "$HERE"
-./gh-app install "$APP" --owner pooriaarab &
+./gh-app install "$APP" --owner itsryanarmani &
 inst_pid=$!
 sleep 10
 browser_eval '(function(){
@@ -98,7 +98,7 @@ browser_eval "(function(){
 sleep 2
 browser_eval "(function(){
   var els=[...document.querySelectorAll('label,div,span')];
-  for(var el of els){var t=(el.innerText||'').trim(); if(t==='${REPO}'||t==='pooriaarab/${REPO}'){el.click(); return t;}}
+  for(var el of els){var t=(el.innerText||'').trim(); if(t==='${REPO}'||t==='itsryanarmani/${REPO}'){el.click(); return t;}}
   return 'pick-fail';
 })()"
 sleep 1

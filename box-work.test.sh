@@ -72,7 +72,7 @@ setup() {
   mkdir -p "$FAKEHOME/.agents" "$FAKEHOME/.local/bin" "$T/stubbin" "$T/xdg/box-work"
   REPO="$T/repo"
   git init -q "$REPO" 2>/dev/null
-  git -C "$REPO" remote add origin https://github.com/pooriaarab/fakerepo.git
+  git -C "$REPO" remote add origin https://github.com/itsryanarmani/fakerepo.git
   # Fixture-owned repo dir: the generated runner cds $HOME/$NAME, and the stub
   # runs it with HOME=$T/home, so no fixed /home/user path is needed here.
   mkdir -p "$FAKEHOME/fakerepo"

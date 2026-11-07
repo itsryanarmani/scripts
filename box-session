@@ -35,7 +35,7 @@ REMOTE="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
 # ascii.dev is third-party. Work code never goes there, whatever the marker says.
 case "$REMOTE" in
   *Mozilla-Ocho*|*mozilla-ocho*|*mozilla.org*|*moz-ocho*) exit 0 ;;
-  *pooriaarab/*) : ;;
+  *itsryanarmani/*) : ;;
   *) exit 0 ;;
 esac
 NAME="$(basename -s .git "$REMOTE")"

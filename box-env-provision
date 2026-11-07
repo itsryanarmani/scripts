@@ -17,7 +17,7 @@
 #
 # Usage:
 #   box-env-provision <repo-dir> [...]     provision those repos
-#   box-env-provision --all                every cloned private pooriaarab repo
+#   box-env-provision --all                every cloned private itsryanarmani repo
 #   box-env-provision --dry-run --all      show what it would do
 set -uo pipefail
 export PATH="$HOME/.ascii/bin:$PATH"
@@ -43,7 +43,7 @@ AGENT_CRED_MANIFEST="$AGENT_CRED_DIR/manifest.json"
 # One API call for the whole private list beats one `gh repo view` per repo.
 PRIVATE_LIST=""
 if (( PRIVATE_ONLY )); then
-  PRIVATE_LIST=" $(gh repo list pooriaarab --limit 300 --json name,isPrivate,isArchived \
+  PRIVATE_LIST=" $(gh repo list itsryanarmani --limit 300 --json name,isPrivate,isArchived \
     --jq '.[]|select(.isPrivate and (.isArchived|not))|.name' 2>/dev/null | tr '\n' ' ') "
   echo "private repos on the account: $(printf '%s' "$PRIVATE_LIST" | wc -w | tr -d ' ')"
 fi
@@ -87,8 +87,8 @@ provision() {
   # ascii.dev is a third-party provider. Ask the remote who owns the code, never
   # the path: ~/code holds personal repos next to clones of work ones.
   case "$remote" in
-    *pooriaarab/*) : ;;
-    *) echo "  SKIP $d -- not a pooriaarab remote ($remote)"; return ;;
+    *itsryanarmani/*) : ;;
+    *) echo "  SKIP $d -- not a itsryanarmani remote ($remote)"; return ;;
   esac
   local name; name="$(basename -s .git "$remote")"
 
@@ -107,10 +107,10 @@ provision() {
   # produced the mangled value "pooriaarab/pooria-arab/help-us-identify-what-to-build".
   # A wrong branch here means the Box clones something that may not even exist.
   local branch
-  branch="$(gh repo view "pooriaarab/$name" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null)"
+  branch="$(gh repo view "itsryanarmani/$name" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null)"
   case "$branch" in ""|*/*) branch="$(git -C "$d" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')" ;; esac
   case "$branch" in ""|*/*) branch=main ;; esac
-  run box env add-repo "$name" "pooriaarab/$name" --branch "$branch"
+  run box env add-repo "$name" "itsryanarmani/$name" --branch "$branch"
 
   # Build-cache credentials, read from the repo's own root .env.local so the
   # value stays in one place.

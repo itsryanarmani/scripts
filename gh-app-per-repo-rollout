@@ -55,7 +55,7 @@ print_plan() {
   printf ' --perm %s' "${STANDARD_PERMS[@]}"
   printf ' && \\\n'
   printf 'mv -n "$secrets_root/%s" "$secrets_root/%s"\n' "$app" "$folder"
-  printf './gh-app install %s --owner pooriaarab\n' "$app"
+  printf './gh-app install %s --owner itsryanarmani\n' "$app"
   printf 'GH_TOKEN="$(./gh-app token %s)" gh api rate_limit --jq '\''.resources.core | {limit, remaining, reset}'\''\n' "$folder"
   printf './gh-app-per-repo-rollout verify %s\n' "$short"
 }

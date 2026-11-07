@@ -31,7 +31,7 @@ export PATH="$T/stubbin:$PATH"
 
 REPO="$T/repo"
 git init -q "$REPO" 2>/dev/null
-git -C "$REPO" remote add origin https://github.com/pooriaarab/fakerepo.git
+git -C "$REPO" remote add origin https://github.com/itsryanarmani/fakerepo.git
 AGENT_CRED_DIR="$T/empty" \
   bash "$SCRIPT" --with-agents "$REPO" >"$T/out1" 2>"$T/err1"
 rc=$?

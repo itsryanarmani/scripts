@@ -4,7 +4,7 @@
 # WHY: `box prompt --provider claude` runs Claude ON the Box and bills ascii box
 # CREDITS, not your Claude weekly limit (verified 2026-09-03). This wraps it: the
 # agent clones the repo from origin on the Box (the hydrated snapshot is gh-authed
-# as pooriaarab, so private personal repos clone fine), does the task, and we
+# as itsryanarmani, so private personal repos clone fine), does the task, and we
 # verify the diff ON the Box (never trust exit code), pull it back as a patch, and
 # ALWAYS stop the Box.
 #
@@ -14,7 +14,7 @@
 #
 # USAGE (run inside the personal git repo, or pass --repo owner/name):
 #   box-claude "add a --json flag to the CLI and update the README"
-#   box-claude --repo pooriaarab/private-repo-ea97 "fix the typo in the header"
+#   box-claude --repo itsryanarmani/private-repo-ea97 "fix the typo in the header"
 #   box-claude --model opus --reasoning-effort high "..."
 #   box-claude --reuse bx_xxx "..."   # reuse a running Box
 #   box-claude --keep "..."           # leave the Box running afterwards
