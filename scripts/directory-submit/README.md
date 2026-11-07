@@ -2,7 +2,7 @@
 
 Browser drivers that file a live directory site on third-party boards. They
 replace the throwaway helpers from the round 3 batch run. The
-`website-directory-submission` skill (pooriaarab/skills) owns the directory
+`website-directory-submission` skill (itsryanarmani/skills) owns the directory
 registry (`directories.csv`) and the fast run recipe. This folder owns the code
 that does the filing.
 

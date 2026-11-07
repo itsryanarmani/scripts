@@ -1,7 +1,7 @@
 # whop-app — build + submit a Whop app
 
 React app embedded as an iframe view inside a Whop (Whop SDK). Concept skill:
-`whop-app` in `pooriaarab/skills`.
+`whop-app` in `itsryanarmani/skills`.
 
 ## Flow
 ```bash

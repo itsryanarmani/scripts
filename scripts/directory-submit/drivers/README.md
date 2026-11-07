@@ -14,7 +14,7 @@ first for the setup, the settings and the loop rules.
 | `aitoolshunt` | AI Tools Hunt | Fills the free listing form. | The page shows no confirmation. An unclear result is recorded `blocked`. Never file a site twice. | `DIRSUB_MAKER_NAME`, `DIRSUB_COMPANY`. |
 
 Each driver sets `TARGET` to the board's name in the registry
-(`website-directory-submission/directories.csv` in pooriaarab/skills). Keep the
+(`website-directory-submission/directories.csv` in itsryanarmani/skills). Keep the
 two the same, so the ledger and the registry match.
 
 The selectors came from the round 3 run on 2026-10-22. Boards change their

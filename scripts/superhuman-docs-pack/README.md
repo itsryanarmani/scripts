@@ -1,7 +1,7 @@
 # superhuman-docs-pack — build + publish a Superhuman Docs (Coda) pack
 
 Superhuman Docs = the 2026 rebrand of Coda. SDK unchanged (`@codahq/packs-sdk`); CLI is
-now `packs` (`coda` still aliases). Concept skill: `superhuman-docs-pack` in `pooriaarab/skills`.
+now `packs` (`coda` still aliases). Concept skill: `superhuman-docs-pack` in `itsryanarmani/skills`.
 
 ## Publish flow (verified working)
 ```bash

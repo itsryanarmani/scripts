@@ -5,7 +5,7 @@ A Figma plugin is two programs over `postMessage`: `code.js` in the plugin sandb
 declared in `manifest.json` alongside `networkAccess.allowedDomains`. There is no
 publish CLI — submission happens in the Figma desktop app / Community site. This is
 the playbook: the command sequence from `integrations/<plugin>/` to published, plus
-the traps that each cost a round-trip. Concept-level skills in `pooriaarab/skills`:
+the traps that each cost a round-trip. Concept-level skills in `itsryanarmani/skills`:
 `figma-plugin` (build) and `figma-plugin-submission` (Community publish).
 
 ## Flow

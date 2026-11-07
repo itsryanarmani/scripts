@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "note": "DR figures are approximate (Ahrefs, mid-2026) and drift. Re-check before quoting. method: api | github-pr | github-issue | verify-deploy | form-anon | form-email | form-account | form-oauth | form-captcha | form-turnstile | paid | pitch | crawl. New directories are added here first; pooriaarab/private-repo-297b data/directories.json is a synced copy.",
+  "note": "DR figures are approximate (Ahrefs, mid-2026) and drift. Re-check before quoting. method: api | github-pr | github-issue | verify-deploy | form-anon | form-email | form-account | form-oauth | form-captcha | form-turnstile | paid | pitch | crawl. New directories are added here first; itsryanarmani/private-repo-297b data/directories.json is a synced copy.",
   "web_tier1_launch": [
     {"name": "Product Hunt", "url": "https://www.producthunt.com", "submit": "https://www.producthunt.com/posts/new", "dr": 91, "link": "nofollow", "cost": "free", "method": "form-account", "gate": "Full launch ops; see product-hunt-launch skill. ~6 months between launches per product."},
     {"name": "BetaList", "url": "https://betalist.com", "submit": "https://betalist.com/submit", "dr": 67, "link": "dofollow", "cost": "paid", "method": "paid", "gate": "No free lane since 2026 (~$39 entry). Pre-launch or recently launched only."},

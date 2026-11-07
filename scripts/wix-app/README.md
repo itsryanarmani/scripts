@@ -1,7 +1,7 @@
 # wix-app — build + submit a Wix app
 
 React dashboard page on the Wix SDK (`@wix/sdk`, `@wix/dashboard`). Concept skill:
-`wix-app` in `pooriaarab/skills`.
+`wix-app` in `itsryanarmani/skills`.
 
 ## Flow
 ```bash

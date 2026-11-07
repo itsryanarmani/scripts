@@ -1,7 +1,7 @@
 # monday-app — build + submit a monday.com app
 
 React board/item view on the monday apps SDK (`monday-sdk-js`). Concept skill:
-`monday-app` in `pooriaarab/skills`.
+`monday-app` in `itsryanarmani/skills`.
 
 ## Flow
 ```bash

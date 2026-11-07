@@ -4,7 +4,7 @@ A WordPress plugin is plain PHP with a header-comment manifest — no build step
 no push CLI. Submission is a manual zip upload; hosting is SVN (trunk + tags).
 This is the playbook: from `integrations/wordpress-plugin/` to listed in the
 WordPress.org directory, plus the traps that each cost a manual-review
-round-trip. The concept-level skill is `wordpress-plugin` in `pooriaarab/skills`.
+round-trip. The concept-level skill is `wordpress-plugin` in `itsryanarmani/skills`.
 
 ## Flow
 

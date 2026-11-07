@@ -2,7 +2,7 @@
 
 The deploy half of the app 0→1: serve every iframe marketplace app's built bundle at
 `apps.<domain>/<app>/` from one standalone Worker, with per-store framing headers.
-Concept skill: `marketplace-app-hosting` in `pooriaarab/skills`. A working reference
+Concept skill: `marketplace-app-hosting` in `itsryanarmani/skills`. A working reference
 lives in the product repo at `apps/website/cloudflare/embeds/`.
 
 ## Layout

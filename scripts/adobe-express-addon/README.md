@@ -4,7 +4,7 @@ An Express add-on is a React panel on the **Adobe Add-on SDK** running in a sand
 iframe inside Adobe Express. Submission is a package upload in the **Adobe Developer
 Distribution** portal (no push CLI). This is the playbook: the command sequence from
 `integrations/<app>/` to submitted, plus the traps that each cost a round-trip. The
-concept-level skill is `adobe-express-addon` in `pooriaarab/skills`.
+concept-level skill is `adobe-express-addon` in `itsryanarmani/skills`.
 
 ## Flow
 

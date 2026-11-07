@@ -4,7 +4,7 @@ A Canva app is a React app on the **Canva Apps SDK** running in an iframe inside
 editor. There is no push CLI for submission — you upload a built bundle in the Developer
 Portal and fill the listing there. This is the playbook: the command sequence from
 `integrations/<app>/` to submitted-for-review, plus the traps that each cost a round-trip.
-The concept-level skill is `canva-app` in `pooriaarab/skills`.
+The concept-level skill is `canva-app` in `itsryanarmani/skills`.
 
 ## Flow
 

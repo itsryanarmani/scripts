@@ -1,7 +1,7 @@
 # vercel-integration — build + submit a Vercel integration
 
 OAuth app + config UI + deploy-webhook handler. Concept skill: `vercel-integration` in
-`pooriaarab/skills`.
+`itsryanarmani/skills`.
 
 ## Flow
 ```bash
