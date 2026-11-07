@@ -69,6 +69,7 @@ jobs:
           python3 worker-preview-provision.test.py
           python3 worker-preview-access.test.py
           python3 apple-build-evidence.test.py
+          python3 apple-push-evidence.test.py
           python3 apple-testflight-upload.test.py
 
       - name: Run hook install tests
