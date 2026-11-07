@@ -65,7 +65,7 @@ def test_symlinked_hook_dir_is_refused():
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
     sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
     sp.run(["git", "-C", repo, "remote", "add", "origin",
-            "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+            "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
     pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
     shutil.rmtree(f"{repo}/.git/hooks")
     os.symlink(f"{d}/shared-hooks", f"{repo}/.git/hooks")
@@ -91,7 +91,7 @@ def test_dangling_pre_push_symlink_is_refused():
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
     sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
     sp.run(["git", "-C", repo, "remote", "add", "origin",
-            "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+            "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
     pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
     os.symlink(f"{d}/nonexistent-target", f"{repo}/.git/hooks/pre-push")
     out = sp.run([str(HERE / "install-pr-hooks"), "--apply", "--root", d],
@@ -119,14 +119,14 @@ def test_symlinked_pre_push_is_refused_not_chmod_through():
     target = f"{d}/external-hook"
     pathlib.Path(target).write_text(
         "#!/bin/bash\n"
-        "# Installed by pooriaarab/scripts install-pr-hooks. Do not edit here; edit there.\n"
+        "# Installed by itsryanarmani/scripts install-pr-hooks. Do not edit here; edit there.\n"
         "# install-pr-hooks v4\n"
     )
     os.chmod(target, 0o644)
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
     sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
     sp.run(["git", "-C", repo, "remote", "add", "origin",
-            "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+            "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
     pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
     os.symlink(target, f"{repo}/.git/hooks/pre-push")
     out = sp.run([str(HERE / "install-pr-hooks"), "--apply", "--root", d],
@@ -155,7 +155,7 @@ def test_symlinked_root_is_scanned():
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
     sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
     sp.run(["git", "-C", repo, "remote", "add", "origin",
-            "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+            "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
     pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
     os.symlink(real, f"{d}/linked-root")
     out = sp.run([str(HERE / "install-pr-hooks"), "--root", f"{d}/linked-root"],
@@ -179,7 +179,7 @@ def test_deeply_nested_repo_is_scanned():
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
     sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
     sp.run(["git", "-C", repo, "remote", "add", "origin",
-            "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+            "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
     pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
     out = sp.run([str(HERE / "install-pr-hooks"), "--root", d],
                  capture_output=True, text=True, env=env).stdout
@@ -218,11 +218,11 @@ def test_eligibility_checks_the_push_url_too():
     results = []
     for label, pushurl, want in [
         ("no pushurl", None, True),
-        ("personal pushurl", "git@github.com:pooriaarab/other.git", True),
+        ("personal pushurl", "git@github.com:itsryanarmani/other.git", True),
         ("work pushurl", "git@github.com:some-employer/thing.git", False),
-        ("explicit-port ssh", "ssh://git@github.com:22/pooriaarab/other.git", True),
+        ("explicit-port ssh", "ssh://git@github.com:22/itsryanarmani/other.git", True),
         ("second pushurl is work", [
-            "git@github.com:pooriaarab/other.git",
+            "git@github.com:itsryanarmani/other.git",
             "git@github.com:some-employer/thing.git",
         ], False),
     ]:
@@ -231,7 +231,7 @@ def test_eligibility_checks_the_push_url_too():
         env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
         sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
         sp.run(["git", "-C", repo, "remote", "add", "origin",
-                "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+                "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
         if pushurl:
             urls = pushurl if isinstance(pushurl, list) else [pushurl]
             sp.run(["git", "-C", repo, "remote", "set-url", "--push", "origin", urls[0]],
@@ -324,7 +324,7 @@ def test_global_hooks_path_shapes():
         env = {**os.environ, "GIT_CONFIG_GLOBAL": cfg}
         sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
         sp.run(["git", "-C", repo, "remote", "add", "origin",
-                "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+                "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
         pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
         out = sp.run([str(HERE / "install-pr-hooks"), "--apply", "--root", d],
                      capture_output=True, text=True, env=env).stdout
@@ -375,7 +375,7 @@ def test_relative_global_hooks_path_resolves_against_repo():
     env = {**os.environ, "GIT_CONFIG_GLOBAL": cfg}
     sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
     sp.run(["git", "-C", repo, "remote", "add", "origin",
-            "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+            "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
     pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
     sp.run([str(HERE / "install-pr-hooks"), "--apply", "--root", d],
            capture_output=True, text=True, env=env, cwd=str(HERE))
@@ -409,7 +409,7 @@ def test_global_hooks_path_matching_the_default_needs_no_delegator():
     env = {**os.environ, "GIT_CONFIG_GLOBAL": cfg}
     sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
     sp.run(["git", "-C", repo, "remote", "add", "origin",
-            "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+            "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
     pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
     out = sp.run([str(HERE / "install-pr-hooks"), "--apply", "--root", d],
                  capture_output=True, text=True, env=env).stdout
@@ -444,7 +444,7 @@ def test_global_hooks_path_matching_the_default_in_other_spellings():
         env = {**os.environ, "GIT_CONFIG_GLOBAL": cfg}
         sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
         sp.run(["git", "-C", repo, "remote", "add", "origin",
-                "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+                "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
         pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
         out = sp.run([str(HERE / "install-pr-hooks"), "--apply", "--root", d],
                      capture_output=True, text=True, env=env).stdout
@@ -639,7 +639,7 @@ def test_pre_push_still_installs_alongside_the_guard():
     os.makedirs(f"{repo}/.github")
     sp.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
     sp.run(["git", "-C", repo, "remote", "add", "origin",
-            "https://github.com/pooriaarab/example-repo.git"], check=True, env=env)
+            "https://github.com/itsryanarmani/example-repo.git"], check=True, env=env)
     pathlib.Path(f"{repo}/.github/pr-standards.json").write_text('{"prefix":"tt"}')
     out = _guard_run(sp, env, "--apply", "--root", root).stdout
     hook = f"{repo}/.git/hooks/pre-push"

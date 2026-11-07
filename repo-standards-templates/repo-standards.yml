@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # The check lives in pooriaarab/scripts, not here. One engine, one set of
+      # The check lives in itsryanarmani/scripts, not here. One engine, one set of
       # rules, and a fix reaches every repo without editing sixty workflows.
       #
       # It is fetched from the moving tag `repo-standards-v1`, not from `main` and
@@ -57,7 +57,7 @@ jobs:
       #     limit answers 403 while `gh api rate_limit` still reports a full
       #     quota, so the check went red for a reason with nothing to do with
       #     the pull request, and the reason it gave was misleading.
-      #   - pooriaarab/scripts is public, so the archive needs no token.
+      #   - itsryanarmani/scripts is public, so the archive needs no token.
       #     That is a dependency, not a detail: making scripts private takes CI
       #     down on every repo that installed this workflow, all at once, and
       #     codeload answers a permissions decision with what reads as a network
@@ -76,7 +76,7 @@ jobs:
           mkdir -p /tmp/rs
           curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL \
             -o /tmp/repo-standards.tar.gz \
-            "https://codeload.github.com/pooriaarab/scripts/tar.gz/refs/tags/repo-standards-v1"
+            "https://codeload.github.com/itsryanarmani/scripts/tar.gz/refs/tags/repo-standards-v1"
           tar -xzf /tmp/repo-standards.tar.gz -C /tmp/rs --strip-components=1
           chmod +x /tmp/rs/repo-standards
           # A truncated archive must fail here, not later as a rule violation.

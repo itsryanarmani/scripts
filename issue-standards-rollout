@@ -30,7 +30,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATES_DIR="$SCRIPT_DIR/issue-standards-templates"
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 
 DRY=1; TARGET_REPO=""; LABELS_ONLY=0; MILESTONES_ONLY=0
 while [ $# -gt 0 ]; do

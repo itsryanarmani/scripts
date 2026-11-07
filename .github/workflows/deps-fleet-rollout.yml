@@ -6,7 +6,7 @@ on:
       owner:
         description: GitHub owner
         required: true
-        default: pooriaarab
+        default: itsryanarmani
         type: string
       merge_when_green:
         description: Merge only after premerge approves all gates
@@ -27,7 +27,7 @@ concurrency:
 jobs:
   rollout:
     # Manual runs use trusted main code and the runner's fleet gh credentials.
-    if: github.ref == 'refs/heads/main' && github.repository_owner == 'pooriaarab'
+    if: github.ref == 'refs/heads/main' && github.repository_owner == 'itsryanarmani'
     runs-on: self-hosted
     timeout-minutes: 720
     steps:

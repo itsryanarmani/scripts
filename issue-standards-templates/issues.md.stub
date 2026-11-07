@@ -5,7 +5,7 @@
 The TODOs below cannot be answered from outside the repo, and a guessed answer
 is worse than an empty one.
 
-The standard is [issue-standards.md](https://github.com/pooriaarab/scripts/blob/main/issue-standards.md).
+The standard is [issue-standards.md](https://github.com/itsryanarmani/scripts/blob/main/issue-standards.md).
 This file holds only what is specific to this repo, and what an agent cannot
 work out by reading the standard.
 

@@ -14,7 +14,7 @@ CI. This file is for the person who operates it at 2am.
 
 ## Failure modes
 
-<!-- for example: `codeload` 403 means `pooriaarab/scripts` went private — restore public or add an auth header. -->
+<!-- for example: `codeload` 403 means `itsryanarmani/scripts` went private — restore public or add an auth header. -->
 <!-- for example: a queued Boat job can mean no pool slot is free. Check the broker and pool. -->
 <!-- for example: a grey Shields badge on a private repo is "not found", not a dead project. -->
 | What you will see | Cause | What to do |
@@ -63,12 +63,12 @@ For __WHO__, who today uses __ALTERNATIVE__. Not for __WHO_NOT__.
 
 ## How it works
 
-<!-- for example: CI fetches the engine from `pooriaarab/scripts` at tag `__PIN__`, then `repo-standards check .` fails the job on a finding. -->
+<!-- for example: CI fetches the engine from `itsryanarmani/scripts` at tag `__PIN__`, then `repo-standards check .` fails the job on a finding. -->
 __HOW_IT_WORKS__
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/pooriaarab/.github/blob/main/CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/itsryanarmani/.github/blob/main/CONTRIBUTING.md).
 
 ## License
 

@@ -132,10 +132,10 @@ star count is not a claim about the software.
 **A dynamic badge pointed at a private repo renders a lie.** Verified
 2026-09-14:
 
-    $ gh api repos/pooriaarab/private-repo-4944 --jq .visibility
+    $ gh api repos/itsryanarmani/private-repo-4944 --jq .visibility
     private
 
-    $ curl -s "https://img.shields.io/github/v/release/pooriaarab/private-repo-4944" | grep -o '<title>[^<]*</title>'
+    $ curl -s "https://img.shields.io/github/v/release/itsryanarmani/private-repo-4944" | grep -o '<title>[^<]*</title>'
     <title>release: no releases or repo not found</title>
 
 Shields cannot authenticate, so it cannot tell a private repo from a deleted
@@ -174,7 +174,7 @@ Required, in this order. A kind may add sections. No kind may reorder these.
 
     ## Contributing
     One line and a link. The file is inherited, so the link points at
-    pooriaarab/.github, never at a relative CONTRIBUTING.md. That file is not
+    itsryanarmani/.github, never at a relative CONTRIBUTING.md. That file is not
     in the repo and the relative link 404s.
 
     ## License
@@ -273,7 +273,7 @@ Public repos take MIT unless there is a reason. Private repos carry one too. A
 private repo that opens later has no record of what its author intended, and
 reconstructing intent across years of commits is how a repo stays closed.
 
-### The five that are inherited, from `pooriaarab/.github`
+### The five that are inherited, from `itsryanarmani/.github`
 
 `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md` and
 `.github/FUNDING.yml` live once, in the account's `.github` repository. GitHub
@@ -299,7 +299,7 @@ had been copied once and never read again.
 not report one, inherited or local. Measured on 2026-09-14, minutes after the
 defaults went live:
 
-    $ gh api repos/pooriaarab/skills/community/profile --jq '.files | keys'
+    $ gh api repos/itsryanarmani/skills/community/profile --jq '.files | keys'
     ["code_of_conduct","code_of_conduct_file","contributing","issue_template",
      "license","pull_request_template","readme"]
 
@@ -321,7 +321,7 @@ every repo in the fleet as having no security policy, forever.
 
 Three fields. All three are set by API, so none of them has an excuse.
 
-    gh repo edit pooriaarab/<repo> \
+    gh repo edit itsryanarmani/<repo> \
       --description "<the pitch, unchanged>" \
       --homepage "https://<live url>" \
       --add-topic <topic> --add-topic <topic>
@@ -343,7 +343,7 @@ the owner's avatar and the description.
 
 Read the current state:
 
-    gh api graphql -f query='{repository(owner:"pooriaarab",name:"skills"){
+    gh api graphql -f query='{repository(owner:"itsryanarmani",name:"skills"){
       openGraphImageUrl usesCustomOpenGraphImage }}'
 
 `usesCustomOpenGraphImage: false` means the repo is serving the default card.

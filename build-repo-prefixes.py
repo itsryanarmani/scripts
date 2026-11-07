@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate repo-prefixes.json: unique 2-4 char prefix per pooriaarab repo.
+"""Generate repo-prefixes.json: unique 2-4 char prefix per itsryanarmani repo.
 
 Run:  python3 build-repo-prefixes.py
 
@@ -21,9 +21,9 @@ GH_LIST_LIMIT = 300
 
 
 def gh_list():
-    """Fetch all pooriaarab repos via gh CLI."""
+    """Fetch all itsryanarmani repos via gh CLI."""
     r = subprocess.run(
-        ["gh", "repo", "list", "pooriaarab", "--limit", str(GH_LIST_LIMIT),
+        ["gh", "repo", "list", "itsryanarmani", "--limit", str(GH_LIST_LIMIT),
          "--json", "name,diskUsage,isArchived,isFork"],
         capture_output=True, text=True, check=True,
     )

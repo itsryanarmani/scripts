@@ -607,8 +607,8 @@ goes red.
 pr-standards branch                      # validate the current branch name
 pr-standards branch cr-142-fix-onboard   # validate a specific name
 pr-standards precheck --branch X --title Y   # for the agent hook; no network
-pr-standards pr --repo pooriaarab/private-repo-c4e6 --number 88
-pr-standards pr --repo pooriaarab/private-repo-c4e6 --number 88 --json   # machine-readable
+pr-standards pr --repo itsryanarmani/private-repo-c4e6 --number 88
+pr-standards pr --repo itsryanarmani/private-repo-c4e6 --number 88 --json   # machine-readable
 pr-standards drift                       # check the managed AGENTS.md block and PR template for drift
 ```
 
@@ -644,6 +644,6 @@ $1 buys 100,000 Box-seconds at the default rate. Always-on Boxes bill while
 idle too. For comparison, Ubicloud standard-2 costs $0.075/h, standard-4
 costs $0.15/h, and standard-8 costs $0.30/h (2026-10-11).
 
-`ci-runner-audit pooriaarab` reports the `boat` tier and flags legacy
+`ci-runner-audit itsryanarmani` reports the `boat` tier and flags legacy
 Ubicloud labels. `ci-pr-latency` groups Boat job time under `boat` and keeps
 the `cloud` tier for comparison with old Ubicloud runs.

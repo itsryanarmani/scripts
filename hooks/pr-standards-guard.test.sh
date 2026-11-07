@@ -17,10 +17,10 @@ export PATH="$BIN:$PATH"
 # tests prove the guard reads the target settings through gh, without a network.
 gh() {
   case " $* " in
-    *' repos/pooriaarab/target-standard/contents/.github/pr-standards.json '*)
+    *' repos/itsryanarmani/target-standard/contents/.github/pr-standards.json '*)
       printf '{"prefix":"tar"}' | base64
       ;;
-    *' repos/pooriaarab/scripts/contents/.github/pr-standards.json '*)
+    *' repos/itsryanarmani/scripts/contents/.github/pr-standards.json '*)
       printf '{"prefix":"scr"}' | base64
       ;;
     *) return 1 ;;
@@ -75,21 +75,21 @@ check 2 'an unspaced arithmetic shift is not a heredoc'  $'n=$((x<<y))\ngit chec
 check 2 'a bare (( )) shift is not a heredoc'            $'((x << y))\ngit checkout -b my-cool-feature'
 check 2 'a quoted <<EOF does not open a heredoc'       $'echo \'use cat <<EOF\'\ngit checkout -b my-cool-feature'
 check 2 'a # inside quotes is not a comment'           'echo "see #118"; git checkout -b my-cool-feature'
-check 0 'allows a conforming cross-repo PR head'       'gh pr create --repo pooriaarab/target-standard --head tar-12-do-one-thing'
-check 2 'blocks a bad cross-repo PR head'              'gh pr create --repo pooriaarab/target-standard --head my-cool-feature'
+check 0 'allows a conforming cross-repo PR head'       'gh pr create --repo itsryanarmani/target-standard --head tar-12-do-one-thing'
+check 2 'blocks a bad cross-repo PR head'              'gh pr create --repo itsryanarmani/target-standard --head my-cool-feature'
 check 0 'allows a heredoc containing gh pr create'      $'cat <<\'EOF\'\ngh pr create --title "Added the thing"\nEOF'
-check 0 'ignores a non-pooriaarab PR target'           'gh pr create --repo acme/work --head my-cool-feature'
-check 2 'blocks a host-qualified cross-repo PR head'   'gh pr create --repo github.com/pooriaarab/target-standard --head my-cool-feature'
-check 0 'strips the owner: fork qualifier from a head' 'gh pr create --repo pooriaarab/target-standard --head alice:tar-12-do-one-thing'
+check 0 'ignores a non-itsryanarmani PR target'           'gh pr create --repo acme/work --head my-cool-feature'
+check 2 'blocks a host-qualified cross-repo PR head'   'gh pr create --repo github.com/itsryanarmani/target-standard --head my-cool-feature'
+check 0 'strips the owner: fork qualifier from a head' 'gh pr create --repo itsryanarmani/target-standard --head alice:tar-12-do-one-thing'
 check 2 'routes an explicit same-repo target through the real engine, not the master exemption' \
-                                                        'gh pr create --repo pooriaarab/scripts --head master'
+                                                        'gh pr create --repo itsryanarmani/scripts --head master'
 check 2 'does not exempt master on a cross-repo target' \
-                                                        'gh pr create --repo pooriaarab/target-standard --head master'
-check 2 'parses a glued short -R/-H option value'      'gh pr create -Rpooriaarab/target-standard -Hmy-cool-feature'
+                                                        'gh pr create --repo itsryanarmani/target-standard --head master'
+check 2 'parses a glued short -R/-H option value'      'gh pr create -Ritsryanarmani/target-standard -Hmy-cool-feature'
 check 2 'uses the last of a repeated --head, not the first' \
-                                                        'gh pr create --repo pooriaarab/target-standard --head tar-12-good --head my-cool-feature'
+                                                        'gh pr create --repo itsryanarmani/target-standard --head tar-12-good --head my-cool-feature'
 check 2 'blocks a mixed-case cross-repo owner, not skips it' \
-                                                        'gh pr create --repo PoOrIaArAb/target-standard --head my-cool-feature'
+                                                        'gh pr create --repo ItSrYaNaRmAnI/target-standard --head my-cool-feature'
 
 # `--head owner:` names no branch. The guard used to fall through to the
 # CHECKOUT's current branch and judge THAT, so a conforming PR was refused
@@ -104,7 +104,7 @@ undetermined_head() {
   (
     cd "$tmp" || exit 1
     git init -q . 2>/dev/null
-    git remote add origin https://github.com/pooriaarab/scripts.git 2>/dev/null
+    git remote add origin https://github.com/itsryanarmani/scripts.git 2>/dev/null
     mkdir -p .github && printf '{"prefix":"scr"}' > .github/pr-standards.json
     git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init 2>/dev/null
     git checkout -q -b definitely-not-conforming 2>/dev/null
@@ -159,8 +159,8 @@ for shape in with-engine no-node no-engine; do
   shape_check 2 "a quoted non-conforming branch is still blocked" "$(printf %s Z2l0IGNoZWNrb3V0IC1iICJub3BlL2JhZCI= | base64 --decode)"
   shape_check 2 "an unbalanced quote on a later line does not discard an earlier one" "$(printf %s Z2l0IGNoZWNrb3V0IC1iIG15LWNvb2wtZmVhdHVyZQplY2hvICJ1bmNsb3NlZA== | base64 --decode)"
   shape_check 2 "an unspaced operator does not hide a real git call" "$(printf %s dHJ1ZSYmZ2l0IGNoZWNrb3V0IC1iIG5vcGU= | base64 --decode)"
-  shape_check 2 "a cross-repo bad head is refused" "$(printf %s Z2ggcHIgY3JlYXRlIC0tcmVwbyBwb29yaWFhcmFiL3NjcmlwdHMgLS1oZWFkIGJhZC94IC0tdGl0bGUgJ1tTQ1ItMV0gRml4IHRoZSB0aGluZyc= | base64 --decode)"
-  shape_check 0 "a cross-repo conforming head is allowed" "$(printf %s Z2ggcHIgY3JlYXRlIC0tcmVwbyBwb29yaWFhcmFiL3NjcmlwdHMgLS1oZWFkIHNjci0xNTUtanVkZ2UtdGhlLXRhcmdldC1yZXBvIC0tdGl0bGUgJ1tTQ1ItMTU1XSBKdWRnZSBhIGNyb3NzLXJlcG8gUFIn | base64 --decode)"
+  shape_check 2 "a cross-repo bad head is refused" "$(printf %s Z2ggcHIgY3JlYXRlIC0tcmVwbyBpdHNyeWFuYXJtYW5pL3NjcmlwdHMgLS1oZWFkIGJhZC94IC0tdGl0bGUgJ1tTQ1ItMV0gRml4IHRoZSB0aGluZyc= | base64 --decode)"
+  shape_check 0 "a cross-repo conforming head is allowed" "$(printf %s Z2ggcHIgY3JlYXRlIC0tcmVwbyBpdHNyeWFuYXJtYW5pL3NjcmlwdHMgLS1oZWFkIHNjci0xNTUtanVkZ2UtdGhlLXRhcmdldC1yZXBvIC0tdGl0bGUgJ1tTQ1ItMTU1XSBKdWRnZSBhIGNyb3NzLXJlcG8gUFIn | base64 --decode)"
   shape_check 0 "a conforming local branch is allowed" "$(printf %s Z2l0IGNoZWNrb3V0IC1iIHNjci0xMi1kby1vbmUtdGhpbmc= | base64 --decode)"
   shape_check 2 "a non-conforming local branch is refused" "$(printf %s Z2l0IGNoZWNrb3V0IC1iIG15LWNvb2wtZmVhdHVyZQ== | base64 --decode)"
 
