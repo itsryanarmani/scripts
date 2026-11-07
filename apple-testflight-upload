@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Plan or upload a tested archive to internal TestFlight. Never submit App Review."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import stat
+import subprocess
+import sys
+import time
+import uuid
+
+
+def write_json(path, value):
+    staged = path.with_suffix('.tmp')
+    with staged.open('w') as handle:
+        json.dump(value, handle, indent=2)
+        handle.write('\n')
+        handle.flush()
+        os.fsync(handle.fileno())
+    staged.replace(path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def private_file(path):
+    path = path.resolve(strict=True)
+    if not path.is_file() or stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise ValueError('Private file permissions required')
+    return path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('summary', type=Path)
+    parser.add_argument('--bundle-id', required=True)
+    parser.add_argument('--signing-config', type=Path, required=True)
+    parser.add_argument('--export-options', type=Path, required=True)
+    parser.add_argument('--state', type=Path, required=True)
+    parser.add_argument('--known-build-floor', type=int, required=True)
+    parser.add_argument('--execute', action='store_true')
+    args = parser.parse_args()
+    proof = json.loads(args.summary.read_text())
+    phases = proof['phases']
+    if proof['status'] != 'passed' or not phases or any(p['exitCode'] != 0 for p in phases):
+        raise ValueError('Successful evidence required')
+    if not any(p['name'].startswith('test-') for p in phases) or not any(p['name'] == 'archive' for p in phases):
+        raise ValueError('Tests and archive evidence required')
+    if not re.fullmatch('[0-9a-f]{64}', proof['sourceHash']) or not re.fullmatch('[0-9a-f]{40}', proof['sourceCommit']):
+        raise ValueError('Invalid source evidence')
+    archive = (Path(proof['artifactDirectory'])/'app.xcarchive').resolve(strict=True)
+    apps = list((archive/'Products/Applications').glob('*.app'))
+    if len(apps) != 1:
+        raise ValueError('Exactly one application required')
+    info = plistlib.loads((apps[0]/'Info.plist').read_bytes())
+    bundle, version, build = (str(info[k]) for k in ['CFBundleIdentifier', 'CFBundleShortVersionString', 'CFBundleVersion'])
+    if bundle != args.bundle_id or not re.fullmatch('[0-9]+', build) or int(build) < 1 or args.known_build_floor < 0:
+        raise ValueError('Unexpected bundle or build number')
+    digest = hashlib.sha256()
+    for path in sorted(archive.rglob('*')):
+        if path.is_symlink():
+            raise ValueError('Symlinked archives unsupported')
+        if path.is_file():
+            digest.update(str(path.relative_to(archive)).encode()+b'\0'+path.read_bytes()+b'\0')
+    archive_hash = digest.hexdigest()
+    options = plistlib.loads(args.export_options.read_bytes())
+    if options.get('method') != 'app-store-connect' or options.get('testFlightInternalTestingOnly') is False:
+        raise ValueError('Internal App Store Connect export required')
+    options.update(destination='upload', testFlightInternalTestingOnly=True)
+    config = json.loads(private_file(args.signing_config).read_text())
+    key = private_file(Path(config['privateKeyPath']))
+    if not re.fullmatch('[A-Z0-9]+', config['keyId']) or not re.fullmatch('[0-9a-fA-F-]{36}', config['issuerId']):
+        raise ValueError('Invalid signing identifiers')
+    state_path = args.state.resolve()
+    ancestor = state_path.parent
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    if subprocess.run(['git', '-C', str(ancestor), 'rev-parse', '--show-toplevel'], capture_output=True).returncode == 0:
+        raise ValueError('State must be outside Git')
+    candidate = f'{bundle}:{version}:{build}'
+    result = {'status': 'planned', 'bundleId': bundle, 'version': version, 'build': build, 'sourceCommit': proof['sourceCommit'], 'sourceHash': proof['sourceHash'], 'archiveHash': archive_hash, 'internalOnly': True}
+    if not args.execute:
+        print(json.dumps(result))
+        return 0
+    state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if stat.S_IMODE(state_path.parent.stat().st_mode) & 0o077:
+        raise ValueError('Private state directory required')
+    with (state_path.parent/'.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        state = json.loads(state_path.read_text()) if state_path.exists() else {'receipts': {}, 'highestBuild': {}}
+        prior = state['receipts'].get(candidate)
+        if prior and prior['archiveHash'] != archive_hash:
+            raise ValueError('Build identity reused for different bytes')
+        if prior and prior['status'] == 'uploaded':
+            result.update(status='unchanged', receipt=prior['receipt'])
+            print(json.dumps(result))
+            return 0
+        if any(v['bundleId'] == bundle and v['status'] == 'pending' for v in state['receipts'].values()):
+            result['status'] = 'blocked-pending'
+            print(json.dumps(result))
+            return 2
+        if int(build) <= max(args.known_build_floor, state['highestBuild'].get(bundle, 0)):
+            raise ValueError('Build must exceed confirmed Apple and local build floors')
+        run = state_path.parent/uuid.uuid4().hex
+        run.mkdir(mode=0o700)
+        options_path = run/'InternalUploadOptions.plist'
+        options_path.write_bytes(plistlib.dumps(options))
+        receipt_path = run/'receipt.json'
+        state['receipts'][candidate] = {**result, 'status': 'pending', 'receipt': str(receipt_path)}
+        # Persist ambiguity before invoking Xcode: never silently retry an interrupted upload.
+        write_json(state_path, state)
+        write_json(receipt_path, state['receipts'][candidate])
+        argv = ['xcodebuild', '-exportArchive', '-archivePath', str(archive), '-exportPath', str(run/'export'), '-exportOptionsPlist', str(options_path), '-allowProvisioningUpdates', '-authenticationKeyPath', str(key), '-authenticationKeyID', config['keyId'], '-authenticationKeyIssuerID', config['issuerId']]
+        started = time.monotonic()
+        code = None
+        try:
+            with (run/'xcode-upload.log').open('w') as log:
+                code = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT, timeout=1800).returncode
+        except (OSError, subprocess.TimeoutExpired, KeyboardInterrupt):
+            pass
+        result.update(status='uploaded' if code == 0 else 'upload-unknown', exitCode=code, durationSeconds=round(time.monotonic()-started, 3), receipt=str(receipt_path))
+        if code == 0:
+            state['highestBuild'][bundle] = int(build)
+            state['receipts'][candidate] = result
+            write_json(state_path, state)
+        write_json(receipt_path, result)
+        print(json.dumps(result))
+        return 0 if code == 0 else 1
+
+
+if __name__ == '__main__':
+    os.umask(0o077)
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException):
+        print('Upload rejected. Check passed evidence, identity, build floor, private files, options and lock.', file=sys.stderr)
+        sys.exit(1)
