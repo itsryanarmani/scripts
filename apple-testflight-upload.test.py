@@ -15,6 +15,7 @@ with tempfile.TemporaryDirectory() as temp:
 import sys,os,plistlib
 with open(sys.argv[sys.argv.index('-exportOptionsPlist')+1],'rb') as f:o=plistlib.load(f)
 assert o['testFlightInternalTestingOnly'] is True and o['destination']=='upload'
+assert o['manageAppVersionAndBuildNumber'] is False
 with open(os.environ['TRACE'],'a') as f:f.write('upload\\n')
 print('FAKE_SECRET_SENTINEL')
 sys.exit(7 if os.environ.get('FAIL_UPLOAD') else 0)

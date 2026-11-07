@@ -73,7 +73,7 @@ def main():
     options = plistlib.loads(args.export_options.read_bytes())
     if options.get('method') != 'app-store-connect' or options.get('testFlightInternalTestingOnly') is False:
         raise ValueError('Internal App Store Connect export required')
-    options.update(destination='upload', testFlightInternalTestingOnly=True)
+    options.update(destination='upload', testFlightInternalTestingOnly=True, manageAppVersionAndBuildNumber=False)
     config = json.loads(private_file(args.signing_config).read_text())
     key = private_file(Path(config['privateKeyPath']))
     if not re.fullmatch('[A-Z0-9]+', config['keyId']) or not re.fullmatch('[0-9a-fA-F-]{36}', config['issuerId']):

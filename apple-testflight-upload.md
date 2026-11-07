@@ -31,6 +31,7 @@ Use only the signing keys your workflow needs, such as `signingStyle` and `teamI
 Other supplied plist keys pass through to Xcode.
 The command forces destination `upload` and `testFlightInternalTestingOnly=true`.
 It rejects an explicit false internal-only flag.
+It disables Xcode build-number management so the receipt keeps the tested build identity.
 [Apple limits these builds to internal testing](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers/).
 Use a new candidate for later external testing or public review.
 
