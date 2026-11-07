@@ -84,7 +84,7 @@ printf 'APP_ID=$(touch "%s")\nAPP_SLUG=pooriaarab-demo-fleet\nAPP_INSTALLATION_I
   "$test_dir/executed" > "$folder/app.env"
 reject verify demo
 [[ ! -e "$test_dir/executed" ]]
-printf 'canonical_repo\tshort\npooriaarab/demo\tdemo\n' > "$test_dir/manifest.tsv"
+printf 'canonical_repo\tshort\nitsryanarmani/demo\tdemo\n' > "$test_dir/manifest.tsv"
 run batch-status "$test_dir/manifest.tsv"
 grep -Fq 'summary	total=1	ready=1	missing=0' "$test_dir/output"
 printf 'itsryanarmani/x\tBad\n' > "$test_dir/bad-manifest.tsv"

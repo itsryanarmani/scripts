@@ -238,10 +238,10 @@ origin_repo() {
 }
 
 # gh accepts [HOST/]OWNER/REPO for --repo. Without stripping the host, a
-# host-qualified same-org target never matched the pooriaarab/* check below
+# host-qualified same-org target never matched the itsryanarmani/* check below
 # and silently skipped validation entirely. GitHub owner names are
-# case-insensitive, so a mixed-case --repo (PoOrIaArAb/target) must still
-# match the lowercase "pooriaarab/*" check downstream instead of silently
+# case-insensitive, so a mixed-case --repo (itsryanarmani/target) must still
+# match the lowercase "itsryanarmani/*" check downstream instead of silently
 # skipping validation.
 normalize_repo() {
   case "$1" in
@@ -252,9 +252,9 @@ normalize_repo() {
 
 local_prefix() {
   # GitHub owners are case-insensitive, same reasoning as origin_repo/
-  # normalize_repo above: a PoOrIaArAb-cased origin must still match, or
+  # normalize_repo above: a ItSrYaNaRmAnI-cased origin must still match, or
   # every local branch check on that checkout silently fails open.
-  case "$(git remote get-url origin 2>/dev/null | tr '[:upper:]' '[:lower:]')" in *github.com[:/]pooriaarab/*) ;; *) return 1;; esac
+  case "$(git remote get-url origin 2>/dev/null | tr '[:upper:]' '[:lower:]')" in *github.com[:/]itsryanarmani/*) ;; *) return 1;; esac
   [ -f .github/pr-standards.json ] || return 1
   python3 -c 'import json; print(json.load(open(".github/pr-standards.json")).get("prefix", ""))' 2>/dev/null
 }
@@ -314,7 +314,7 @@ while IFS= read -r encoded; do
   if [ "$kind" = gh ] && [ -n "$repo" ]; then
     # A remote PR without --head has no safely knowable branch. Do not guess HEAD.
     [ -n "$branch" ] || continue
-    case "$repo" in pooriaarab/*) ;; *) continue;; esac
+    case "$repo" in itsryanarmani/*) ;; *) continue;; esac
     prefix=$(target_prefix "$repo") || continue
     [ -n "$prefix" ] || continue
     # precheck reads the cwd config. Cross-repo calls use this resolved prefix
