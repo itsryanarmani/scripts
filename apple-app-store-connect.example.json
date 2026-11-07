@@ -1,0 +1,97 @@
+{
+  "format": "operator-input-example; not executable automation",
+  "identity": {
+    "appId": "APP_RECORD_ID",
+    "bundleId": "com.example.app",
+    "platform": "ios",
+    "version": "1.0",
+    "build": "NEXT_UNUSED_BUILD",
+    "sourceCommit": "TESTED_COMMIT"
+  },
+  "newApp": {
+    "name": "Example App",
+    "primaryLanguage": "en-US",
+    "sku": "OWNER_DEFINED_SKU",
+    "userAccess": "OWNER_APPROVED_ACCESS"
+  },
+  "localizedMetadata": {
+    "locale": "en-US",
+    "promotionalText": "CURRENT_SHIPPED_FEATURES",
+    "description": "TRUTHFUL_APP_DESCRIPTION",
+    "keywords": "RELEVANT_KEYWORDS",
+    "supportUrl": "https://example.com/support",
+    "marketingUrl": "https://example.com/app",
+    "versionString": "1.0",
+    "copyright": "YEAR RIGHTS_HOLDER"
+  },
+  "appInformation": {
+    "subtitle": "TRUTHFUL_SUBTITLE",
+    "primaryCategory": "ACTUAL_CATEGORY",
+    "secondaryCategory": null,
+    "ageRatingAnswers": "REVIEW_ACTUAL_CONTENT",
+    "contentRightsEvidence": "PRIVATE_LICENSE_EVIDENCE"
+  },
+  "reviewContact": {
+    "contactFirstName": "REVIEW_CONTACT_FIRST_NAME",
+    "contactLastName": "REVIEW_CONTACT_LAST_NAME",
+    "contactPhone": "OWNER_APPROVED_REVIEW_NUMBER",
+    "contactEmail": "REVIEW_CONTACT_EMAIL",
+    "signInRequired": false,
+    "demoCredentials": "PRIVATE_IF_REQUIRED",
+    "notes": "REPEATABLE_REVIEW_STEPS",
+    "attachment": null
+  },
+  "release": {
+    "mode": "MANUAL",
+    "submissionAuthorized": false,
+    "publicReleaseAuthorized": false
+  },
+  "privacy": {
+    "privacyPolicyUrl": "https://example.com/app-privacy",
+    "privacyChoicesUrl": null,
+    "dataAnswers": "VERIFY_BINARY_AND_SDK_PRACTICES",
+    "labelPublishedAndReloadVerified": false
+  },
+  "availability": {
+    "mode": "OWNER_CONFIRMED_ALL_COUNTRIES_OR_REGIONS",
+    "price": "OWNER_CONFIRMED_PRICE",
+    "baseCountry": "OWNER_CONFIRMED_BASE",
+    "territoriesReloadVerified": false,
+    "macAvailability": "OWNER_DECISION_AND_EVIDENCE",
+    "visionAvailability": "OWNER_DECISION_AND_EVIDENCE"
+  },
+  "compliance": {
+    "traderStatus": "OWNER_FACTS_REQUIRED",
+    "publicTraderAddress": "PRIVATE_OWNER_APPROVED_VALUE",
+    "publicTraderPhone": "PRIVATE_OWNER_APPROVED_VALUE",
+    "publicTraderEmail": "PRIVATE_OWNER_APPROVED_VALUE",
+    "verificationDocuments": "PRIVATE_STORAGE_ONLY",
+    "usesNonExemptEncryption": "TECHNICAL_REVIEW_AND_AUTHORIZATION_REQUIRED"
+  },
+  "evidence": {
+    "directory": "PRIVATE_PATH_OUTSIDE_GIT",
+    "screenshots": "ACTUAL_APP_CAPTURES",
+    "buildSelectedAfterReload": false,
+    "contactSavedAfterReload": false,
+    "manualReleaseVerified": false
+  },
+  "observedFieldIds": [
+    "promotionalText",
+    "description",
+    "keywords",
+    "supportUrl",
+    "marketingUrl",
+    "versionString",
+    "copyright",
+    "contactFirstName",
+    "contactLastName",
+    "contactPhone",
+    "contactEmail",
+    "notes",
+    "MANUAL",
+    "privacyPolicyUrl",
+    "privacyChoicesUrl",
+    "SETUP_ALL"
+  ],
+  "fieldIdWarning": "Reacquire controls from a fresh snapshot; Apple can change the browser form."
+}

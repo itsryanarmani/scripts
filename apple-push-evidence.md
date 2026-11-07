@@ -86,3 +86,8 @@ The test makes real Git commits and pushes to a temporary bare remote.
 It uses fake XcodeGen and evidence commands.
 It verifies orchestration and rejection paths, not an actual Apple build.
 Run `apple-build-evidence` with real simulator tests before relying on a release candidate.
+
+## Complete store fields separately
+
+Use the [App Store Connect browser field map](apple-app-store-connect.md) for store metadata and owner decisions.
+The [private input example](apple-app-store-connect.example.json) records fields without automating submission.
