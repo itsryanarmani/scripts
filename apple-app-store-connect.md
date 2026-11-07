@@ -4,6 +4,7 @@ Use this field map with a tested app and an authorized release.
 Copy [the example manifest](apple-app-store-connect.example.json) into private storage.
 Replace its placeholders there. Never commit completed contact or account values.
 The manifest records inputs. It does not execute browser actions.
+Use [release recovery lessons](apple-release-lessons.md) for monitoring, uncertain actions, and local scheduler failures.
 
 ## Before you change Apple state
 
