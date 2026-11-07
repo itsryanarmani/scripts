@@ -3,7 +3,7 @@
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DETECT_PY="$SCRIPT_DIR/cursor-cloud-detect.py"
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 DRY=1
 
 while [ $# -gt 0 ]; do

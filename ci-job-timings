@@ -7,7 +7,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-job-timings owner/repo [--limit N] [--json]
-  owner/repo  repository to inspect (e.g. pooriaarab/usegeoaeo)
+  owner/repo  repository to inspect (e.g. itsryanarmani/usegeoaeo)
   --limit N   how many recent completed runs to read (default: 25)
   --json      machine-readable JSON output
   --help      show this help

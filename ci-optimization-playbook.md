@@ -3,7 +3,7 @@
 Use this procedure before changing runners, test gates, or deployment triggers.
 Record measured results separately from estimates. A faster check is not always a cheaper release.
 
-Start with the [diagnosis skill](https://github.com/pooriaarab/skills/blob/main/ci-speed-diagnosis/SKILL.md)
+Start with the [diagnosis skill](https://github.com/itsryanarmani/skills/blob/main/ci-speed-diagnosis/SKILL.md)
 and the four diagnosis commands in [README](README.md#diagnose-ci-in-this-order).
 This guide proposes experiments. It does not override repository merge or release rules.
 

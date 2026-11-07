@@ -1,6 +1,6 @@
 # paper-venues failure modes
 
-`paper-venues` turns the venue tables in `pooriaarab/skills` (`paper-submission/references/venues*.md` and `free-venues.md`) into one JSON file, and answers questions about it: which venues are free, which to avoid, which row mentions a word. It reads only Markdown tables. It never calls the network and never submits anything.
+`paper-venues` turns the venue tables in `itsryanarmani/skills` (`paper-submission/references/venues*.md` and `free-venues.md`) into one JSON file, and answers questions about it: which venues are free, which to avoid, which row mentions a word. It reads only Markdown tables. It never calls the network and never submits anything.
 
 The tests in `paper-venues.test.sh` cover each row marked "tested".
 

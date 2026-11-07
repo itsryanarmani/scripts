@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Roll private-repo-4510 ingest secrets into VibeCodeReview workflows.
 #
-# For every pooriaarab repo with .github/workflows/vibecodereview.yml,
+# For every itsryanarmani repo with .github/workflows/vibecodereview.yml,
 # adds vibetrace_ingest_url and vibetrace_ingest_token parameters.
 #
 # Dry-run is the default. Use --apply to open PRs and optionally set secrets.
@@ -14,7 +14,7 @@
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PREFIXES_FILE="$SCRIPT_DIR/repo-prefixes.json"
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 
 DRY=1
 TARGET_REPO=""
@@ -155,7 +155,7 @@ import os, re, sys
 content = os.environ.get("EXISTING_YML", "")
 lines = content.splitlines()
 step_re = re.compile(r"^(\s*)-\s")
-marker = "uses: pooriaarab/vibecodereview"
+marker = "uses: itsryanarmani/vibecodereview"
 
 # Scope the already-configured check and the insertion point to the lines
 # that belong to the matched step, not the whole file, so an unrelated step
@@ -268,7 +268,7 @@ print("\n".join(out) + ("\n" if content.endswith("\n") else ""), end="")
       --title "$ISSUE_TITLE" \
       --body "Roll private-repo-4510 ingest secrets into VibeCodeReview workflow.
 
-We want to add the VIBETRACE_INGEST_URL and VIBETRACE_INGEST_TOKEN secrets under the pooriaarab/vibecodereview step in \`.github/workflows/vibecodereview.yml\`.
+We want to add the VIBETRACE_INGEST_URL and VIBETRACE_INGEST_TOKEN secrets under the itsryanarmani/vibecodereview step in \`.github/workflows/vibecodereview.yml\`.
 
 $ISSUE_MARKER
 " 2>/dev/null | grep -oE '[0-9]+$' | head -1)

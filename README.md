@@ -4,16 +4,16 @@ Automation scripts that run my agent ops.
 
 ## Part of my AI workspace
 
-The [`agents`](https://github.com/pooriaarab/agents) repo is the hub — a portable `.agents` folder symlinked into every agent CLI.
+The [`agents`](https://github.com/itsryanarmani/agents) repo is the hub — a portable `.agents` folder symlinked into every agent CLI.
 
 | Repo | What |
 |---|---|
-| [agents](https://github.com/pooriaarab/agents) | The hub — portable `.agents` workspace |
-| [skills](https://github.com/pooriaarab/skills) | Reusable agent skills |
-| [clis](https://github.com/pooriaarab/clis) | Working CLIs for ad-platform APIs |
-| [commands](https://github.com/pooriaarab/commands) | Slash commands and shortcuts |
-| [scripts](https://github.com/pooriaarab/scripts) | Automation scripts |
-| [prompts](https://github.com/pooriaarab/prompts) | Refined prompts |
+| [agents](https://github.com/itsryanarmani/agents) | The hub — portable `.agents` workspace |
+| [skills](https://github.com/itsryanarmani/skills) | Reusable agent skills |
+| [clis](https://github.com/itsryanarmani/clis) | Working CLIs for ad-platform APIs |
+| [commands](https://github.com/itsryanarmani/commands) | Slash commands and shortcuts |
+| [scripts](https://github.com/itsryanarmani/scripts) | Automation scripts |
+| [prompts](https://github.com/itsryanarmani/prompts) | Refined prompts |
 
 ## CI cost controls
 
@@ -30,7 +30,7 @@ Read-only host audit for one Mac. It checks system Chrome, Electron app versions
 against patched floors, cached Chromium builds, open ports, macOS protections, secret
 file modes and outdated tools. It exits 1 when a check fails. Use `--json FILE` for a
 report with no secret values. Steps and fixes:
-[`black-october-hardening`](https://github.com/pooriaarab/skills/blob/main/black-october-hardening/SKILL.md).
+[`black-october-hardening`](https://github.com/itsryanarmani/skills/blob/main/black-october-hardening/SKILL.md).
 
 ```bash
 ./black-october-audit --json /tmp/black-october.json
@@ -53,7 +53,7 @@ Use the [CI optimization playbook](ci-optimization-playbook.md) for changes afte
 
 Only optimise after step 4. The reasoning behind the order, and the checklist of defects
 that hide behind a green check, are in the
-[`ci-speed-diagnosis`](https://github.com/pooriaarab/skills/blob/main/ci-speed-diagnosis/SKILL.md)
+[`ci-speed-diagnosis`](https://github.com/itsryanarmani/skills/blob/main/ci-speed-diagnosis/SKILL.md)
 skill.
 
 ```bash
@@ -80,7 +80,7 @@ Not part of the diagnosis order above.
 | `cc-cloud-env` + `cc-cloud-env-e2e` | Create, check, share and archive claude.ai/code cloud environments from a local spec (network level, variables, setup script). The dialog is the only interface, so it drives it through agent-browser. `cc-cloud-env apply <spec-root>`, `check`, `share`, `archive <name>`, `--session <name>`. The e2e script runs the whole lifecycle on one throwaway environment and prints a PASS or FAIL line per step. Keep the spec outside any repo. |
 | `gbp-create` + `gbp-create-e2e` | Open Google Business Profiles for service-area businesses with no public address, from a JSON spec, through agent-browser. `gbp-create plan <spec>` checks the spec and opens no browser. `gbp-create create <spec> [name...]` fills every sign-up screen and picks Verify Later. It never enters an address, keeps a ledger so a rerun makes no duplicate, and `--stop-before-submit` stops one click before Google creates the profile. The e2e script checks the spec guards with no browser, and with `--session <name>` runs the flow up to that click. Keep the spec outside any repo. See the `local-business-profiles` skill. |
 | `instinct-vault-fill` | Seed login entries into an Instinct vault via agent-browser: reads a local `entries.json`, drives the Add-login dialog with DOM-eval clicks (a11y-ref clicks drop silently on this app), retries until async-rendered fields exist, verifies each entry lands. Never logs secret values. |
-| `install-pr-hooks` | Installs the `pr-standards` pre-push hook into local pooriaarab checkouts that have adopted `.github/pr-standards.json`. Dry-run by default; `--apply` writes, `--uninstall --apply` removes. See [pr-standards.md](pr-standards.md). |
+| `install-pr-hooks` | Installs the `pr-standards` pre-push hook into local itsryanarmani checkouts that have adopted `.github/pr-standards.json`. Dry-run by default; `--apply` writes, `--uninstall --apply` removes. See [pr-standards.md](pr-standards.md). |
 | `fleet-digest` | One message a day that needs a person: owner-only label requests, failing default-branch CI, stale PRs and green PRs that wait for a human. Prints `Nothing needs you.` when empty. |
 | `fleet-ci-census` | Per repo and workflow: run count, p50/p95 wall time, total minutes, failure and cancellation rates. JSON by default; `--markdown` ranks by total minutes. A run count at the page cap is a floor, not a total. See [fleet-ci-census.md](fleet-ci-census.md). |
 | `append-point-scan` | Flag shared append points from repo contents alone: freshness gates, enumerated scripts, ordinal registries, committed junk. Answers what WILL conflict once a repo gets busy. `./append-point-scan <dir-or-owner/repo>`. |
@@ -141,8 +141,8 @@ CI run it again on the PR.
 ./pr-standards branch                    # the current branch name
 ./pr-standards branch cr-142-fix-onboard # a specific name
 ./pr-standards precheck --branch X --title Y   # pattern only, no network
-./pr-standards pr --repo pooriaarab/private-repo-c4e6 --number 88
-./pr-standards pr --repo pooriaarab/private-repo-c4e6 --number 88 --json   # machine-readable
+./pr-standards pr --repo itsryanarmani/private-repo-c4e6 --number 88
+./pr-standards pr --repo itsryanarmani/private-repo-c4e6 --number 88 --json   # machine-readable
 ./pr-standards --selfcheck               # run the test suite
 ```
 
@@ -310,12 +310,12 @@ it returns a stale value after a write that worked, so look at the screen.
 
 Send commands to the ESP32-S3 BLE mouse and keyboard board that controls iPhones.
 `./ble-bridge "list" "@1 home" "@1 click"`. Firmware, pairing and protocol are in
-[private-repo-32ef](https://github.com/pooriaarab/private-repo-32ef) `docs/ble-bridge.md`.
+[private-repo-32ef](https://github.com/itsryanarmani/private-repo-32ef) `docs/ble-bridge.md`.
 
 ## ESP32 voice device
 
 Three scripts for taking an ESP32-S3 voice board (XiaoZhi-family firmware) off the
-vendor cloud. The `self-hosted-esp32-voice-device` skill in `pooriaarab/skills`
+vendor cloud. The `self-hosted-esp32-voice-device` skill in `itsryanarmani/skills`
 explains the order.
 
 | Script | What it does |

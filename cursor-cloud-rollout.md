@@ -18,7 +18,7 @@ Creating environments/builds is included with Cloud Agents. Running agents costs
 ## Helpers
 
 ```bash
-./cursor-cloud-detect.py pooriaarab private-repo-4944
+./cursor-cloud-detect.py itsryanarmani private-repo-4944
 ./cursor-cloud-environment-json.py private-repo-4944 "npm ci" "npm test"
 ```
 

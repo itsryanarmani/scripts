@@ -31,6 +31,6 @@ write `Parent: #NNNN` in the body.
 
 Repo context for issue writers, including the high-stakes paths and the
 analytics helper to cite, is in `.agents/issues.md`. The standard is at
-https://github.com/pooriaarab/scripts/blob/main/issue-standards.md
+https://github.com/itsryanarmani/scripts/blob/main/issue-standards.md
 
 <!-- issue-standards:end -->

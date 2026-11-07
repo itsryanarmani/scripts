@@ -7,7 +7,7 @@
   paper-venues show NAME [--data data.json]
   paper-venues stats [--data data.json]
 
-Reads the Markdown tables in pooriaarab/skills paper-submission/references.
+Reads the Markdown tables in itsryanarmani/skills paper-submission/references.
 Never uses the network. Never submits anything. See paper-venues.failure-modes.md.
 """
 import json, os, re, sys

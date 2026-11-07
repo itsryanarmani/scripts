@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Re-run pr-standards (or all) CI on open cursor-cloud PRs after body repair.
 set -u
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 DRY=1
 
 while [ $# -gt 0 ]; do

@@ -26,6 +26,6 @@
       { "text": "maria.g@example.com", "tag": "[EMAIL_1]", "swap_beat": 34 },
       { "text": ". Can you fix my CV?" }
     ] },
-    "end": { "at_beat": 37, "word": "PII Guard", "lines": ["A free Firefox add-on. Checks run on your device.", "github.com/pooriaarab/foxpilot"] }
+    "end": { "at_beat": 37, "word": "PII Guard", "lines": ["A free Firefox add-on. Checks run on your device.", "github.com/itsryanarmani/foxpilot"] }
   }
 }

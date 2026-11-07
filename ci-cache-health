@@ -17,7 +17,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-cache-health owner/repo [--limit N] [--json] [--min-cache-bytes N]
-  owner/repo             repository to inspect (e.g. pooriaarab/private-repo-5073)
+  owner/repo             repository to inspect (e.g. itsryanarmani/private-repo-5073)
   --limit N              how many recent completed runs to read (default: 12)
   --min-cache-bytes N    flag a cache payload smaller than N bytes (default: 1048576)
   --json                 machine-readable JSON output
