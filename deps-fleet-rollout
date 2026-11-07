@@ -3,7 +3,7 @@
 # Requires gh, git, bun, python3; merge mode requires premerge on PATH.
 set -euo pipefail
 
-OWNER=pooriaarab
+OWNER=itsryanarmani
 DRY_RUN=0
 MERGE=0
 REPOS=()

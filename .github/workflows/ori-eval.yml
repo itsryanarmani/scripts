@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   eval:
-    if: github.repository == 'pooriaarab/scripts'
+    if: github.repository == 'itsryanarmani/scripts'
     # Public repo: use a free GitHub-hosted runner.
     runs-on: ubuntu-latest
     steps:

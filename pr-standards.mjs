@@ -60,7 +60,7 @@ export const DEFAULT_EXCLUDE_GLOBS = [
   // only way to pass was to leave the logs in the tree.
   '**/*.log',
   // Same deadlock, different artifact: untracking a TypeScript incremental
-  // build cache counted its whole body against the cap. pooriaarab/usegeoaeo#71
+  // build cache counted its whole body against the cap. itsryanarmani/usegeoaeo#71
   // passed only because a tsbuildinfo is minified onto one line; a
   // pretty-printed one would have had no path to green.
   '**/*.tsbuildinfo',
@@ -1273,7 +1273,7 @@ export function matchesGlob(filename, pattern) {
 // not authored work. Counting it on both sides made a pure move cost twice its
 // size, so a move could fail the cap while adding nothing -- and no
 // decomposition of it could pass, because every section cost double. See
-// pooriaarab/scripts#299: an 8-section move measured 6,981 counted lines while
+// itsryanarmani/scripts#299: an 8-section move measured 6,981 counted lines while
 // its authored content was 25.
 //
 // The discount is granted only by proving the move: byte equality across the
@@ -1701,7 +1701,7 @@ async function fetchPullFiles(repo, number, pull) {
 }
 
 // GitHub omits `patch` for a file whose diff is large -- which is exactly the
-// file a relocation empties. On pooriaarab/private-repo-b1e6#170 the one file
+// file a relocation empties. On itsryanarmani/private-repo-b1e6#170 the one file
 // carrying all 3,479 deletions had no patch, so a move could never be proven
 // on the change that most needed it.
 //
@@ -2249,7 +2249,7 @@ async function fetchRemoteConfig(repo, repoName, ref) {
 // passed the size cap under its own issue and its own review. Counting those
 // lines a second time measures the wrong thing, and it leaves no route at all
 // -- `release` is protected, so a direct push is refused, a pull request is the
-// only way in, and the cap fails it. pooriaarab/private-repo-4a88#271 sat there at
+// only way in, and the cap fails it. itsryanarmani/private-repo-4a88#271 sat there at
 // 792 counted lines with nothing to split.
 //
 // Every term below comes from GitHub's response for the pull request, not from
@@ -2418,7 +2418,7 @@ async function runPr(options) {
   // the failures the evidence allows. The empty-diff check and the directory
   // warning stay -- an exemption wider than the evidence for it is how the
   // last escape hatch got out of hand. The file cap deadlocked
-  // pooriaarab/usegeoaeo#142 at 90 counted files.
+  // itsryanarmani/usegeoaeo#142 at 90 counted files.
   const promotion = isReleasePromotion(pull);
   for (const item of sizeResult.failures) {
     // Never silent. A skipped cap that prints nothing is a hole nobody can

@@ -155,8 +155,8 @@ the absence.
 
 ## Labels
 
-GitHub issue **types** are an organisation feature. `pooriaarab` is a user
-account, so `/orgs/pooriaarab/issue-types` returns 404 and types are
+GitHub issue **types** are an organisation feature. `itsryanarmani` is a user
+account, so `/orgs/itsryanarmani/issue-types` returns 404 and types are
 unavailable. Labels carry classification instead, in three groups.
 
 | Group | Labels | Rule |

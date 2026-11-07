@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: The issue standard
-    url: https://github.com/pooriaarab/scripts/blob/main/issue-standards.md
+    url: https://github.com/itsryanarmani/scripts/blob/main/issue-standards.md
     about: What an issue must contain, how it is sized, and which agent tier implements it.
   - name: Repo context for issue writers
     url: https://github.com/__OWNER__/__REPO__/blob/main/.agents/issues.md

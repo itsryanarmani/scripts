@@ -98,7 +98,7 @@ else: sys.exit(2)
                 self.assertIn('  workflow_dispatch:', text)
                 self.assertNotIn('  pull_request:', text)
                 self.assertNotIn('  push:', text)
-                self.assertIn("if: github.ref == 'refs/heads/main' && github.repository_owner == 'pooriaarab'", text)
+                self.assertIn("if: github.ref == 'refs/heads/main' && github.repository_owner == 'itsryanarmani'", text)
                 expected = 'runs-on: self-hosted'
             for line in text.splitlines():
                 if line.strip().startswith('runs-on:'):

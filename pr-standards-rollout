@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fan out the PR standard to pooriaarab repos.
+# Fan out the PR standard to itsryanarmani repos.
 #
 # Every repo gets .github/pr-standards.json (with its prefix),
 # .github/pull_request_template.md, and .github/workflows/pr-standards.yml.
@@ -29,7 +29,7 @@ source "$LABELS_LIB"
 declare -F build_repair_labels >/dev/null || { echo "ERROR: $LABELS_LIB did not define build_repair_labels" >&2; exit 2; }
 PREFIXES_FILE="$SCRIPT_DIR/repo-prefixes.json"
 TEMPLATES_DIR="$SCRIPT_DIR/pr-standards-templates"
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 
 # Adding a path at most once. The flags used to be booleans, so repeating one
 # was harmless; appending to a list is not. A repeated flag looked up and wrote
@@ -750,7 +750,7 @@ same rule as the rest of the fleet: one issue, one PR, one concern, under 500
 counted lines. From here on, branches are \`$PREFIX-<issue>-<slug>\` and titles
 are \`[$PREFIX_UPPER-<issue>] Subject\`.
 
-The standard: https://github.com/pooriaarab/scripts/blob/main/pr-standards.md
+The standard: https://github.com/itsryanarmani/scripts/blob/main/pr-standards.md
 
 ## How I verified
 

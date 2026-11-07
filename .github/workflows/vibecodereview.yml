@@ -19,7 +19,7 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
-      - uses: pooriaarab/vibecodereview@v1
+      - uses: itsryanarmani/vibecodereview@v1
         with:
           vibetrace_ingest_url: ${{ secrets.VIBETRACE_INGEST_URL }}
           vibetrace_ingest_token: ${{ secrets.VIBETRACE_INGEST_TOKEN }}

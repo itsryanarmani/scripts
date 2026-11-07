@@ -91,7 +91,7 @@ __HOW_IT_WORKS__
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/pooriaarab/.github/blob/main/CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/itsryanarmani/.github/blob/main/CONTRIBUTING.md).
 
 ## License
 

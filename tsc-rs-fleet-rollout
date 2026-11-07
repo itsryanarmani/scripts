@@ -2,7 +2,7 @@
 # Roll out tsc-rs 0.8. Requires authenticated gh, git, bun, and python3.
 # Merge mode also requires the fleet premerge command on PATH.
 set -euo pipefail
-OWNER=pooriaarab
+OWNER=itsryanarmani
 VERSION=0.8.0
 DRY_RUN=0
 MERGE=0

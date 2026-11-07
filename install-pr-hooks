@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the pr-standards pre-push hook into local pooriaarab checkouts,
+# Install the pr-standards pre-push hook into local itsryanarmani checkouts,
 # and the PreToolUse guard into ~/.local/share/pr-standards/.
 #
 # The hook rejects a branch whose name does not meet the standard before the
@@ -8,7 +8,7 @@
 # and required status checks need GitHub Pro, so nothing server-side can be
 # made mandatory on a private repo. See pr-standards.md.
 #
-# A repo is eligible when its origin remote is a pooriaarab repo AND it has
+# A repo is eligible when its origin remote is a itsryanarmani repo AND it has
 # .github/pr-standards.json. Work and Mozilla checkouts are never touched.
 #
 # The PreToolUse guard is one machine-wide copy at a path this tool owns. The
@@ -77,7 +77,7 @@ write_hook() {
 
 read -r -d '' HOOK_BODY <<'HOOK' || true
 #!/bin/bash
-# Installed by pooriaarab/scripts install-pr-hooks. Do not edit here; edit there.
+# Installed by itsryanarmani/scripts install-pr-hooks. Do not edit here; edit there.
 # install-pr-hooks v4
 #
 # Hook that rejects pushes whose branch names do not meet the fleet PR standard:
@@ -189,7 +189,7 @@ if [ -z "$first_line" ]; then
     gh issue create --title "..."
     git branch -m ${PREFIX}-<issue>-<slug>
 
-  https://github.com/pooriaarab/scripts/blob/main/pr-standards.md
+  https://github.com/itsryanarmani/scripts/blob/main/pr-standards.md
 
 MSG
   exit 1
@@ -246,7 +246,7 @@ MSG
     gh issue create --title "..."
     git branch -m ${PREFIX}-<issue>-<slug>
 
-  https://github.com/pooriaarab/scripts/blob/main/pr-standards.md
+  https://github.com/itsryanarmani/scripts/blob/main/pr-standards.md
 
 MSG
   exit 1
@@ -258,8 +258,8 @@ is_personal_github_url() {
   # Match only real github.com hosts, not lookalikes. The ssh:// form may carry
   # an explicit port, which git writes as ssh://git@github.com:22/owner/repo.
   case "$1" in
-    git@github.com:pooriaarab/*|https://github.com/pooriaarab/*|ssh://git@github.com/pooriaarab/*) return 0 ;;
-    ssh://git@github.com:[0-9]*/pooriaarab/*) return 0 ;;
+    git@github.com:itsryanarmani/*|https://github.com/itsryanarmani/*|ssh://git@github.com/itsryanarmani/*) return 0 ;;
+    ssh://git@github.com:[0-9]*/itsryanarmani/*) return 0 ;;
   esac
   return 1
 }
