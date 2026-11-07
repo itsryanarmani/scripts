@@ -110,6 +110,6 @@ python3 filter_venues.py --type artifact
 ## How to become a reviewer
 
 The
-[`journal-reviewer-applications`](https://github.com/pooriaarab/skills/tree/main/journal-reviewer-applications)
-skill in [skills](https://github.com/pooriaarab/skills) walks through the
+[`journal-reviewer-applications`](https://github.com/itsryanarmani/skills/tree/main/journal-reviewer-applications)
+skill in [skills](https://github.com/itsryanarmani/skills) walks through the
 profiles to set up first and how to apply.
