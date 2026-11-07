@@ -68,7 +68,7 @@ See [`boat push`](https://docs.boat.dev/cli-reference#boat-push-id-dir).
 Model B keeps a pool of Boxes for each label. It uses `boat-pool`,
 `boat-runner-agent`, and the broker in
 [workers/boat-runners](workers/boat-runners/README.md). Use it for steady
-CI load on private `pooriaarab` repos. Each Box serves one lease at a time.
+CI load on private `itsryanarmani` repos. Each Box serves one lease at a time.
 The pool exists because Model A pays a fresh start per job, while Model B
 pays idle time between jobs. Report both costs before you pick.
 

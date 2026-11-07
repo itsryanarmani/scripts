@@ -4,7 +4,7 @@ const labels = [...poolLabels, 'boat-deploy'];
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const b64url = (bytes: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const pause = (ms: number) => new Promise(r => setTimeout(r, ms));
-const repoPattern = /^pooriaarab\/[A-Za-z0-9_.-]+$/;
+const repoPattern = /^itsryanarmani\/[A-Za-z0-9_.-]+$/;
 async function signature(raw: string, header: string | null, secret: string) {
   if (!secret || !/^sha256=[a-f0-9]{64}$/.test(header ?? '')) return false;
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);

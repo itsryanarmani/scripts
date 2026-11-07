@@ -50,9 +50,9 @@ function fixture(parent = 'completed', lookupStatus = 200, jobLookupStatus = 200
       mintedLabels.push(body.labels);
       return Response.json({ runner: { id: 7 }, encoded_jit_config: 'dummy-jit-secret' });
     }
-    if (path === '/repos/pooriaarab/fixture') return Response.json({ private: true });
+    if (path === '/repos/itsryanarmani/fixture') return Response.json({ private: true });
     if (path.includes('/actions/jobs/')) return jobLookupStatus === 200 ? Response.json(knownJobs.get(Number(path.split('/').at(-1))) ?? { id: 101, run_id: 100, status: 'queued', labels: ['boat'] }) : Response.json({}, { status: jobLookupStatus });
-    if (path === '/repos/pooriaarab/fixture/actions/runs/100') {
+    if (path === '/repos/itsryanarmani/fixture/actions/runs/100') {
       return lookupStatus === 200 ? Response.json({ id: 100, status: parentState }) : Response.json({ error: 'lookup refused' }, { status: lookupStatus });
     }
     if (path.includes('/actions/runs?')) {
@@ -68,7 +68,7 @@ function fixture(parent = 'completed', lookupStatus = 200, jobLookupStatus = 200
   async function seed(extra = {}, retained = true) {
     const job = { id: 101, run_id: 100, status: 'queued', labels: ['boat'], ...extra };
     knownJobs.set(job.id, job);
-    const body = JSON.stringify({ action: 'queued', repository: { private: true, full_name: 'pooriaarab/fixture' }, workflow_job: job });
+    const body = JSON.stringify({ action: 'queued', repository: { private: true, full_name: 'itsryanarmani/fixture' }, workflow_job: job });
     const signature = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
     const response = await request('/webhook', { method: 'POST', body, headers: { 'x-github-event': 'workflow_job', 'x-hub-signature-256': signature } });
     assert.equal(response.status, 200);

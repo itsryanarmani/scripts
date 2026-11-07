@@ -194,7 +194,7 @@ ceiling — not the concurrency cap — is what limits an agent fleet.
   32,830 bytes and restored 651MB. Snapshots are incremental deltas on a chain.
   Do not judge a snapshot by that number — deploy from it and look.
 - **ascii's GitHub token is a scoped app token.** It 404s on any repo not
-  connected in the ascii dashboard, so `box env add-repo pooriaarab/private-repo-c4e6`
+  connected in the ascii dashboard, so `box env add-repo itsryanarmani/private-repo-c4e6`
   fails and an in-box `gh repo clone` of it fails too. Connect the repo in the
   dashboard, or push the source from the laptop.
 - **Max 10 named snapshots per account.** Four repos is fine; a snapshot per
@@ -387,7 +387,7 @@ Same shape as the 1.1 MB repo, because the steady-state cost is one `box exec`
 round trip and not the size of the tree. Only the one-time seed scales.
 
 `scripts/box-repo-audit` reports readiness per repo. Across 95 locally-cloned
-`pooriaarab/*` repos, 46 have a lockfile and are candidates. The seed cost is
+`itsryanarmani/*` repos, 46 have a lockfile and are candidates. The seed cost is
 the number to plan against:
 
 | repo | pkg | files | tree gz |
@@ -646,7 +646,7 @@ starts a Box that is ready to work and runs the job there.
 ```sh
 box-work <repo>                      # start or reuse; syncs your uncommitted edits
 box-work <repo> --agent pi "brief"   # run one agent on the Box, headless
-box-work <repo> --agent pi "brief" --issue N  # claim pooriaarab/<repo>#N first
+box-work <repo> --agent pi "brief" --issue N  # claim itsryanarmani/<repo>#N first
 box-work <repo> --ssh                # a shell on the Box
 box-work <repo> --stop               # stop it
 box-work --list / --stop-all

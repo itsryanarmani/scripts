@@ -16,7 +16,7 @@
 #   box-work <repo>                    start or reuse a Box, sync local edits, print how to enter
 #   box-work <repo> --agent pi "brief" run one agent headlessly on the Box and print its output
 #   box-work <repo> --agent pi "brief" --issue N
-#                                      claim pooriaarab/<repo>#N before the agent starts,
+#                                      claim itsryanarmani/<repo>#N before the agent starts,
 #                                      refuse when another agent holds it, release on exit.
 #                                      Without --issue the run is unguarded.
 #   box-work <repo> --ssh              open a shell on the Box
@@ -92,8 +92,8 @@ REMOTE="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)"
 case "$REMOTE" in
   *Mozilla-Ocho*|*mozilla-ocho*|*mozilla.org*|*moz-ocho*)
     die "REFUSING: $REMOTE is a work repo. Boxes are personal-only." ;;
-  *pooriaarab/*) : ;;
-  *) die "REFUSING: $REMOTE is not a pooriaarab remote." ;;
+  *itsryanarmani/*) : ;;
+  *) die "REFUSING: $REMOTE is not a itsryanarmani remote." ;;
 esac
 NAME="$(basename -s .git "$REMOTE")"
 IDFILE="$STATE/$NAME.id"
@@ -122,8 +122,8 @@ release_claim() {
   if (( CLAIM_ACTIVE )); then
     local reason="done"
     (( rc != 0 )) && reason=failed
-    "$FLEET_BIN" release "pooriaarab/$NAME" "$ISSUE" --reason "$reason" >/dev/null 2>&1 \
-      || echo "box-work: warning: release of the claim on pooriaarab/$NAME#$ISSUE failed" >&2
+    "$FLEET_BIN" release "itsryanarmani/$NAME" "$ISSUE" --reason "$reason" >/dev/null 2>&1 \
+      || echo "box-work: warning: release of the claim on itsryanarmani/$NAME#$ISSUE failed" >&2
     CLAIM_ACTIVE=0
   fi
   return "$rc"
@@ -143,9 +143,9 @@ if [[ -n "$ISSUE" ]]; then
   else
     die "--issue $ISSUE needs bin/fleet-presence (private-repo-b1e6) and it is absent; refusing to run unguarded"
   fi
-  claim_out="$("$FLEET_BIN" claim "pooriaarab/$NAME" "$ISSUE" --goal "$BRIEF" 2>&1)" \
-    || die "claim on pooriaarab/$NAME#$ISSUE failed: $claim_out; not starting the agent"
-  echo "[box-work] claimed pooriaarab/$NAME#$ISSUE" >&2
+  claim_out="$("$FLEET_BIN" claim "itsryanarmani/$NAME" "$ISSUE" --goal "$BRIEF" 2>&1)" \
+    || die "claim on itsryanarmani/$NAME#$ISSUE failed: $claim_out; not starting the agent"
+  echo "[box-work] claimed itsryanarmani/$NAME#$ISSUE" >&2
   CLAIM_ACTIVE=1
   trap release_claim EXIT
   trap 'exit 130' INT

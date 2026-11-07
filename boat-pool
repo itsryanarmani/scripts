@@ -13,7 +13,7 @@ import urllib.error
 
 BOX = str(pathlib.Path.home() / '.ascii/bin/box')
 LABELS = {'boat': 'default', 'boat-8': 'large'}
-OWNER = 'pooriaarab'
+OWNER = 'itsryanarmani'
 VERSION = '2.338.0'
 # Boat's own list of states that hold a live VM. A busy Box still reports idle.
 LIVE = {'provisioned', 'cloning', 'ready', 'idle', 'running'}

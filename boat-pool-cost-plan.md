@@ -120,8 +120,8 @@ credentials or use status counts as the busy-job source.
 For a known private repository, these existing GitHub calls read actual state:
 
 ```sh
-gh api --paginate 'repos/pooriaarab/REPO/actions/runners?per_page=100'
-gh api --paginate 'repos/pooriaarab/REPO/actions/runs/RUN_ID/jobs?per_page=100'
+gh api --paginate 'repos/itsryanarmani/REPO/actions/runners?per_page=100'
+gh api --paginate 'repos/itsryanarmani/REPO/actions/runs/RUN_ID/jobs?per_page=100'
 ```
 
 Replace the identifiers from the complete inventory. Two example calls do not

@@ -87,7 +87,7 @@ setup() {
   mkdir -p "$FAKEHOME/.agents" "$FAKEHOME/.local/bin" "$T/stubbin" "$T/xdg/box-work"
   REPO="$T/repo"
   git init -q "$REPO" 2>/dev/null
-  git -C "$REPO" remote add origin https://github.com/pooriaarab/fakerepo.git
+  git -C "$REPO" remote add origin https://github.com/itsryanarmani/fakerepo.git
   mkdir -p "$FAKEHOME/fakerepo"
   printf 'bx_test123\n' > "$T/xdg/box-work/fakerepo.id"
   : > "$T/exec.log"
@@ -126,13 +126,13 @@ run_issue muse "count the carts on the track" 357
 grep -q "count the carts on the track" "$T/bw.out" \
   && pass "guarded dispatch delivers the brief" \
   || fail "guarded dispatch delivers the brief" "$(cat "$T/bw.out")"
-grep -q "^fleet-presence claim pooriaarab/fakerepo 357" "$T/fleet-calls.log" \
+grep -q "^fleet-presence claim itsryanarmani/fakerepo 357" "$T/fleet-calls.log" \
   && pass "claim names the repo and the issue" \
   || fail "claim names the repo and the issue" "$(cat "$T/fleet-calls.log")"
-grep -q "^fleet-presence release pooriaarab/fakerepo 357 --reason done" "$T/fleet-calls.log" \
+grep -q "^fleet-presence release itsryanarmani/fakerepo 357 --reason done" "$T/fleet-calls.log" \
   && pass "success releases with reason done" \
   || fail "success releases with reason done" "$(cat "$T/fleet-calls.log")"
-grep -q "claimed pooriaarab/fakerepo#357" "$T/bw.err" \
+grep -q "claimed itsryanarmani/fakerepo#357" "$T/bw.err" \
   && pass "claim confirmation goes to stderr" \
   || fail "claim confirmation goes to stderr" "$(cat "$T/bw.err")"
 # The claim precedes every Box call: nothing runs before the guard passes.
@@ -197,7 +197,7 @@ run_issue muse "anything" 358 "FAKE_AGENT_EXIT=3"
 [ "$(cat "$T/bw.rc")" = "3" ] \
   && pass "agent failure exit code propagates under guard" \
   || fail "agent failure exit code propagates under guard" "rc=$(cat "$T/bw.rc") want 3"
-grep -q "^fleet-presence release pooriaarab/fakerepo 358 --reason failed" "$T/fleet-calls.log" \
+grep -q "^fleet-presence release itsryanarmani/fakerepo 358 --reason failed" "$T/fleet-calls.log" \
   && pass "failure releases with reason failed" \
   || fail "failure releases with reason failed" "$(cat "$T/fleet-calls.log")"
 

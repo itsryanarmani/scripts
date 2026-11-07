@@ -79,7 +79,7 @@ If GitHub assigns another slug, use the saved `APP_SLUG` for the install command
 The token command uses the secrets folder name, not the slug.
 
 During installation, choose **Only select repositories**.
-Select **only the target private repository** under `pooriaarab`.
+Select **only the target private repository** under `itsryanarmani`.
 Do not select all repositories.
 `gh-app install` checks the account and App ID, but does not enforce repository selection.
 Confirm the single selected repository in GitHub before assigning automation.
