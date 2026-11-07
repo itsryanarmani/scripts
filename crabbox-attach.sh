@@ -4,7 +4,7 @@ set -euo pipefail
 # Warm one Crabbox VM for the current Git worktree.
 # Dependencies stay on the VM. The calling wrapper selects CRABBOX_CONFIG.
 #
-# Canonical source: pooriaarab/scripts crabbox-attach.sh.
+# Canonical source: itsryanarmani/scripts crabbox-attach.sh.
 # ~/.local/bin/crabbox-attach.sh is a symlink to it. After a Box exists the
 # delta goes through box-fast-attach (~1.5s); the crabbox rsync below only
 # runs when the fast path cannot.

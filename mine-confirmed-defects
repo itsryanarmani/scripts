@@ -55,9 +55,9 @@ from collections import defaultdict
 OUT, MAX = os.environ["OUT"], int(os.environ["MAX"])
 VALIDATE = os.environ.get("VALIDATE") or ""
 REPOS = sorted(set(os.environ.get("REPOS_STR", "").split() or [
-    "pooriaarab/example", "pooriaarab/private-repo-c4e6", "pooriaarab/private-repo-f304",
-    "pooriaarab/private-repo-7628", "pooriaarab/private-repo-4ed5", "pooriaarab/scripts",
-    "pooriaarab/skills", "pooriaarab/vibecodereview",
+    "itsryanarmani/example", "itsryanarmani/private-repo-c4e6", "itsryanarmani/private-repo-f304",
+    "itsryanarmani/private-repo-7628", "itsryanarmani/private-repo-4ed5", "itsryanarmani/scripts",
+    "itsryanarmani/skills", "itsryanarmani/vibecodereview",
 ]))
 LENSES = ("security", "performance", "scope", "maintainability", "correctness")
 KINDS = ("later-fix-commit", "revert", "linked-fix-issue", "in-pr-correction")

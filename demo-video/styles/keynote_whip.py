@@ -1,6 +1,6 @@
 """Keynote whip: light gray stage, white cards, Montserrat + JetBrains Mono, exponential whips with blur.
 
-Spec: demo-video/examples/keynote-whip.json. Style guide: pooriaarab/skills ship-demo-video/styles/keynote-whip.md.
+Spec: demo-video/examples/keynote-whip.json. Style guide: itsryanarmani/skills ship-demo-video/styles/keynote-whip.md.
 Scene lengths are in beats; times inside a scene are seconds from the scene's start.
 """
 from dvkit import beat_grid, comp, guard_clips, host, index_html, music_lane, sfx_tags, write_project, words

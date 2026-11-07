@@ -7,7 +7,7 @@
 #   ./cursor-cloud-merge --babysit --merge-green
 #
 set -u
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 DRY=1
 MERGE_GREEN=0
 BABYSIT=0

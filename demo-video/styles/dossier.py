@@ -1,6 +1,6 @@
 """Dossier: cream paper with a dot grid, ink, Newsreader serif beats, red-ink underlines and redaction.
 
-Spec: demo-video/examples/dossier.json. Style guide: pooriaarab/skills ship-demo-video/styles/dossier.md.
+Spec: demo-video/examples/dossier.json. Style guide: itsryanarmani/skills ship-demo-video/styles/dossier.md.
 Scene starts are beat numbers; the exhibits scene should start on the music's drop.
 """
 import shutil

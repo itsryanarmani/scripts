@@ -16,7 +16,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-pr-latency owner/repo [--limit N] [--since YYYY-MM-DD] [--workflow NAME] [--json]
-  owner/repo       repository to measure (e.g. pooriaarab/private-repo-5073)
+  owner/repo       repository to measure (e.g. itsryanarmani/private-repo-5073)
   --limit N        how many recent completed runs to read (default: 20, max 100)
   --event NAME     run event to sample (default: pull_request; use push for main)
   --since DATE     only runs created on/after this UTC date (baseline vs after)

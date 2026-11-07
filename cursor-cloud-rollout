@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fan out Cursor Cloud config to pooriaarab repos.
+# Fan out Cursor Cloud config to itsryanarmani repos.
 #
 # Adds .cursor/environment.json, .cursorignore, cloud block in AGENTS.md,
 # .env.example (if missing), and .gitignore entries for .env.local.
@@ -17,7 +17,7 @@ PREFIXES_FILE="$SCRIPT_DIR/repo-prefixes.json"
 TEMPLATES_DIR="$SCRIPT_DIR/cursor-cloud-rollout-templates"
 DETECT_PY="$SCRIPT_DIR/cursor-cloud-detect.py"
 ENV_JSON_PY="$SCRIPT_DIR/cursor-cloud-environment-json.py"
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 
 DRY=1
 TARGET_REPO=""

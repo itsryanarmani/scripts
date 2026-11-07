@@ -4,7 +4,7 @@ Walk merged pull requests and emit `confirmed-defects.json` for the council
 eval. Every label cites later evidence that is independent of the council.
 
 ```bash
-./mine-confirmed-defects pooriaarab/vibecodereview
+./mine-confirmed-defects itsryanarmani/vibecodereview
 ./mine-confirmed-defects --out confirmed-defects.json
 ./mine-confirmed-defects --validate confirmed-defects.json
 ```

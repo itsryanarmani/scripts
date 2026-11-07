@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # this wrapper only adds batching. Prefer editing cursor-cloud-env-setup
 # directly; keep this as a thin driver if the main script lacks batch flags.
 
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 PREFIXES_FILE="$SCRIPT_DIR/repo-prefixes.json"
 CURSOR_ENV="${HOME}/Documents/Personal/.secrets/cursor.env"
 SECRETS_FILE="${HOME}/Documents/Personal/.secrets/cursor-cloud-secrets.env"

@@ -9,7 +9,7 @@ Repository identity and interface rules live in
 This repo is public, so every job runs on GitHub-hosted `ubuntu-latest`.
 Public repos get those runners for free. Do not use Boat for public repos:
 a self-hosted runner can run code from fork PRs.
-Private `pooriaarab/*` repos use `boat`, or `boat-8` for larger jobs.
+Private `itsryanarmani/*` repos use `boat`, or `boat-8` for larger jobs.
 JIT runners get only the labels passed. Do not add `self-hosted` to `runs-on`.
 Declare `boat` and `boat-8` in `.github/actionlint.yaml`:
 
@@ -47,7 +47,7 @@ code and migrations are not counted. There is no label that clears the cap and
 no one to ask for one. Split the change.
 
 Settings for this repo are in `.github/pr-standards.json`. The standard is at
-https://github.com/pooriaarab/scripts/blob/main/pr-standards.md
+https://github.com/itsryanarmani/scripts/blob/main/pr-standards.md
 
 ## Merge gates
 
@@ -67,12 +67,12 @@ does not require checks.
 Before you cut a branch:
 
 ```
-bin/fleet-presence claim pooriaarab/<repo> <N> --goal "..." --branch <branch>
+bin/fleet-presence claim itsryanarmani/<repo> <N> --goal "..." --branch <branch>
 ```
 
 One sticky GitHub comment per agent. Create once, then PATCH. Same-machine
 lock is local. Name harness, model, host, start time, and goal. Do not dump
-transcripts. Full rule: pooriaarab/private-repo-b1e6 `rules/fleet-claim.md`.
+transcripts. Full rule: itsryanarmani/private-repo-b1e6 `rules/fleet-claim.md`.
 
 <!-- pr-standards:end -->
 
@@ -108,7 +108,7 @@ export PATH="$PATH:$PWD" && node --test pr-standards.test.mjs assisted-by.test.m
 Follow the fleet PR standard in this repo's `AGENTS.md` (`<!-- pr-standards:start -->` block).
 Cloud agents need push access via Git integration and a successful environment Build.
 
-Setup guide: https://github.com/pooriaarab/scripts/blob/main/cursor-cloud-rollout.md
+Setup guide: https://github.com/itsryanarmani/scripts/blob/main/cursor-cloud-rollout.md
 
 <!-- cursor-cloud:end -->
 

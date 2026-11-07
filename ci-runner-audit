@@ -6,7 +6,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-runner-audit [owner] [--json]
-  owner   GitHub owner to audit (default: pooriaarab)
+  owner   GitHub owner to audit (default: itsryanarmani)
   --json  machine-readable JSON output
   --help  show this help
 USAGE
@@ -25,7 +25,7 @@ while (( $# )); do
   esac
 done
 if (( ${#POSITIONAL[@]} > 1 )); then echo "error: too many arguments" >&2; usage >&2; exit 2; fi
-if (( ${#POSITIONAL[@]} == 1 )); then OWNER="${POSITIONAL[0]}"; else OWNER="pooriaarab"; fi
+if (( ${#POSITIONAL[@]} == 1 )); then OWNER="${POSITIONAL[0]}"; else OWNER="itsryanarmani"; fi
 
 if ! command -v gh >/dev/null 2>&1; then echo "error: gh CLI not found. Install https://cli.github.com/ and run 'gh auth login'." >&2; exit 1; fi
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then echo "error: gh not authenticated. Run 'gh auth login'." >&2; exit 1; fi

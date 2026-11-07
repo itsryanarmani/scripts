@@ -16,7 +16,7 @@ Usage: fleet-ci-census [owner/repo ...] [--owner NAME] [--limit N] [--days N] [-
 
   owner/repo     repos to census. When none, the --limit newest by pushedAt
                  under --owner.
-  --owner NAME   owner used for discovery (default: pooriaarab)
+  --owner NAME   owner used for discovery (default: itsryanarmani)
   --limit N      how many newest repos to discover (default: 26, max 100)
   --days N       created-since window in days (default: 14)
   --pages N      Actions API pages per repo, 100 runs each (default: 3)
@@ -30,7 +30,7 @@ count equals the page cap is a floor, not a total, and is marked so.
 USAGE
 }
 
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 LIMIT=26
 DAYS=14
 PAGES=3

@@ -1,7 +1,7 @@
 # demo-video
 
 Builds and checks short HyperFrames demo videos from a JSON spec, in a named style. It is the tooling half of the
-`ship-demo-video` skill in pooriaarab/skills. The skill owns the process (capture, storyboard, gates); this folder
+`ship-demo-video` skill in itsryanarmani/skills. The skill owns the process (capture, storyboard, gates); this folder
 owns the code.
 
 ## Commands

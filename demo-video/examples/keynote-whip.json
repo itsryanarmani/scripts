@@ -29,6 +29,6 @@
     "stat": { "beats": 4, "value": "15.6", "unit": "s", "label": "goal to answer · real run, Google Flights" },
     "values": { "beats": 5, "rows": ["Runs on your laptop.", "No cloud model.", "Free and open source."], "every_beats": 2 },
     "finale": { "beats": 8, "word": "foxpilot", "tagline": "Firefox, on autopilot.", "slam_at": 0.0, "tag_at": 0.96 },
-    "end": { "word": "foxpilot", "lines": ["Free · open source · on-device AI", "github.com/pooriaarab/foxpilot"] }
+    "end": { "word": "foxpilot", "lines": ["Free · open source · on-device AI", "github.com/itsryanarmani/foxpilot"] }
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kick off Cursor Cloud Agents for pooriaarab repos, injecting secrets from a
+# Kick off Cursor Cloud Agents for itsryanarmani repos, injecting secrets from a
 # local env file as session envVars (encrypted at rest, deleted with the agent).
 #
 # Durable Dashboard Secrets / saved Environments are NOT creatable via the public
@@ -19,7 +19,7 @@
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PREFIXES_FILE="$SCRIPT_DIR/repo-prefixes.json"
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 SECRETS_FILE="${HOME}/Documents/Personal/.secrets/cursor-cloud-secrets.env"
 CURSOR_ENV="${HOME}/Documents/Personal/.secrets/cursor.env"
 DRY=1

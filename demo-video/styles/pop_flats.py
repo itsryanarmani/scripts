@@ -1,6 +1,6 @@
 """Pop flats: flat colour grounds cut on the beat, giant League Gothic, Space Mono labels, pop-art cards.
 
-Spec: demo-video/examples/pop-flats.json. Style guide: pooriaarab/skills ship-demo-video/styles/pop-flats.md.
+Spec: demo-video/examples/pop-flats.json. Style guide: itsryanarmani/skills ship-demo-video/styles/pop-flats.md.
 Scene starts are beat numbers. Montage images must be in the project's assets/montage/.
 """
 import shutil

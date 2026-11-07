@@ -22,7 +22,7 @@
 # or labels, so it is left out of the denominator. That denominator is printed
 # in the header so the numbers are not misread as a percentage of all repos.
 #
-#   --owner NAME    GitHub user or organization to audit (default: pooriaarab)
+#   --owner NAME    GitHub user or organization to audit (default: itsryanarmani)
 #   --missing LAYER print repo names missing that layer, one per line
 #                   valid layers: prefix, workflow, forms, labels
 #                   For forms and labels, only repos with issues enabled are
@@ -31,7 +31,7 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 JSON=0
 MISSING=""
 
@@ -39,7 +39,7 @@ usage() {
   cat <<'USAGE'
 Usage: standards-coverage [--json] [--owner NAME] [--missing LAYER]
 
-  --owner NAME    GitHub user or organization to audit (default: pooriaarab)
+  --owner NAME    GitHub user or organization to audit (default: itsryanarmani)
   --missing LAYER print repo names missing that layer, one per line
                   valid: prefix, workflow, forms, labels
                   For forms and labels only repos with issues enabled are

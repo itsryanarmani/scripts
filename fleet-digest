@@ -29,7 +29,7 @@ usage() {
   cat <<'USAGE'
 Usage: fleet-digest [--owner NAME] [--repos a,b,c] [--stale-days N] [--json] [--markdown]
 
-  --owner NAME     GitHub owner to scan (default: pooriaarab)
+  --owner NAME     GitHub owner to scan (default: itsryanarmani)
   --repos LIST     comma-separated repo names (e.g. a,b,c). Overrides discovery.
                    Each name may be short (repo) or full (owner/repo).
   --stale-days N   days without push or review before a PR is stale (default: 3)
@@ -51,7 +51,7 @@ Prints "Nothing needs you." and exits 0 when every list is empty.
 USAGE
 }
 
-OWNER="pooriaarab"
+OWNER="itsryanarmani"
 REPOS_ARG=""
 STALE_DAYS=3
 JSON=0

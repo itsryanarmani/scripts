@@ -17,7 +17,7 @@
       "caption": "PURPOSES · LEGITIMATE INTEREST · VENDORS: ALL OFF" },
     "headline": { "at_beat": 32, "ground": "#ff4050", "text": "NO THANKS.", "caption": "NEWSLETTER · NOTIFICATIONS · OFFERS: DECLINED" },
     "proof": { "at_beat": 36, "ground": "#ffd23f", "stats": [["10/10", "refuse paths matched in Firefox"], ["0", "Accept-all clicks. Ever."]] },
-    "end": { "at_beat": 40, "ground": "#6d3cf5", "name": "CONSENT SHIELD", "lines": ["A free Firefox add-on. Never presses Accept.", "github.com/pooriaarab/foxpilot"] }
+    "end": { "at_beat": 40, "ground": "#6d3cf5", "name": "CONSENT SHIELD", "lines": ["A free Firefox add-on. Never presses Accept.", "github.com/itsryanarmani/foxpilot"] }
   },
   "clips": [
     { "at_beat": 14, "beats": 4, "footage": "run", "media": 2.0, "rate": 1.2, "box": [110, 140, 1250, 800], "zoom": [1.4, 25, -25], "click_beat": 15 },

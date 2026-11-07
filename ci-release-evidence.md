@@ -75,7 +75,7 @@ Write failure cases before implementation. Preserve the required checks and test
 - Selective tests need valid coverage evidence for all immutable release inputs. Unknown inputs must expand testing or stop the release.
 - Pre-uploaded versions must remain inactive until their own release gate passes. Keep required migrations before promotion.
 
-Consult the [CI skills](https://github.com/pooriaarab/skills/tree/main/ci-speed-diagnosis)
+Consult the [CI skills](https://github.com/itsryanarmani/skills/tree/main/ci-speed-diagnosis)
 for diagnosis and the sibling guidance for E2E state and selective execution.
 
 ## Publish a result

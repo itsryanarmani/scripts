@@ -4,7 +4,7 @@
 Usage: ble-bridge [-p PORT] "list" "@1 home" "@1 move 10 0" "@1 click"
 
 Each argument is one command line. The board answers "ok" or "err <why>".
-Firmware and protocol: pooriaarab/private-repo-32ef, docs/ble-bridge.md.
+Firmware and protocol: itsryanarmani/private-repo-32ef, docs/ble-bridge.md.
 
 The port opens without a DTR change. A DTR toggle resets the board and
 prints boot text in place of the reply.

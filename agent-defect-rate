@@ -18,7 +18,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: agent-defect-rate owner/repo [owner/repo ...] [--since YYYY-MM-DD] [--window-days N] [--json]
-  owner/repo       one or more repositories to measure (e.g. pooriaarab/scripts)
+  owner/repo       one or more repositories to measure (e.g. itsryanarmani/scripts)
   --since DATE     only PRs merged on/after this date (default: 90 days ago)
   --window-days N  days after merge to look for reverts/fixes (default: 7)
   --json           machine-readable JSON output
