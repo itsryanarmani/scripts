@@ -1,7 +1,7 @@
 # replit-extension — build + publish a Replit Extension
 
 React tool panel on the Replit Extensions API (`@replit/extensions`). Concept skill:
-`replit-extension` in `pooriaarab/skills`.
+`replit-extension` in `itsryanarmani/skills`.
 
 ## Flow
 ```bash

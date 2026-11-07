@@ -1,7 +1,7 @@
 # webflow-app — build + submit a Webflow app
 
 Two programs: a Designer extension (Vite iframe UI) + a Data-client/server (OAuth +
-webhooks, Node ESM). Concept skill: `webflow-app` in `pooriaarab/skills`.
+webhooks, Node ESM). Concept skill: `webflow-app` in `itsryanarmani/skills`.
 
 ## Flow
 ```bash

@@ -31,7 +31,7 @@ a safety feature, not a limitation.
    setup details.
 
 2. **agent-browser CLI.** Install via Claude Code skill `agent-browser` or
-   directly from `pooriaarab/skills`.
+   directly from `itsryanarmani/skills`.
 
 3. **Environment variables.** Set only the vars required for your command
    (see below).
@@ -180,5 +180,5 @@ use examples like `VFS_EMAIL=user@example.com` and `VFS_PASSWORD=`.
 ## See also
 
 - `scripts/agent-browser/` — Profile setup and CDP connection details.
-- `pooriaarab/skills` — `agent-browser-profiles` skill for full CDP workflow.
+- `itsryanarmani/skills` — `agent-browser-profiles` skill for full CDP workflow.
 - VFS Global portal: https://visa.vfsglobal.com

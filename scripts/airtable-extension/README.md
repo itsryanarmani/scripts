@@ -1,7 +1,7 @@
 # airtable-extension — build + ship an Airtable extension
 
 React app on the Airtable Blocks SDK; source lives in `frontend/`. Concept skill:
-`airtable-extension` in `pooriaarab/skills`.
+`airtable-extension` in `itsryanarmani/skills`.
 
 ## Flow
 ```bash

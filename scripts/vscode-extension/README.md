@@ -1,6 +1,6 @@
 # vscode-extension — build + publish to VS Code Marketplace + Open VSX
 
-Concept skill: `vscode-extension` in `pooriaarab/skills`.
+Concept skill: `vscode-extension` in `itsryanarmani/skills`.
 
 ## Build + package (Node 20 — vsce/ovsx SEGFAULT on 22/25)
 ```bash

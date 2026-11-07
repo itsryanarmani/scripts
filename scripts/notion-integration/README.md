@@ -6,7 +6,7 @@ API. Distribution requires a **public** integration (OAuth) — internal tokens
 are one-workspace only, can never be listed, and can't be converted. This is
 the playbook: the path from `integrations/<app>/` to the gallery, plus the
 traps that each cost a round-trip. The concept-level skill is
-`notion-integration` in `pooriaarab/skills`.
+`notion-integration` in `itsryanarmani/skills`.
 
 ## Flow
 

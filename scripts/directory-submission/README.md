@@ -22,7 +22,7 @@ node gen.mjs site.json --out ./out
   "short": "<=260 chars",
   "long": "<=500 chars",
   "url": "https://private-repo-ba8a.com",
-  "repo": "https://github.com/pooriaarab/private-repo-ba8a",
+  "repo": "https://github.com/itsryanarmani/private-repo-ba8a",
   "mcp_url": "https://private-repo-ba8a.com/mcp",
   "registry_name": "io.github.pooriaarab/private-repo-ba8a",
   "contact_email": "hello@example.com",

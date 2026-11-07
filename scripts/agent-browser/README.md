@@ -4,7 +4,7 @@ Keep separate automation browsers for separate contexts — for example one for
 work and one for personal. Each runs on its own profile. They never mix. And you
 avoid the repeated Chrome "Allow remote debugging" prompt.
 
-The concept-level skill is `agent-browser-profiles` in `pooriaarab/skills`.
+The concept-level skill is `agent-browser-profiles` in `itsryanarmani/skills`.
 
 ## Start with AUTO_CONNECT=0
 

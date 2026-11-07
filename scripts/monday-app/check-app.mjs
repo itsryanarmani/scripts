@@ -20,7 +20,7 @@
  *
  * Exit codes: 0 all checks passed, 1 a check failed, 2 usage error.
  * No dependencies beyond Node >= 18 (global fetch). See the monday-app-submission
- * skill in pooriaarab/skills for the full Developer Center playbook.
+ * skill in itsryanarmani/skills for the full Developer Center playbook.
  */
 const INSTALL_URL = (clientId) =>
   `https://auth.monday.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&response_type=install`;

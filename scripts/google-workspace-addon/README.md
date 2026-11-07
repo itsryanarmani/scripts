@@ -4,7 +4,7 @@ A Google Workspace add-on is server-side **Apps Script + CardService** running i
 Docs/Sheets sidebar — no push-CLI submission either; you point the Marketplace SDK at a
 versioned deployment ID in the Google Cloud console. This is the playbook: the command
 sequence from `integrations/<addon>/` to published, plus the traps that each cost a
-round-trip. The concept-level skill is `google-workspace-addon` in `pooriaarab/skills`.
+round-trip. The concept-level skill is `google-workspace-addon` in `itsryanarmani/skills`.
 
 ## Flow
 
