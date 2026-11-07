@@ -4,7 +4,7 @@ Turns one `board.json` into a cast sheet, consistent storyboard stills, a review
 image-to-video clips, and an edited film with camera moves, transitions and a ducked voice-over.
 It is the generated-film counterpart of [`demo-video`](../demo-video), which edits real product
 footage. The process and the reasons behind each step live in the `launch-video-generation`
-skill in itsryanarmani/skills.
+skill in pooriaarab/skills.
 
 ## Commands
 
