@@ -30,6 +30,6 @@ __VERIFY_CMD__
 Follow the fleet PR standard in this repo's `AGENTS.md` (`<!-- pr-standards:start -->` block).
 Cloud agents need push access via Git integration and a successful environment Build.
 
-Setup guide: https://github.com/pooriaarab/scripts/blob/main/cursor-cloud-rollout.md
+Setup guide: https://github.com/itsryanarmani/scripts/blob/main/cursor-cloud-rollout.md
 
 <!-- cursor-cloud:end -->

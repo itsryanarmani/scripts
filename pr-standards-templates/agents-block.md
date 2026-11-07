@@ -28,7 +28,7 @@ code and migrations are not counted. There is no label that clears the cap and
 no one to ask for one. Split the change.
 
 Settings for this repo are in `.github/pr-standards.json`. The standard is at
-https://github.com/pooriaarab/scripts/blob/main/pr-standards.md
+https://github.com/itsryanarmani/scripts/blob/main/pr-standards.md
 
 ## Merge gates
 
@@ -48,11 +48,11 @@ does not require checks.
 Before you cut a branch:
 
 ```
-bin/fleet-presence claim pooriaarab/<repo> <N> --goal "..." --branch <branch>
+bin/fleet-presence claim itsryanarmani/<repo> <N> --goal "..." --branch <branch>
 ```
 
 One sticky GitHub comment per agent. Create once, then PATCH. Same-machine
 lock is local. Name harness, model, host, start time, and goal. Do not dump
-transcripts. Full rule: pooriaarab/private-repo-b1e6 `rules/fleet-claim.md`.
+transcripts. Full rule: itsryanarmani/private-repo-b1e6 `rules/fleet-claim.md`.
 
 <!-- pr-standards:end -->
