@@ -51,13 +51,19 @@ import shutil
 shutil.copytree(fx, fx + '-secret')
 put_secret = {'errors': [{'message': 'bad token SECRET123 for account ACCT456'}]}
 json.dump(put_secret, open(fx + '-secret/graphql-d1-top.json', 'w'))
-os.remove(fx + '/graphql-zone-traffic-a.example.json') if False else None
 shutil.copytree(fx, fx + '-missing'); os.remove(fx + '-missing/graphql-kv-ops.json')
+shutil.copytree(fx, fx + '-limit')
+json.dump(gql(accounts=[{'kvOperationsAdaptiveGroups': [{'sum': {'requests': 1}, 'dimensions': {'datetimeHour': '2026-11-05T10:00:00Z', 'namespaceId': 'aaaa1111-bbbb-2222-cccc-3333dddd4444'}}] * 10000}]), open(fx + '-limit/graphql-kv-ops.json', 'w'))
+shutil.copytree(fx, fx + '-shape')
+json.dump({'data': {'viewer': {'accounts': []}}}, open(fx + '-shape/graphql-kv-ops.json', 'w'))
+open(d + '/creds.env', 'w').write('# a comment\nexport CLOUDFLARE_API_TOKEN="abc export xyz" # inline\nCLOUDFLARE_ACCOUNT_ID=acct123 # inline\n')
+def ev2(ua): return json.dumps({'outcome': 'ok', 'cpuTime': 10, 'event': {'request': {'url': 'https://a.example/', 'headers': {'user-agent': ua}}}})
+open(d + '/names.json', 'w').write('\n'.join([ev2('Mozilla/5.0 (Linux; Android 11; Cubot X30)'), ev2('Mozilla/5.0 (compatible; Google-InspectionTool/1.0)'), ev2('facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)'), ev2('curly-client/1.0')]))
 PY
 
 # ua-cpu: offline, names not families
 run "$SCRIPT" ua-cpu "$W/tail.json"
-code "ua-cpu exits 0" "$RC" 0
+code "ua-cpu exits 0" 0
 has "ua-cpu counts 5 events and drops the truncated sixth" "events 5, CPU ms 1180"
 has "ua-cpu names QlyzeBot with both requests" "QlyzeBot"
 has "ua-cpu gives QlyzeBot 84.7% of the CPU" "84.7%"
@@ -70,11 +76,11 @@ has "ua-cpu groups login" "claim, edit or login"
 run "$SCRIPT" ua-cpu "$W/empty.json"
 has "an empty file says so" "no events in the files"
 run "$SCRIPT" ua-cpu
-code "ua-cpu without a file is bad usage" "$RC" 2
+code "ua-cpu without a file is bad usage" 2
 
 # API probes from fixtures
 run "$SCRIPT" --fixtures "$W/fx" kv-ops write
-code "kv-ops exits 0" "$RC" 0
+code "kv-ops exits 0" 0
 has "kv-ops resolves a dashed analytics id to the REST name" "site-inc-cache-production"
 has "kv-ops sums the day" "write ops 1000"
 has "kv-ops gives the namespace its share" "70.0%"
@@ -95,19 +101,48 @@ has "zone-traffic names an empty agent" "no user agent"
 
 # failure cases
 run "$SCRIPT" --fixtures "$W/fx-missing" kv-ops write
-code "a missing fixture exits 4" "$RC" 4
+code "a missing fixture exits 4" 4
 has "a missing fixture says unavailable" "unavailable: fixture missing"
 run env CLOUDFLARE_API_TOKEN=SECRET123 CLOUDFLARE_ACCOUNT_ID=ACCT456 "$SCRIPT" --fixtures "$W/fx-secret" d1-top
-code "an API error exits 4" "$RC" 4
+code "an API error exits 4" 4
 hasnt "a token in an error text never prints" "SECRET123"
 hasnt "an account id in an error text never prints" "ACCT456"
 has "the error keeps its words" "bad token ***"
 run "$SCRIPT" kv-ops write
-code "no credentials exits 3" "$RC" 3
+code "no credentials exits 3" 3
 run "$SCRIPT" --fixtures "$W/fx" kv-ops sideways
-code "kv-ops with a bad action is bad usage" "$RC" 2
+code "kv-ops with a bad action is bad usage" 2
 run "$SCRIPT" nonsense
-code "an unknown probe is bad usage" "$RC" 2
+code "an unknown probe is bad usage" 2
+
+# review fixes: row limit, wrong shape, env-file parsing, crawler names, token-only zone-traffic
+run "$SCRIPT" --fixtures "$W/fx-limit" kv-ops write
+code "an answer at the row limit exits 4" 4
+has "an answer at the row limit says truncated" "result truncated"
+run "$SCRIPT" --fixtures "$W/fx-shape" kv-ops write
+code "a wrong answer shape exits 4, not a traceback" 4
+has "a wrong answer shape says so" "unexpected shape"
+hasnt "a wrong answer shape prints no traceback" "Traceback"
+run "$SCRIPT" --fixtures "$W/fx" d1-top abc
+code "a bad hour count exits 2" 2
+run "$SCRIPT" --env-file "$W/missing.env" kv-ops write
+code "a missing env file exits 3" 3
+OUT=$(python3 - "$SCRIPT" "$W/creds.env" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader('probe', sys.argv[1])
+spec = importlib.util.spec_from_loader('probe', loader); m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+print(m.credentials(sys.argv[2]))
+PY
+)
+has "an env file keeps 'export' inside a quoted value and drops the inline comment" "('abc export xyz', 'acct123')"
+run "$SCRIPT" ua-cpu "$W/names.json"
+has "Cubot (a phone) is not a crawler" "browser-like"
+has "Google-InspectionTool is named" "Google-InspectionTool"
+has "facebookexternalhit is named without its version" "facebookexternalhit "
+hasnt "curly-client is not curl" "curl "
+run "$SCRIPT" zone-traffic a.example
+has "zone-traffic without a token asks only for the token" "set CLOUDFLARE_API_TOKEN, or pass --env-file"
+hasnt "zone-traffic does not ask for an account id" "CLOUDFLARE_ACCOUNT_ID"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

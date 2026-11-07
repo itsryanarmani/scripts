@@ -8,7 +8,8 @@
   cf-traffic-probe d1-top [HOURS]            the D1 query shapes that read the most rows (default 24 hours), with database names
   cf-traffic-probe zone-traffic DOMAIN...    requests by status, country and user agent for zones (Free-plan fields only)
 
-Reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment, or from --env-file. Never prints either.
+Reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment, or from --env-file (zone-traffic needs only the
+token). Never prints either. kv-ops and hourly-cpu fail with `result truncated` when an answer reaches 10,000 rows.
 `--fixtures DIR` reads canned answers (graphql-<name>.json, kv-namespaces.json, d1-databases.json, zone-<domain>.json) so a
 test needs no network. `ua-cpu` is offline. Exit codes: 0 done, 2 bad usage, 3 no credentials, 4 the API refused.
 
@@ -20,7 +21,9 @@ Traps this tool already handles:
 import argparse, collections, datetime as dt, json, os, re, sys, urllib.error, urllib.request
 
 API = 'https://api.cloudflare.com/client/v4'
-BOT = re.compile(r'([A-Za-z0-9_.\-]*(?:bot|crawler|spider)[A-Za-z0-9_.\-]*|Barkrowler|python-requests|curl|Go-http-client|axios|okhttp|scrapy)', re.I)
+BOT = re.compile(r'([A-Za-z0-9_.\-]*(?:bot|crawler|spider)[A-Za-z0-9_.\-]*|Google-InspectionTool|GoogleOther|facebookexternalhit|\bBarkrowler\b|\bpython-requests\b|\bcurl\b|\bGo-http-client\b|\baxios\b|\bokhttp\b|\bscrapy\b)', re.I)
+NOT_CRAWLERS = re.compile(r'^(cubot|abbott)', re.I)  # a phone brand and a company name that contain "bot"
+LIMIT = 10000
 
 class ApiError(Exception):
     pass
@@ -44,6 +47,11 @@ class Client:
             raise ApiError(f'HTTP {e.code}' + (' (token lacks permission)' if e.code in (401, 403) else '')) from None
         except (ValueError, OSError):
             raise ApiError('network or JSON failure') from None
+
+    def check_limit(self, rows, what):
+        if len(rows) >= LIMIT:
+            raise ApiError(f'{what}: hit the {LIMIT} row limit; result truncated')
+        return rows
 
     def gql(self, name, query, variables):
         data = self.call('/graphql', f'graphql-{name}.json', {'query': query, 'variables': variables})
@@ -75,9 +83,14 @@ def credentials(env_file):
         for line in open(env_file, encoding='utf-8'):
             line = line.strip()
             if '=' in line and not line.startswith('#'):
-                k, v = line.replace('export ', '').split('=', 1)
-                env[k.strip()] = v.strip().strip('"').strip("'")
-    return env.get('CLOUDFLARE_API_TOKEN') or env.get('CF_API_TOKEN'), env.get('CLOUDFLARE_ACCOUNT_ID')
+                k, v = re.sub(r'^export\s+', '', line).split('=', 1)
+                v = v.strip()
+                if v[:1] in ('"', "'") and v.count(v[0]) >= 2:
+                    v = v[1:v.index(v[0], 1)]
+                else:
+                    v = re.sub(r'\s+#.*$', '', v)
+                env[k.strip()] = v
+    return env.get('CLOUDFLARE_API_TOKEN'), env.get('CLOUDFLARE_ACCOUNT_ID')
 
 def decode(text):
     """Objects of a tail file, back to back. A truncated last object is dropped."""
@@ -98,7 +111,7 @@ def crawler_name(ua):
     if not ua:
         return 'no user agent'
     m = BOT.search(ua)
-    if m:
+    if m and not NOT_CRAWLERS.match(m.group(1)):
         return m.group(1)
     return 'browser-like' if 'Mozilla/' in ua else ua[:30]
 
@@ -140,6 +153,7 @@ def hourly_cpu(cl, scripts):
     q = ('query($a: string!, $s: Time!, $e: Time!) { viewer { accounts(filter: {accountTag: $a}) { workersInvocationsAdaptive(limit: 10000, '
          'filter: {datetime_geq: $s, datetime_lt: $e}, orderBy: [datetimeHour_ASC]) { dimensions {scriptName datetimeHour} sum {requests cpuTimeUs} } } } }')
     rows = cl.gql('hourly-cpu', q, {'a': cl.account, 's': iso(now - dt.timedelta(hours=30)), 'e': iso(now)})['accounts'][0]['workersInvocationsAdaptive']
+    cl.check_limit(rows, 'hourly-cpu')
     data = collections.defaultdict(dict)
     for r in rows:
         n = r['dimensions']['scriptName']
@@ -160,6 +174,7 @@ def kv_ops(cl, action):
     q = ('query($a: string!, $s: Time!, $e: Time!, $t: string!) { viewer { accounts(filter: {accountTag: $a}) { kvOperationsAdaptiveGroups(limit: 10000, '
          'filter: {datetime_geq: $s, datetime_lt: $e, actionType: $t}, orderBy: [datetimeHour_ASC]) { sum {requests} dimensions {datetimeHour namespaceId} } } } }')
     rows = cl.gql('kv-ops', q, {'a': cl.account, 's': iso(start), 'e': iso(now), 't': action})['accounts'][0]['kvOperationsAdaptiveGroups']
+    cl.check_limit(rows, 'kv-ops')
     names = namespace_names(cl)
     day, hour, ns = collections.Counter(), collections.defaultdict(collections.Counter), collections.defaultdict(collections.Counter)
     for r in rows:
@@ -167,8 +182,9 @@ def kv_ops(cl, action):
         day[h[:10]] += n
         hour[h[:10]][h[11:13]] += n
         ns[h[:10]][r['dimensions']['namespaceId'].replace('-', '')] += n
+    today = dt.datetime.utcnow().strftime('%Y-%m-%d')
     for d in sorted(day):
-        print(d, action + ' ops', day[d])
+        print(d, action + ' ops', day[d], '(partial day, to %s UTC)' % now.strftime('%H:%M') if d == today else '')
         for k, n in ns[d].most_common(4):
             print('    %-44s %9d  %4.1f%%' % (names.get(k, k[:12])[:44], n, 100 * n / day[d]))
     print('hourly (UTC hour: ops)')
@@ -222,7 +238,7 @@ def zone_traffic(cl, domains):
         for g in z['ua']:
             ua[crawler_name(g['dimensions']['userAgent'] or '')] += g['count']
     tot = sum(st.values()) or 1
-    print('zones', domains, 'requests %d, status' % tot, dict(st.most_common(6)))
+    print('zones', domains, 'requests in the top status groups: %d; status' % tot, dict(st.most_common(6)))
     for title, c in (('countries', co), ('crawlers and agents', ua)):
         print(title)
         for k, n in c.most_common(10):
@@ -241,9 +257,14 @@ def main():
         if not a.args:
             ap.error('ua-cpu needs at least one file')
         return ua_cpu(a.args, a.top)
-    token, account = credentials(a.env_file)
-    if not a.fixtures and not (token and account):
-        print('set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or pass --env-file', file=sys.stderr)
+    try:
+        token, account = credentials(a.env_file)
+    except OSError:
+        print('cannot read the --env-file', file=sys.stderr)
+        return 3
+    need_account = a.probe != 'zone-traffic'
+    if not a.fixtures and not (token and (account or not need_account)):
+        print('set CLOUDFLARE_API_TOKEN' + (' and CLOUDFLARE_ACCOUNT_ID' if need_account else '') + ', or pass --env-file', file=sys.stderr)
         return 3
     cl = Client(account, token, a.fixtures)
     try:
@@ -259,6 +280,12 @@ def main():
     except ApiError as e:
         print('unavailable: ' + str(e), file=sys.stderr)
         return 4
+    except (KeyError, IndexError, TypeError, AttributeError):
+        print('unavailable: the API answer had an unexpected shape', file=sys.stderr)
+        return 4
+    except ValueError:
+        print('bad argument', file=sys.stderr)
+        return 2
 
 if __name__ == '__main__':
     sys.exit(main())

@@ -103,6 +103,7 @@ jobs:
           ./ci-pr-latency.test.sh
           ./cf-usage-report.test.sh
           ./cf-cost-scan.test.sh
+          ./cf-traffic-probe.test.sh
 
       - name: Run merge-throughput tests
         id: merge-throughput-tests
