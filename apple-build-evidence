@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -26,8 +27,17 @@ def main():
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     allowed = {'repository', 'project', 'scheme', 'inputs', 'destinations'}
-    if set(config) != allowed:
-        raise ValueError('Config must contain exactly repository, project, scheme, inputs, destinations')
+    if not allowed <= set(config) or set(config) - allowed - {'buildSettings'}:
+        raise ValueError('Invalid config fields')
+    build_settings = config.get('buildSettings', {})
+    patterns = {'CURRENT_PROJECT_VERSION': r'[1-9][0-9]{0,8}',
+                'MARKETING_VERSION': r'[0-9]{1,4}(?:\.[0-9]{1,2}){0,2}'}
+    if not isinstance(build_settings, dict) or any(
+        key not in patterns or not isinstance(value, str) or not re.fullmatch(patterns[key], value)
+        for key, value in build_settings.items()
+    ):
+        raise ValueError('Invalid build identity settings')
+    identity_args = [f'{key}={value}' for key, value in sorted(build_settings.items())]
     repo = Path(config['repository']).resolve(strict=True)
     output = args.output.resolve()
     if output == repo or repo in output.parents:
@@ -79,7 +89,7 @@ def main():
         return digest.hexdigest()
     head = git('rev-parse', 'HEAD')
     source_hash = fingerprint()
-    summary = {'schemaVersion': 1, 'status': 'planned', 'sourceCommit': head, 'sourceHash': source_hash, 'phases': [], 'destinations': destinations, 'archiveSigning': 'disabled', 'uploadExecuted': False}
+    summary = {'schemaVersion': 1, 'status': 'planned', 'sourceCommit': head, 'sourceHash': source_hash, 'phases': [], 'destinations': destinations, 'buildSettings': build_settings, 'archiveSigning': 'disabled', 'uploadExecuted': False}
     if not args.execute:
         print(json.dumps(summary))
         return 0
@@ -102,7 +112,7 @@ def main():
         run = output / (time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())+'-'+uuid.uuid4().hex[:8])
         run.mkdir(mode=0o700)
         summary['artifactDirectory'] = str(run)
-        base = ['xcodebuild', '-project', str(project), '-scheme', scheme]
+        base = ['xcodebuild', '-project', str(project), '-scheme', scheme, *identity_args]
         phases = [(f'test-{i}', base+['test', '-destination', dest, '-resultBundlePath', str(run/f'test-{i}.xcresult'), 'CODE_SIGNING_ALLOWED=NO']) for i, dest in enumerate(destinations)]
         phases.append(('archive', base+['archive', '-destination', 'generic/platform=iOS', '-archivePath', str(run/'app.xcarchive'), 'CODE_SIGNING_ALLOWED=NO']))
         summary['status'] = 'failed'
