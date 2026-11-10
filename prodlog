@@ -12,7 +12,7 @@ step, the totals, and, with --video-seconds, the cost and time per finished seco
 Exit codes: 0 done, 2 bad usage, 3 `end` for a step that was never started.
 Safe to call from parallel jobs: a lock file (LOG.lock) serialises the writes. Parallel jobs
 that share a step name must end by the id that `start` printed, or the name is ambiguous.
-An unknown option is an error (exit 2), so a typo can never record a wrong cost.
+An unknown option, a stray argument or a name made only of digits is an error (exit 2), so a typo can never record a wrong cost.
 Standard library only.
 """
 import fcntl, json, os, sys, tempfile, time
@@ -57,10 +57,14 @@ ALLOWED = {"start": set(), "end": {"--usd", "--retries", "--note"}, "show": {"--
 if cmd not in ALLOWED:
     usage()
 pos = 3 if cmd in ("start", "end") else 2
-for tok in a[pos:]:
-    if tok.startswith("--") and tok not in ALLOWED[cmd]:
-        print(f"unknown option for {cmd}: {tok}", file=sys.stderr)
+rest = a[pos:]
+for i in range(0, len(rest), 2):  # every extra argument must be an allowed option followed by its value
+    if rest[i] not in ALLOWED[cmd] or i + 1 >= len(rest):
+        print(f"bad argument for {cmd}: {rest[i]}", file=sys.stderr)
         sys.exit(2)
+if cmd == "start" and len(a) >= 3 and a[2].isdigit():
+    print("a step name cannot be only digits: digits are row ids", file=sys.stderr)
+    sys.exit(2)
 # Steps may run in parallel (several jobs at once), so take a lock around read, change and write.
 lock = open(log + ".lock", "w")
 fcntl.flock(lock, fcntl.LOCK_EX)
