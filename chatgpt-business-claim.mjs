@@ -118,7 +118,7 @@ async function claim(site, yes, type) {
 
   // 1. Search the Hub. A match means someone else's profile exists: stop.
   const search = browse(
-    `await page.goto(${JSON.stringify(HUB)});
+    `await page.goto(${JSON.stringify(HUB + "?create=1")});
      const box = page.getByPlaceholder(/search business/i).or(page.getByRole("combobox")).or(page.getByRole("textbox")).first();
      await box.click(); await box.fill(A.name); await page.waitForTimeout(3500);
      return (await page.locator("main").innerText());`,
