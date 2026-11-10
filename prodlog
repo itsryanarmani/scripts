@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Log each production step's seconds and dollars from code, then show a table with totals.
+
+Usage:
+  prodlog LOG start STEP
+  prodlog LOG end STEP [--usd 0.12] [--retries 1] [--note "text"]
+  prodlog LOG show [--video-seconds 77]
+
+LOG is a JSON file. Rows are written by code, never by splitting shell text. Dollars are what
+you measured (a price quote or a balance difference). `show` prints seconds and dollars per
+step, the totals, and, with --video-seconds, the cost and time per finished second.
+Exit codes: 0 done, 2 bad usage, 3 `end` for a step that was never started.
+Standard library only.
+"""
+import json, os, sys, time
+
+
+def usage():
+    print(__doc__.strip(), file=sys.stderr)
+    sys.exit(2)
+
+
+def load(path):
+    if not os.path.exists(path):
+        return {"steps": []}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)
+
+
+def opt(args, name, cast=str, default=None):
+    if name in args:
+        i = args.index(name)
+        if i + 1 >= len(args):
+            usage()
+        try:
+            return cast(args[i + 1])
+        except ValueError:
+            usage()
+    return default
+
+
+a = sys.argv[1:]
+if len(a) < 2:
+    usage()
+log, cmd = a[0], a[1]
+data = load(log)
+now = time.time()
+if cmd == "start" and len(a) >= 3:
+    data["steps"].append({"step": a[2], "start": now, "end": None, "usd": None, "retries": 0, "note": ""})
+    save(log, data)
+elif cmd == "end" and len(a) >= 3:
+    open_rows = [s for s in data["steps"] if s["step"] == a[2] and s["end"] is None]
+    if not open_rows:
+        print(f"step not started: {a[2]}", file=sys.stderr)
+        sys.exit(3)
+    row = open_rows[-1]
+    row["end"] = now
+    row["usd"] = opt(a, "--usd", float, 0.0)
+    row["retries"] = opt(a, "--retries", int, 0)
+    row["note"] = opt(a, "--note", str, "")
+    save(log, data)
+elif cmd == "show":
+    vs = opt(a, "--video-seconds", float, None)
+    rows = [s for s in data["steps"] if s["end"]]
+    tot_s = sum(s["end"] - s["start"] for s in rows)
+    tot_d = sum(s["usd"] or 0 for s in rows)
+    print(f"{'step':44} {'seconds':>8} {'usd':>8} {'retries':>7}")
+    for s in rows:
+        print(f"{s['step'][:44]:44} {s['end'] - s['start']:8.0f} {s['usd'] or 0:8.3f} {s['retries']:7d}")
+    print(f"{'TOTAL':44} {tot_s:8.0f} {tot_d:8.3f}")
+    if vs:
+        print(f"per finished second: {tot_d / vs:.3f} usd, {tot_s / vs:.1f} s of work")
+    open_rows = [s["step"] for s in data["steps"] if s["end"] is None]
+    if open_rows:
+        print("not ended: " + ", ".join(open_rows), file=sys.stderr)
+else:
+    usage()
