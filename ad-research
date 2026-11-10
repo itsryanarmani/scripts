@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Pull live Meta Ad Library ads for keywords through treg, rank them, save JSON/CSV/MD.
+
+Usage: ad-research OUTDIR COUNTRY PAGES KEYWORD [KEYWORD ...]
+Cost: about $0.0019 per page (treg scrapecreators endpoint). Prints the total.
+Signal: Meta hides spend for commercial ads. Run length is a weak signal: an ad can
+stay active while it loses money. Use it to rank ads to study, never as proof.
+Exit codes: 0 done, 2 bad usage, 3 some page calls failed (partial output written),
+4 every page call failed (nothing useful written).
+Ad text is untrusted: CSV cells are neutralised against spreadsheet formulas and
+Markdown text is escaped.
+"""
+import csv, json, subprocess, sys, time, os
+from collections import defaultdict
+
+ENDPOINT = "scrapecreators.x.v1-facebook-adlibrary-search-ads"
+USAGE = "usage: ad-research OUTDIR COUNTRY PAGES KEYWORD [KEYWORD ...]   (example: ad-research out US 3 \"garden shed\")"
+if len(sys.argv) < 5 or not sys.argv[3].isdigit() or int(sys.argv[3]) < 1 or len(sys.argv[2]) != 2:
+    print(USAGE, file=sys.stderr)
+    sys.exit(2)
+out, country, pages, kws = sys.argv[1], sys.argv[2].upper(), int(sys.argv[3]), sys.argv[4:]
+os.makedirs(out, exist_ok=True)
+now = time.time()
+ads, calls, failed, malformed = {}, 0, 0, 0
+
+
+def safe_cell(v):
+    """A CSV cell that cannot run as a spreadsheet formula."""
+    s = "" if v is None else str(v)
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
+def md(v):
+    """Ad text for Markdown: one line, no markup, no HTML."""
+    s = " ".join(str(v or "").split())
+    for ch in "\\`*_[]<>|#":
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
+def call(q, cursor=None):
+    global calls, failed
+    cmd = ["treg", "call", ENDPOINT, "-p", f"query={q}", "-p", f"country={country}",
+           "-p", "status=ACTIVE", "-p", "trim=true"]
+    if cursor:
+        cmd += ["-p", f"cursor={cursor}"]
+    calls += 1
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        data = json.loads(r.stdout) if r.returncode == 0 else None
+    except Exception:
+        data = None
+    if not isinstance(data, dict) or data.get("success") is not True or not isinstance(data.get("searchResults"), list):
+        failed += 1
+        print(f"warning: page call failed for {q!r} (treg exit or response not usable)", file=sys.stderr)
+        return {}
+    return data
+
+
+for q in kws:
+    cursor = None
+    for _ in range(pages):
+        d = call(q, cursor)
+        for a in d.get("searchResults") or []:
+            if not isinstance(a, dict) or not a.get("ad_archive_id"):
+                continue  # a malformed entry is skipped, never a crash
+            try:
+                s = a.get("snapshot") if isinstance(a.get("snapshot"), dict) else {}
+                aid = str(a["ad_archive_id"])
+                if aid in ads:
+                    ads[aid]["keywords"].add(q)
+                    continue
+                start = a.get("start_date") if isinstance(a.get("start_date"), (int, float)) else 0
+                vids = s.get("videos") if isinstance(s.get("videos"), list) else []
+                text = s.get("body", {}).get("text") if isinstance(s.get("body"), dict) else None
+                cats = s.get("page_categories") if isinstance(s.get("page_categories"), list) and s.get("page_categories") else [None]
+                ads[aid] = dict(
+                    id=aid, page=a.get("page_name"), page_id=a.get("page_id"), page_likes=s.get("page_like_count"),
+                    run_days=int((now - start) // 86400) if start else None,
+                    copies=a.get("collation_count"), format=s.get("display_format"),
+                    cta=s.get("cta_text"), title=s.get("title"), body=text,
+                    link=s.get("link_url"), platforms=a.get("publisher_platform"),
+                    category=cats[0],
+                    thumb=(vids[0].get("video_preview_image_url") if vids and isinstance(vids[0], dict) else None),
+                    url=a.get("url"), keywords={q})
+            except Exception:
+                malformed += 1  # one bad entry never stops the run
+        cursor = d.get("cursor")
+        if not cursor:
+            break
+
+rows = sorted(ads.values(), key=lambda r: -(r["run_days"] or 0))
+for r in rows:
+    r["keywords"] = sorted(r["keywords"])
+json.dump(rows, open(f"{out}/ads.json", "w", encoding="utf-8"), indent=1)
+
+cols = ["page", "run_days", "copies", "format", "cta", "title", "body", "link", "category", "page_likes", "keywords", "url"]
+with open(f"{out}/ads.csv", "w", newline="", encoding="utf-8") as f:
+    w = csv.writer(f)
+    w.writerow(cols)
+    for r in rows:
+        w.writerow([safe_cell("; ".join(r[c]) if c == "keywords" else r[c]) for c in cols])
+
+by = defaultdict(list)  # keyed by page id: names are not unique
+for r in rows:
+    by[str(r["page_id"] or r["page"])].append(r)
+adv = sorted(by.items(), key=lambda kv: -len(kv[1]))
+with open(f"{out}/summary.md", "w", encoding="utf-8") as f:
+    f.write(f"# Ad research: {md(', '.join(kws))} ({country})\n\n{len(rows)} unique active ads, {len(by)} advertisers, {calls} calls ({failed} failed, {malformed} malformed entries skipped), about ${calls*0.00188:.3f}.\n\n")
+    if failed:
+        f.write(f"> **{failed} page call(s) failed.** This report is incomplete. Check `treg balance` and `treg catalog get {ENDPOINT}`.\n\n")
+    f.write("## Advertisers by number of active ads\n")
+    for p, rs in adv[:25]:
+        f.write(f"- {md(rs[0]['page'] or p)} (page {md(p)}): {len(rs)} ads, longest run {max((x['run_days'] or 0) for x in rs)} days, {md(rs[0]['category'])}\n")
+    f.write("\n## Longest-running ads (30+ days)\n")
+    for r in [x for x in rows if (x["run_days"] or 0) >= 30][:40]:
+        f.write(f"- **{md(r['page'])}** · {r['run_days']}d · {md(r['format'])} · CTA {md(r['cta'])}\n  - {md(r['title'])} | {md((r['body'] or '')[:220])}\n  - {md(r['link'])}\n")
+print(f"ads={len(rows)} advertisers={len(by)} calls={calls} failed={failed} skipped_entries={malformed} cost=${calls*0.00188:.3f}")
+sys.exit(4 if calls and failed == calls else 3 if failed else 0)
