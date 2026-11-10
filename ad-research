@@ -10,7 +10,7 @@ Exit codes: 0 done, 2 bad usage, 3 some page calls failed (partial output writte
 Ad text is untrusted: CSV cells are neutralised against spreadsheet formulas and
 Markdown text is escaped.
 """
-import csv, json, subprocess, sys, time, os
+import csv, io, json, os, subprocess, sys, tempfile, time
 from collections import defaultdict
 
 ENDPOINT = "scrapecreators.x.v1-facebook-adlibrary-search-ads"
@@ -22,6 +22,30 @@ out, country, pages, kws = sys.argv[1], sys.argv[2].upper(), int(sys.argv[3]), s
 os.makedirs(out, exist_ok=True)
 now = time.time()
 ads, calls, failed, malformed = {}, 0, 0, 0
+
+
+def clean(v, limit=2000):
+    """A plain string, or None. Anything that is not text or a number is dropped. Lone surrogates are replaced."""
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+        return None
+    return str(v).encode("utf-8", "replace").decode("utf-8")[:limit]
+
+
+def num(v):
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) < 1e15 else None
+
+
+def atomic_write(path, text):
+    """Write through a private temp file in the same folder, then replace the target. A symlink at the target is replaced, never followed."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def safe_cell(v):
@@ -58,62 +82,72 @@ def call(q, cursor=None):
 
 
 for q in kws:
-    cursor = None
+    cursor, seen = None, set()
     for _ in range(pages):
         d = call(q, cursor)
         for a in d.get("searchResults") or []:
-            if not isinstance(a, dict) or not a.get("ad_archive_id"):
+            if not isinstance(a, dict) or not clean(a.get("ad_archive_id")):
                 continue  # a malformed entry is skipped, never a crash
             try:
                 s = a.get("snapshot") if isinstance(a.get("snapshot"), dict) else {}
-                aid = str(a["ad_archive_id"])
+                aid = clean(a["ad_archive_id"], 200)
                 if aid in ads:
                     ads[aid]["keywords"].add(q)
                     continue
-                start = a.get("start_date") if isinstance(a.get("start_date"), (int, float)) else 0
+                start = num(a.get("start_date")) or 0
                 vids = s.get("videos") if isinstance(s.get("videos"), list) else []
-                text = s.get("body", {}).get("text") if isinstance(s.get("body"), dict) else None
+                text = clean(s["body"].get("text")) if isinstance(s.get("body"), dict) else None
                 cats = s.get("page_categories") if isinstance(s.get("page_categories"), list) and s.get("page_categories") else [None]
+                plats = a.get("publisher_platform")
                 ads[aid] = dict(
-                    id=aid, page=a.get("page_name"), page_id=a.get("page_id"), page_likes=s.get("page_like_count"),
+                    id=aid, page=clean(a.get("page_name"), 300), page_id=clean(a.get("page_id"), 100), page_likes=num(s.get("page_like_count")),
                     run_days=int((now - start) // 86400) if start else None,
-                    copies=a.get("collation_count"), format=s.get("display_format"),
-                    cta=s.get("cta_text"), title=s.get("title"), body=text,
-                    link=s.get("link_url"), platforms=a.get("publisher_platform"),
-                    category=cats[0],
-                    thumb=(vids[0].get("video_preview_image_url") if vids and isinstance(vids[0], dict) else None),
-                    url=a.get("url"), keywords={q})
+                    copies=num(a.get("collation_count")), format=clean(s.get("display_format"), 50),
+                    cta=clean(s.get("cta_text"), 100), title=clean(s.get("title"), 500), body=text,
+                    link=clean(s.get("link_url"), 1000), platforms=[clean(p, 50) for p in plats] if isinstance(plats, list) else None,
+                    category=clean(cats[0], 200),
+                    thumb=clean(vids[0].get("video_preview_image_url"), 1000) if vids and isinstance(vids[0], dict) else None,
+                    url=clean(a.get("url"), 1000), keywords={q})
             except Exception:
                 malformed += 1  # one bad entry never stops the run
-        cursor = d.get("cursor")
+        cursor = clean(d.get("cursor"), 2000)
         if not cursor:
             break
+        if cursor in seen:  # the service repeated a cursor: stop, do not pay for the same page again
+            failed += 1
+            print(f"warning: repeated cursor for {q!r}; stopped paging", file=sys.stderr)
+            break
+        seen.add(cursor)
 
 rows = sorted(ads.values(), key=lambda r: -(r["run_days"] or 0))
 for r in rows:
     r["keywords"] = sorted(r["keywords"])
-json.dump(rows, open(f"{out}/ads.json", "w", encoding="utf-8"), indent=1)
 
+# Build every report in memory first, so a failure leaves no half-written set of files.
 cols = ["page", "run_days", "copies", "format", "cta", "title", "body", "link", "category", "page_likes", "keywords", "url"]
-with open(f"{out}/ads.csv", "w", newline="", encoding="utf-8") as f:
-    w = csv.writer(f)
-    w.writerow(cols)
-    for r in rows:
-        w.writerow([safe_cell("; ".join(r[c]) if c == "keywords" else r[c]) for c in cols])
+buf = io.StringIO()
+w = csv.writer(buf)
+w.writerow(cols)
+for r in rows:
+    w.writerow([safe_cell("; ".join(r[c]) if c == "keywords" else r[c]) for c in cols])
+csv_text = buf.getvalue()
+json_text = json.dumps(rows, indent=1, ensure_ascii=False)
 
 by = defaultdict(list)  # keyed by page id: names are not unique
 for r in rows:
     by[str(r["page_id"] or r["page"])].append(r)
 adv = sorted(by.items(), key=lambda kv: -len(kv[1]))
-with open(f"{out}/summary.md", "w", encoding="utf-8") as f:
-    f.write(f"# Ad research: {md(', '.join(kws))} ({country})\n\n{len(rows)} unique active ads, {len(by)} advertisers, {calls} calls ({failed} failed, {malformed} malformed entries skipped), about ${calls*0.00188:.3f}.\n\n")
-    if failed:
-        f.write(f"> **{failed} page call(s) failed.** This report is incomplete. Check `treg balance` and `treg catalog get {ENDPOINT}`.\n\n")
-    f.write("## Advertisers by number of active ads\n")
-    for p, rs in adv[:25]:
-        f.write(f"- {md(rs[0]['page'] or p)} (page {md(p)}): {len(rs)} ads, longest run {max((x['run_days'] or 0) for x in rs)} days, {md(rs[0]['category'])}\n")
-    f.write("\n## Longest-running ads (30+ days)\n")
-    for r in [x for x in rows if (x["run_days"] or 0) >= 30][:40]:
-        f.write(f"- **{md(r['page'])}** · {r['run_days']}d · {md(r['format'])} · CTA {md(r['cta'])}\n  - {md(r['title'])} | {md((r['body'] or '')[:220])}\n  - {md(r['link'])}\n")
+md_lines = [f"# Ad research: {md(', '.join(kws))} ({country})\n\n{len(rows)} unique active ads, {len(by)} advertisers, {calls} calls ({failed} failed, {malformed} malformed entries skipped), about ${calls*0.00188:.3f}.\n\n"]
+if failed:
+    md_lines.append(f"> **{failed} page call(s) failed.** This report is incomplete. Check `treg balance` and `treg catalog get {ENDPOINT}`.\n\n")
+md_lines.append("## Advertisers by number of active ads\n")
+for p, rs in adv[:25]:
+    md_lines.append(f"- {md(rs[0]['page'] or p)} (page {md(p)}): {len(rs)} ads, longest run {max((x['run_days'] or 0) for x in rs)} days, {md(rs[0]['category'])}\n")
+md_lines.append("\n## Longest-running ads (30+ days)\n")
+for r in [x for x in rows if (x["run_days"] or 0) >= 30][:40]:
+    md_lines.append(f"- **{md(r['page'])}** · {r['run_days']}d · {md(r['format'])} · CTA {md(r['cta'])}\n  - {md(r['title'])} | {md((r['body'] or '')[:220])}\n  - {md(r['link'])}\n")
+atomic_write(f"{out}/ads.json", json_text)
+atomic_write(f"{out}/ads.csv", csv_text)
+atomic_write(f"{out}/summary.md", "".join(md_lines))
 print(f"ads={len(rows)} advertisers={len(by)} calls={calls} failed={failed} skipped_entries={malformed} cost=${calls*0.00188:.3f}")
 sys.exit(4 if calls and failed == calls else 3 if failed else 0)
