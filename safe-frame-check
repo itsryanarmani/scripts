@@ -11,7 +11,7 @@ unsafe area is dimmed. The tool cannot judge the text: look at each image.
 Needs ffmpeg, ffprobe and Pillow. Exit codes: 0 done, 2 bad usage or a missing tool,
 3 the video is not 1080 x 1920 (frames are still written, scaled to fit).
 """
-import subprocess, sys, os, shutil
+import os, shutil, subprocess, sys, tempfile
 
 BOX = (65, 269, 1015, 1248)  # left, top, right, bottom on 1080 x 1920
 W, H = 1080, 1920
@@ -22,16 +22,13 @@ def usage():
     sys.exit(2)
 
 
-args = [a for a in sys.argv[1:]]
-if len(args) < 2:
-    usage()
-video, out = args[0], args[1]
+args = list(sys.argv[1:])
 at = "0,3,8,14,end"
-if "--at" in args:
-    i = args.index("--at")
-    if i + 1 >= len(args):
-        usage()
-    at = args[i + 1]
+if len(args) == 4 and args[2] == "--at":
+    at = args[3]
+elif len(args) != 2:
+    usage()  # an unknown option, a stray argument or a half option is an error, before any file is made
+video, out = args[0], args[1]
 if not os.path.isfile(video):
     print(f"no such file: {video}", file=sys.stderr)
     sys.exit(2)
@@ -52,35 +49,56 @@ try:
 except Exception:
     print("could not read the video", file=sys.stderr)
     sys.exit(2)
-shape = None  # the size of the frame as ffmpeg shows it, after any rotation metadata
-os.makedirs(out, exist_ok=True)
-stem = os.path.splitext(os.path.basename(video))[0]
-written = []
+times = []
 for tok in at.split(","):
     tok = tok.strip()
     try:
-        t = max(0.0, dur - 0.1) if tok == "end" else float(tok)
+        times.append((tok, max(0.0, dur - 0.1) if tok == "end" else float(tok)))
     except ValueError:
         print(f"bad time in --at: {tok!r} (use seconds or end)", file=sys.stderr)
         sys.exit(2)
+shape = None  # the size of the frame as ffmpeg shows it, after any rotation metadata
+os.makedirs(out, exist_ok=True)
+stem = os.path.basename(os.path.splitext(video)[0]).replace(os.sep, "_")
+written = []
+
+
+def grab(t, raw):
+    """Read the frame at or just before time t. A video with few frames has none near the end, so step back."""
     t = min(max(t, 0.0), max(0.0, dur - 0.05))
-    raw = os.path.join(out, f"{stem}_{tok}.raw.png")
-    if subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.2f}", "-i", video, "-frames:v", "1", raw]).returncode != 0 or not os.path.exists(raw):
-        print(f"ffmpeg could not read a frame at {tok}", file=sys.stderr)
-        sys.exit(2)
-    im = Image.open(raw).convert("RGB")
-    shape = shape or im.size
-    im = im.resize((W, H))
-    shade = Image.new("RGBA", im.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(shade)
-    d.rectangle((0, 0, W, H), fill=(0, 0, 0, 110))
-    d.rectangle(BOX, fill=(0, 0, 0, 0))
-    im = Image.alpha_composite(im.convert("RGBA"), shade).convert("RGB")
-    ImageDraw.Draw(im).rectangle(BOX, outline=(255, 40, 40), width=4)
-    dest = os.path.join(out, f"{stem}_{tok}.png")
-    im.save(dest)
-    os.remove(raw)
-    written.append(dest)
+    for step in (0.0, 0.5, 1.0, 1.5, 2.0, 3.0):
+        at_t = max(0.0, t - step)
+        if os.path.exists(raw):
+            os.unlink(raw)
+        ok = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{at_t:.2f}", "-i", video, "-frames:v", "1", raw]).returncode == 0
+        if ok and os.path.exists(raw) and os.path.getsize(raw) > 0:
+            return True
+        if at_t == 0.0:
+            break
+    return False
+
+
+with tempfile.TemporaryDirectory(prefix="safe-frame-") as work:  # private to this run, so parallel runs cannot clash
+    for tok, t in times:
+        raw = os.path.join(work, "frame.png")
+        if not grab(t, raw):
+            print(f"ffmpeg could not read a frame at {tok}", file=sys.stderr)
+            sys.exit(2)
+        im = Image.open(raw).convert("RGB")
+        shape = shape or im.size
+        im = im.resize((W, H))
+        shade = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(shade)
+        d.rectangle((0, 0, W, H), fill=(0, 0, 0, 110))
+        d.rectangle(BOX, fill=(0, 0, 0, 0))
+        im = Image.alpha_composite(im.convert("RGBA"), shade).convert("RGB")
+        ImageDraw.Draw(im).rectangle(BOX, outline=(255, 40, 40), width=4)
+        dest = os.path.join(out, f"{stem}_{tok}.png")
+        fd, tmp = tempfile.mkstemp(dir=out, suffix=".tmp")
+        os.close(fd)
+        im.save(tmp, format="PNG")
+        os.replace(tmp, dest)  # replaces a symlink at dest, never follows it
+        written.append(dest)
 print("\n".join(written))
 if shape != (W, H):
     print(f"warning: the video shows {shape[0]}x{shape[1]}, not {W}x{H}; frames were scaled", file=sys.stderr)

@@ -52,6 +52,7 @@ def save(path, data):
 
 
 def opt(args, name, cast=str, default=None):
+    """args holds only the option pairs that follow the positional arguments."""
     if name in args:
         i = args.index(name)
         if i + 1 >= len(args):
@@ -72,6 +73,10 @@ if cmd not in ALLOWED:
     usage()
 pos = 3 if cmd in ("start", "end") else 2
 rest = a[pos:]
+names = rest[0::2]
+if len(names) != len(set(names)):
+    print("an option was given twice", file=sys.stderr)
+    sys.exit(2)
 for i in range(0, len(rest), 2):  # every extra argument must be an allowed option followed by its value
     if rest[i] not in ALLOWED[cmd] or i + 1 >= len(rest):
         print(f"bad argument for {cmd}: {rest[i]}", file=sys.stderr)
@@ -80,8 +85,12 @@ if cmd == "start" and len(a) >= 3 and a[2].isdigit():
     print("a step name cannot be only digits: digits are row ids", file=sys.stderr)
     sys.exit(2)
 # Steps may run in parallel (several jobs at once), so take a lock around read, change and write.
-lock = open(log + ".lock", "w")
-fcntl.flock(lock, fcntl.LOCK_EX)
+try:  # never follow a symlink, never truncate: open the lock file as it is
+    lock_fd = os.open(log + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+except OSError:
+    print("cannot open the lock file (a symlink or a permission problem)", file=sys.stderr)
+    sys.exit(2)
+fcntl.flock(lock_fd, fcntl.LOCK_EX)
 data = load(log)
 now = time.time()
 if cmd == "start" and len(a) >= 3:
@@ -99,12 +108,12 @@ elif cmd == "end" and len(a) >= 3:
         sys.exit(3)
     row = open_rows[-1]
     row["end"] = now
-    row["usd"] = opt(a, "--usd", money, 0.0)
-    row["retries"] = opt(a, "--retries", count, 0)
-    row["note"] = opt(a, "--note", str, "")
+    row["usd"] = opt(rest, "--usd", money, 0.0)
+    row["retries"] = opt(rest, "--retries", count, 0)
+    row["note"] = opt(rest, "--note", str, "")
     save(log, data)
 elif cmd == "show":
-    vs = opt(a, "--video-seconds", money, None)
+    vs = opt(rest, "--video-seconds", money, None)
     rows = [s for s in data["steps"] if s["end"]]
     tot_s = sum(s["end"] - s["start"] for s in rows)
     tot_d = sum(s["usd"] or 0 for s in rows)
