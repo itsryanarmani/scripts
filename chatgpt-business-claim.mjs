@@ -6,8 +6,9 @@
 //   chatgpt-business-claim.mjs plan  <repo-dir>
 //   chatgpt-business-claim.mjs claim <repo-dir> <site...> [--yes]
 //
-// Without --yes, `claim` stops before every write and exits 0. The TXT value
-// and the API token are never printed or saved.
+// Without --yes, `claim` makes no DNS or Hub change and exits 0. This script
+// never prints or saves the API token or the TXT value. It leaves the TXT
+// record in DNS after the run, where it is public by design.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { Resolver } from "node:dns/promises";
@@ -23,6 +24,9 @@ const HUB = "https://chatgpt.com/business-hub";
 const SESSION = process.env.BROWSE_SESSION || "personal";
 const TOKEN = process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN || "";
 const OUT = process.env.CLAIM_OUT || "e2e-artifacts/chatgpt-business-claim";
+
+// The browser tool never needs the Cloudflare token.
+const { CLOUDFLARE_API_TOKEN: _a, CF_API_TOKEN: _b, ...browseEnv } = process.env;
 
 const die = (msg) => {
   console.error(`error: ${msg}`);
@@ -41,8 +45,9 @@ export function listSites(repo) {
       } catch {
         return [];
       }
-      const name = /^\s*name:\s*"([^"]+)"/m.exec(src)?.[1];
-      const domain = /^\s*domain:\s*"([^"]+)"/m.exec(src)?.[1];
+      // Top-level keys of defineDirectory({...}) sit at exactly two spaces.
+      const name = /^ {2}name:\s*"([^"]+)"/m.exec(src)?.[1];
+      const domain = /^ {2}domain:\s*"([^"]+)"/m.exec(src)?.[1];
       return name && domain ? [{ id: d.name, name, domain }] : [];
     });
 }
@@ -54,7 +59,7 @@ function browse(code, args = {}) {
   const out = execFileSync(
     "browse",
     ["execute", "--session", SESSION, body],
-    { encoding: "utf8", timeout: 120_000 },
+    { encoding: "utf8", timeout: 120_000, env: browseEnv },
   );
   return out.split("\nConsole logs:")[0].trim();
 }
@@ -82,13 +87,22 @@ async function waitForTxt(host, value, tries = 18) {
   return false;
 }
 
-async function upsertTxt(domain, host, value) {
-  const [zone] = await cf(`/zones?name=${encodeURIComponent(domain)}`);
-  if (!zone) throw new Error(`no Cloudflare zone for ${domain}`);
-  const found = await cf(`/zones/${zone.id}/dns_records?type=TXT&name=${encodeURIComponent(host)}`);
+// Read-only preflight, run before any Hub click. The token must see an active
+// zone and list its records, and no TXT may already sit at the challenge name:
+// an old one may belong to another verifier, so the script never replaces it.
+async function preflight(domain) {
+  const zones = await cf(`/zones?name=${encodeURIComponent(domain)}&status=active`);
+  if (zones.length !== 1) return { stage: `zone-not-usable: ${zones.length} active zones match` };
+  const host = `openai-business-profile.${domain}`;
+  const found = await cf(`/zones/${zones[0].id}/dns_records?type=TXT&name=${encodeURIComponent(host)}`);
+  if (found.length) return { stage: "existing-txt: stop, review by hand" };
+  return { zoneId: zones[0].id };
+}
+
+// Create only. Never PUT over a record.
+async function addTxt(zoneId, host, value) {
   const body = JSON.stringify({ type: "TXT", name: host, content: value, ttl: 60 });
-  if (found[0]) await cf(`/zones/${zone.id}/dns_records/${found[0].id}`, { method: "PUT", body });
-  else await cf(`/zones/${zone.id}/dns_records`, { method: "POST", body });
+  await cf(`/zones/${zoneId}/dns_records`, { method: "POST", body });
 }
 
 async function claim(site, yes, type) {
@@ -97,6 +111,10 @@ async function claim(site, yes, type) {
   if (!TOKEN) die("set CLOUDFLARE_API_TOKEN");
   if (!TYPES[type]) die(`pass --type ${Object.keys(TYPES).join("|")}`);
   site = { ...site, typeLabel: TYPES[type], nameRe: site.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") };
+
+  // 0. Check DNS control before the Hub sees anything.
+  const pre = await preflight(site.domain);
+  if (!pre.zoneId) return { ...r, stage: pre.stage };
 
   // 1. Search the Hub. A match means someone else's profile exists: stop.
   const search = browse(
@@ -112,7 +130,7 @@ async function claim(site, yes, type) {
   const challenge = browse(
     `await page.getByText(new RegExp("^Create .*" + A.nameRe)).first().click();
      const start = page.getByRole("button", { name: /get started/i });
-     if (await start.isVisible({ timeout: 4000 }).catch(() => false)) await start.click();
+     await start.waitFor({ state: "visible", timeout: 5000 }).then(() => start.click()).catch(() => {});
      await page.getByText(A.typeLabel).first().click();
      await page.locator("input[name=business-website]").fill("https://" + A.domain);
      await page.getByRole("button", { name: /^continue$/i }).click();
@@ -126,7 +144,7 @@ async function claim(site, yes, type) {
   if (host !== `openai-business-profile.${site.domain}`) return { ...r, stage: "unexpected-host: stop" };
 
   // 3. Write the one TXT record, then wait until a public resolver sees it.
-  await upsertTxt(site.domain, host, value);
+  await addTxt(pre.zoneId, host, value);
   if (!(await waitForTxt(host, value))) return { ...r, stage: "dns-not-visible: record written, verify by hand" };
 
   // 4. Verify. Success moves the page on to profile details.
@@ -144,7 +162,7 @@ if (!cmd || !repo) die("usage: plan|claim <repo-dir> [site...] [--yes]");
 const yes = rest.includes("--yes");
 const typeAt = rest.indexOf("--type");
 const type = typeAt >= 0 ? rest[typeAt + 1] : undefined;
-const ids = rest.filter((a, i) => !a.startsWith("--") && (typeAt < 0 || i !== typeAt + 1));
+const ids = [...new Set(rest.filter((a, i) => !a.startsWith("--") && (typeAt < 0 || i !== typeAt + 1)))];
 const sites = listSites(repo);
 
 if (cmd === "plan") {
