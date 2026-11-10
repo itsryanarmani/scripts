@@ -2,15 +2,17 @@
 """Log each production step's seconds and dollars from code, then show a table with totals.
 
 Usage:
-  prodlog LOG start STEP
-  prodlog LOG end STEP [--usd 0.12] [--retries 1] [--note "text"]
+  prodlog LOG start STEP            (prints the row id)
+  prodlog LOG end STEP_OR_ID [--usd 0.12] [--retries 1] [--note "text"]
   prodlog LOG show [--video-seconds 77]
 
 LOG is a JSON file. Rows are written by code, never by splitting shell text. Dollars are what
 you measured (a price quote or a balance difference). `show` prints seconds and dollars per
 step, the totals, and, with --video-seconds, the cost and time per finished second.
 Exit codes: 0 done, 2 bad usage, 3 `end` for a step that was never started.
-Safe to call from parallel jobs: a lock file (LOG.lock) serialises the writes.
+Safe to call from parallel jobs: a lock file (LOG.lock) serialises the writes. Parallel jobs
+that share a step name must end by the id that `start` printed, or the name is ambiguous.
+An unknown option is an error (exit 2), so a typo can never record a wrong cost.
 Standard library only.
 """
 import fcntl, json, os, sys, tempfile, time
@@ -51,16 +53,29 @@ a = sys.argv[1:]
 if len(a) < 2:
     usage()
 log, cmd = a[0], a[1]
+ALLOWED = {"start": set(), "end": {"--usd", "--retries", "--note"}, "show": {"--video-seconds"}}
+if cmd not in ALLOWED:
+    usage()
+pos = 3 if cmd in ("start", "end") else 2
+for tok in a[pos:]:
+    if tok.startswith("--") and tok not in ALLOWED[cmd]:
+        print(f"unknown option for {cmd}: {tok}", file=sys.stderr)
+        sys.exit(2)
 # Steps may run in parallel (several jobs at once), so take a lock around read, change and write.
 lock = open(log + ".lock", "w")
 fcntl.flock(lock, fcntl.LOCK_EX)
 data = load(log)
 now = time.time()
 if cmd == "start" and len(a) >= 3:
-    data["steps"].append({"step": a[2], "start": now, "end": None, "usd": None, "retries": 0, "note": ""})
+    rid = len(data["steps"]) + 1
+    data["steps"].append({"id": rid, "step": a[2], "start": now, "end": None, "usd": None, "retries": 0, "note": ""})
     save(log, data)
+    print(rid)
 elif cmd == "end" and len(a) >= 3:
-    open_rows = [s for s in data["steps"] if s["step"] == a[2] and s["end"] is None]
+    open_rows = [s for s in data["steps"] if s["end"] is None and (s["step"] == a[2] or str(s.get("id")) == a[2])]
+    if len(open_rows) > 1 and not a[2].isdigit():
+        print(f"{len(open_rows)} open steps are named {a[2]}: end one by its id", file=sys.stderr)
+        sys.exit(3)
     if not open_rows:
         print(f"step not started: {a[2]}", file=sys.stderr)
         sys.exit(3)
