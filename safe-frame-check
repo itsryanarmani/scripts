@@ -58,10 +58,16 @@ stem = os.path.splitext(os.path.basename(video))[0]
 written = []
 for tok in at.split(","):
     tok = tok.strip()
-    t = max(0.0, dur - 0.1) if tok == "end" else float(tok)
-    t = min(t, max(0.0, dur - 0.05))
+    try:
+        t = max(0.0, dur - 0.1) if tok == "end" else float(tok)
+    except ValueError:
+        print(f"bad time in --at: {tok!r} (use seconds or end)", file=sys.stderr)
+        sys.exit(2)
+    t = min(max(t, 0.0), max(0.0, dur - 0.05))
     raw = os.path.join(out, f"{stem}_{tok}.raw.png")
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.2f}", "-i", video, "-frames:v", "1", raw], check=True)
+    if subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.2f}", "-i", video, "-frames:v", "1", raw]).returncode != 0 or not os.path.exists(raw):
+        print(f"ffmpeg could not read a frame at {tok}", file=sys.stderr)
+        sys.exit(2)
     im = Image.open(raw).convert("RGB")
     shape = shape or im.size
     im = im.resize((W, H))
