@@ -109,7 +109,7 @@ const payloads = (hashes = {}) => ({
     name: `${ad.id} creative`,
     url_tags: utm(ad),
     // Keep the words and the picture as designed. Copy rules may forbid machine-written claims.
-    degrees_of_freedom_spec: { creative_features_spec: { standard_enhancements: { enroll_status: "OPT_OUT" } } },
+    degrees_of_freedom_spec: { creative_features_spec: Object.fromEntries(["text_optimizations", "image_touchups", "enhance_cta", "inline_comment", "add_text_overlay", "image_brightness_and_contrast"].map((f) => [f, { enroll_status: "OPT_OUT" }])) },
     object_story_spec: {
       page_id: c.pageId,
       link_data: {
