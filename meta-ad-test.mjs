@@ -6,6 +6,8 @@
 //   meta-ad-test.mjs plan.json --create    # uploads images, creates every object PAUSED, writes created.json
 //   I_APPROVE_SPEND=yes meta-ad-test.mjs plan.json --activate   # checks the pages, sets the flight, goes ACTIVE
 //   meta-ad-test.mjs plan.json --pause     # pauses the campaign, the ad set and every ad
+//   I_APPROVE_SPEND=yes meta-ad-test.mjs plan.json --add      # create the plan's new ads in the existing ad set, ACTIVE
+//   meta-ad-test.mjs plan.json --retire old1,old2 --after new1,new2   # pause old ads once the new ones are approved
 //   meta-ad-test.mjs plan.json --report    # spend, CTR and CPC per ad vs the plan; verdict per ad (read only)
 //   meta-ad-test.mjs plan.json --report --apply-kill-gate   # also pause every ad that hit its kill gate
 //   meta-ad-test.mjs plan.json --report --insights saved.json [--md report.md]   # offline: read a saved fixture
@@ -33,11 +35,12 @@ if (!planPath) {
   console.error("usage: meta-ad-test.mjs plan.json [--create|--activate|--pause]");
   process.exit(2);
 }
-const mode = argv.includes("--create") ? "create" : argv.includes("--activate") ? "activate" : argv.includes("--pause") ? "pause" : argv.includes("--report") ? "report" : "dry";
+const mode = argv.includes("--create") ? "create" : argv.includes("--activate") ? "activate" : argv.includes("--pause") ? "pause" : argv.includes("--report") ? "report" : argv.includes("--add") ? "add" : argv.includes("--retire") ? "retire" : "dry";
 const flagValue = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
 const insightsFile = flagValue("--insights");
 const mdFile = flagValue("--md");
 const applyKillGate = argv.includes("--apply-kill-gate");
+const idList = (name) => (flagValue(name) ?? "").split(",").map((x) => x.trim()).filter(Boolean);
 const root = dirname(resolve(planPath));
 const plan = JSON.parse(readFileSync(planPath, "utf8"));
 const { campaign: c, ads } = plan;
@@ -66,7 +69,7 @@ const TOKEN = process.env.META_MARKETING_TOKEN ?? "";
 const ACT = `act_${(process.env.META_ADS_AD_ACCOUNT_ID ?? "").replace(/^act_/, "")}`;
 const PIXEL = process.env.META_PIXEL_ID ?? "";
 const GRAPH = "https://graph.facebook.com/v21.0";
-if (mode === "report" && !existsSync(createdFile)) throw new Error("no created.json next to the plan. Run --create first.");
+if (["report", "add", "retire"].includes(mode) && !existsSync(createdFile)) throw new Error("no created.json next to the plan. Run --create first.");
 if (mode !== "dry" && !(mode === "report" && insightsFile) && (!TOKEN || ACT === "act_")) throw new Error("set META_MARKETING_TOKEN and META_ADS_AD_ACCOUNT_ID first");
 
 const scrub = (s) => (TOKEN ? String(s).split(TOKEN).join("[redacted]") : String(s));
@@ -238,6 +241,62 @@ if (mode === "activate") {
   console.log(`ACTIVE. Lifetime cap ${c.lifetimeBudget}. ${states.length - notActive.length} of ${states.length} objects ACTIVE.`);
 }
 
+
+
+// ---- add: new ads in the existing ad set. The budget does not change; the ads share it. -------------------------
+if (mode === "add") {
+  if (process.env.I_APPROVE_SPEND !== "yes") throw new Error("Adding ads changes what the budget is spent on. Set I_APPROVE_SPEND=yes.");
+  const made = JSON.parse(readFileSync(createdFile, "utf8"));
+  const retired = ads.filter((a) => made.retired?.[a.id]).map((a) => a.id);
+  if (retired.length) throw new Error(`these ads were retired and are still in the plan: ${retired.join(", ")}. Remove them from the plan so --add does not bring them back.`);
+  const fresh = ads.filter((a) => !made.ads[a.id]);
+  if (!fresh.length) {
+    console.log("nothing to add: every ad in the plan is already in created.json");
+    process.exit(0);
+  }
+  const fileFor = (ad) => join(root, plan.creativesDir ?? "creatives", ad.creative);
+  for (const ad of fresh) if (!existsSync(fileFor(ad))) throw new Error(`creative file missing for ${ad.id}: ${fileFor(ad)}`);
+  for (const ad of fresh) {
+    const res = await fetch(link(ad), { redirect: "follow" });
+    if (res.status !== 200) throw new Error(`${link(ad)} answers ${res.status}. Ship the landing page first.`);
+  }
+  const hashes = {};
+  for (const ad of fresh) {
+    const form = new FormData();
+    form.append("filename", new Blob([readFileSync(fileFor(ad))]), `${ad.id}.png`);
+    hashes[ad.id] = Object.values((await graph(`${ACT}/adimages`, "POST", form)).images)[0].hash;
+  }
+  const p = payloads(hashes);
+  for (const ad of fresh) {
+    const creative = (await graph(`${ACT}/adcreatives`, "POST", p.creative(ad))).id;
+    // ACTIVE on purpose: Meta reviews an ad when it goes live, and an unreviewed ad does not deliver.
+    made.ads[ad.id] = (await graph(`${ACT}/ads`, "POST", { ...p.ad(ad, made.adset, creative), status: "ACTIVE" })).id;
+    writeFileSync(createdFile, JSON.stringify(made, null, 2)); // save after each ad so a failure keeps the ids
+    console.log(`added ${ad.id} -> ${made.ads[ad.id]}`);
+  }
+}
+
+// ---- retire: pause old ads, but only once the ads replacing them are approved ----------------------------------
+if (mode === "retire") {
+  const made = JSON.parse(readFileSync(createdFile, "utf8"));
+  const old = idList("--retire"), after = idList("--after");
+  if (!old.length) throw new Error("--retire needs the ad ids to pause");
+  if (!after.length) throw new Error("--retire needs --after <the ads that replace them>, so a rejected ad cannot leave the test empty");
+  for (const id of [...old, ...after]) if (!made.ads[id]) throw new Error(`unknown ad id: ${id}`);
+  const both = old.filter((id) => after.includes(id));
+  if (both.length) throw new Error(`an ad cannot be both retired and its own replacement: ${both.join(", ")}`);
+  const states = await Promise.all(after.map(async (id) => [id, (await graph(`${made.ads[id]}?fields=effective_status`, "GET")).effective_status]));
+  const waiting = states.filter(([, st]) => st !== "ACTIVE");
+  if (waiting.length) throw new Error(`not retiring yet: ${waiting.map(([id, st]) => `${id} is ${st}`).join(", ")}`);
+  made.retired = made.retired ?? {};
+  for (const id of old) {
+    await graph(made.ads[id], "POST", { status: "PAUSED" });
+    made.retired[id] = made.ads[id];
+    delete made.ads[id];
+    writeFileSync(createdFile, JSON.stringify(made, null, 2));
+    console.log(`retired ${id}`);
+  }
+}
 
 // ---- report: read only unless --apply-kill-gate -------------------------------------------------------------
 if (mode === "report") {

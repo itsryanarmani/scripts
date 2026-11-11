@@ -93,6 +93,30 @@ echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"; e
 out="$(META_MARKETING_TOKEN=SECRETTOKEN META_ADS_AD_ACCOUNT_ID=1 node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --apply-kill-gate 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -qi "saved fixture" && ok "apply-kill-gate refuses to act on a saved fixture" || no "apply-kill-gate refuses to act on a saved fixture"
 
+# --add and --retire. Adding an ad spends money and retiring one stops a live ad, so every refusal comes before any network call.
+addrun() { # addrun <name> <want> <extra env...> -- <flags...>
+  name="$1"; want="$2"; shift 2
+  out="$(env META_MARKETING_TOKEN=SECRETTOKEN META_ADS_AD_ACCOUNT_ID=1 "$@" 2>&1)"; rc=$?
+  if echo "$out" | grep -qi -- "$want"; then ok "$name"; else no "$name (rc=$rc)"; echo "$out" | head -4; fi
+  echo "$out" | grep -q SECRETTOKEN && no "$name prints the token"
+}
+plan 'pass'
+rm -f "$TMP/created.json"
+addrun "add refuses with no created.json" "created.json" I_APPROVE_SPEND=yes node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --add
+echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"
+plan "p['ads'].append(dict(p['ads'][0], id='a-2', creative='missing.png'))"
+addrun "add refuses without the spend approval" "I_APPROVE_SPEND" node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --add
+addrun "add refuses a missing creative file, before any call" "creative file" I_APPROVE_SPEND=yes node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --add
+plan 'pass'
+addrun "add with nothing new says so and sends nothing" "nothing to add" I_APPROVE_SPEND=yes node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --add
+addrun "retire refuses an unknown ad id" "unknown ad id" node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --retire nope --after a-1
+addrun "retire refuses with no replacement named" "--after" node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --retire a-1
+
+echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"},"retired":{"a-0":"AD0"}}' > "$TMP/created.json"
+addrun "retire refuses an ad that is also its own replacement" "both" node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --retire a-1 --after a-1
+plan "p['ads'].append(dict(p['ads'][0], id='a-0'))"
+addrun "add refuses to bring back a retired ad" "retired" I_APPROVE_SPEND=yes node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --add
+
 # The renderer needs a browser library. Check the spec guards only when it is present.
 if node -e "require.resolve('playwright')" 2>/dev/null; then
   echo '{"brand":{"name":"B","url":"b.test"},"ads":[]}' > "$TMP/spec.json"
