@@ -113,10 +113,10 @@ def main():
     run("refuses a wrong currency", {"currency": "USD"}, [spec(), *ex], 2, ["account currency is USD"])
     run("refuses a duplicate run", {"dup": "shed_guide_ca_leads"}, [spec(), *ex], 2, ["already exists"], nowrite)
     run("refuses hardship wording", {}, [spec(lambda s: s["ads"][0].update(
-        primary_text="You can\u2019t pay for a shed? Get the guide."))], 1, ["hardship wording"])
+        primary_text="You can\u2019t\npay for a shed? Get the guide."))], 1, ["hardship wording"])
     run("refuses a number not in the source", {}, [spec(lambda s: s["ads"][0].update(
         headline="12 steps to a level base"))], 1, ["number 12 is not in the source"])
-    run("refuses a price not in the source", {}, [spec(lambda s: (s["ads"][1].update(description="Plans from $5"),
+    run("refuses a price not in the source", {}, [spec(lambda s: (s["ads"][1].update(description="From $5 or 5  USD"),
         s.update(source_text=s["source_text"] + "Plans from $50.")))], 1, [r"price \$5 is not in the source"])
     run("refuses a special category with no country", {}, [spec(lambda s: s["campaign"].update(
         special_ad_categories=["HOUSING"], special_ad_category_country=[]))], 1, ["special_ad_category_country"])
@@ -137,8 +137,9 @@ def main():
         bad += [] if c["is_adset_budget_sharing_enabled"] == "false" else ["budget sharing not off"]
         bad += [] if posts("adsets")[0]["lifetime_budget"] == "2000" else ["budget not in minor units"]
         bad += [] if all(b["status"] == "PAUSED" for k, b in STATE["posts"] if "status" in b) else ["not PAUSED"]
+        bad += [] if "{adset} plans" in posts("adcreatives")[0]["object_story_spec"] else ["copy was rewritten"]
         return bad
-    run("execute creates PAUSED, Facebook only", {}, [spec(), *ex], 0,
+    run("execute creates PAUSED, Facebook only", {}, [spec(lambda s: s["ads"][0].update(description="{adset} plans")), *ex], 0,
         ["configured=PAUSED effective=PAUSED", "lifetime_budget=2000", "link=", "All objects are PAUSED"],
         check=placements)
     def housing():

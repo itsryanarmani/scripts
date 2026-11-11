@@ -12,6 +12,7 @@ Run Python with `-I`, so that a local file named like a standard module cannot r
 ```sh
 python3 -I ad-launch spec.json                       # dry run: no write to Meta
 python3 -I ad-launch spec.json --execute --accept-currency CAD
+python3 -I ad-launch.test.py                         # E2E test on a fake Graph API server
 ```
 
 | Flag or variable | Meaning |
@@ -59,7 +60,3 @@ The copy guard refuses wording about the reader's own hardship ("behind on",
 - **Currency.** The budget is in the ad account currency. `--accept-currency` confirms it.
 - **Rate limit.** Code 17 / 2446079: waits of 60, 120, 240 s, then stop. No other retries.
 - **Page-creation limit.** Meta limits new Pages per account. Create the Page days before.
-
-## Test
-
-`python3 -I ad-launch.test.py` runs the real tool on a fake Graph API server. Cases are at its top.

@@ -10,7 +10,7 @@ HARDSHIP = re.compile(
     r"facing foreclosure|behind on|can'?t pay|cannot pay|los(e|ing) your (home|house|job)|save your home|"
     r"your (debt|mortgage|loan|credit|diagnosis|condition)|struggl|in trouble|are you (broke|in debt|sick)|"
     r"\bdo you have\b|\bare you\b", re.I)
-PRICE = re.compile(r"(?:[$€£]|\b[A-Z]{3})\s?\d[\d,]*(?:\.\d+)?")
+PRICE = re.compile(r"(?:[$€£]|\b[A-Z]{3}\b)\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:[$€£]|\b[A-Z]{3}\b)")
 SECRETS = []
 def scrub(s):
     s = re.sub(r"(access_token=)[^&\s\"']+", r"\1<redacted>", str(s))
@@ -62,11 +62,9 @@ def validate(spec, spec_dir, source):
     flat = lambda p: re.sub(r"\s+", "", p)
     src_prices = {flat(p) for p in PRICE.findall(source)}  # whole prices: $5 is not $50
     for ad in spec["ads"]:
-        copy = " ".join(ad.get(k, "") for k in ("primary_text", "headline", "description"))
+        copy = " ".join(" ".join(ad.get(k, "") for k in ("primary_text", "headline", "description")).split())
         t, copy = ad["id"], copy.replace("\u2019", "'").replace("\u2018", "'")  # curly quotes
-        m = HARDSHIP.search(copy)
-        if m:
-            problems.append(f"{t}: hardship wording '{m.group()}'")
+        problems += [f"{t}: hardship wording '{m.group()}'" for m in [HARDSHIP.search(copy)] if m]
         problems += [f"{t}: price {p} is not in the source text" for p in PRICE.findall(copy)
                      if flat(p) not in src_prices]
         problems += [f"{t}: number {n} is not in the source text"
@@ -115,7 +113,7 @@ def build_plan(spec, ids, start, instagram):
         plan += [("image", f"{acct}/adimages", {"image": ad["image"], "_ad": ad["id"]}),
                  ("creative", f"{acct}/adcreatives", {"name": ad["name"] + "_creative", "object_story_spec": oss,
                                                       "_ad": ad["id"]}),
-                 ("ad", f"{acct}/ads", {"name": ad["name"], "adset_id": "{adset}", "status": "PAUSED",
+                 ("ad", f"{acct}/ads", {"name": ad["name"], "adset_id": "{adset}", "status": "PAUSED", "_ad": ad["id"],
                                         "creative": {"creative_id": "{creative:%s}" % ad["id"]}})]
     for _, _, body in plan:
         paused_only(body)
@@ -134,8 +132,12 @@ def execute(g, plan, spec_dir):
                 return made, f"image upload failed: http={s} {json.dumps(r)}"
             ref[f"hash:{ad_id}"] = next(iter(r["images"].values()))["hash"]
             continue
-        body = json.loads(re.sub(r"\{((?:campaign|adset)|(?:hash|creative):[^}]+)\}",
-                                 lambda m: ref[m.group(1)], json.dumps(body)))
+        if kind == "adset":  # fill only the id fields; copy and links stay as validated
+            body["campaign_id"] = ref["campaign"]
+        if kind == "creative":
+            body["object_story_spec"]["link_data"]["image_hash"] = ref[f"hash:{ad_id}"]
+        if kind == "ad":
+            body.update(adset_id=ref["adset"], creative={"creative_id": ref[f"creative:{ad_id}"]})
         paused_only(body)
         s, r = g.call("POST", path, body)
         if s != 200 or "id" not in r:
