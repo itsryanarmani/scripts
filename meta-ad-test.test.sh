@@ -58,7 +58,7 @@ report() { # report <name> <plan-mutation> <insights-json> <expected text> [extr
 }
 GATE='p["ads"][0]["killGate"]="Stop this ad if it has spent CAD 12 with fewer than 2 link clicks."'
 FIX_NONE='{"adset":{"effective_status":"ACTIVE","lifetime_budget":"10000","budget_remaining":"10000"},"ads":{"AD1":{"effective_status":"ACTIVE"}},"insights":[]}'
-FIX_DEAD='{"adset":{"effective_status":"ACTIVE","lifetime_budget":"10000","budget_remaining":"9000"},"ads":{"AD1":{"effective_status":"ACTIVE"}},"insights":[{"ad_id":"AD1","spend":"13.00","impressions":"2000","inline_link_clicks":"1","inline_link_click_ctr":"0.05","cost_per_inline_link_click":"13.00"}]}'
+FIX_DEAD='{"currency":"CAD","adset":{"effective_status":"ACTIVE","lifetime_budget":"10000","budget_remaining":"9000"},"ads":{"AD1":{"effective_status":"ACTIVE"}},"insights":[{"ad_id":"AD1","spend":"13.00","impressions":"2000","inline_link_clicks":"1","inline_link_click_ctr":"0.05","cost_per_inline_link_click":"13.00"}]}'
 FIX_EARLY='{"adset":{"effective_status":"ACTIVE","lifetime_budget":"10000","budget_remaining":"9990"},"ads":{"AD1":{"effective_status":"ACTIVE"}},"insights":[{"ad_id":"AD1","spend":"1.00","impressions":"300","inline_link_clicks":"0","inline_link_click_ctr":"0","cost_per_inline_link_click":"0"}]}'
 FIX_GOOD='{"adset":{"effective_status":"ACTIVE","lifetime_budget":"10000","budget_remaining":"9000"},"ads":{"AD1":{"effective_status":"ACTIVE"}},"insights":[{"ad_id":"AD1","spend":"6.00","impressions":"1500","inline_link_clicks":"20","inline_link_click_ctr":"1.33","cost_per_inline_link_click":"0.30"}]}'
 
@@ -73,6 +73,20 @@ report "an unreadable kill gate is flagged, never KILL"    "pass"  "$FIX_DEAD"  
 report "low CTR on 300 impressions is WAIT, not WATCH"     "$GATE" "$FIX_EARLY" "WAIT"
 report "CTR above the expected range is LEADING"           "$GATE" "$FIX_GOOD"  "LEADING"
 report "the hypothesis is printed with each ad"            "$GATE" "$FIX_GOOD"  "hypothesis: h"
+
+# A gate is acted on only in its exact form, with a currency. A guess pauses the wrong ad.
+GATE_NEG='p["ads"][0]["killGate"]="Do not stop this ad if it has spent CAD 12 with fewer than 2 link clicks."'
+GATE_NOCUR='p["ads"][0]["killGate"]="Stop this ad if it has spent 12 with fewer than 2 link clicks."'
+GATE_EXTRA='p["ads"][0]["killGate"]="Stop this ad if it has spent CAD 12 with fewer than 2 link clicks and a bad week."'
+report "a negated gate is flagged, never KILL"            "$GATE_NEG"   "$FIX_DEAD" "gate unreadable"
+report "a gate with no currency is flagged, never KILL"   "$GATE_NOCUR" "$FIX_DEAD" "gate unreadable"
+report "a gate with extra conditions is flagged"          "$GATE_EXTRA" "$FIX_DEAD" "gate unreadable"
+report "a gate in the wrong currency is flagged"          "p['ads'][0]['killGate']='Stop this ad if it has spent USD 12 with fewer than 2 link clicks.'" '{"currency":"CAD","adset":{"effective_status":"ACTIVE"},"ads":{"AD1":{"effective_status":"ACTIVE"}},"insights":[{"ad_id":"AD1","spend":"13.00","impressions":"2000","inline_link_clicks":"1","inline_link_click_ctr":"0.05","cost_per_inline_link_click":"13.00"}]}' "gate unreadable"
+# The markdown file must not carry a token even when the plan text does.
+plan "p['ads'][0]['hypothesis']='leaks SECRETTOKEN'; $GATE"
+echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"; echo "$FIX_GOOD" > "$TMP/insights.json"
+META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --md "$TMP/r.md" >/dev/null 2>&1
+grep -q SECRETTOKEN "$TMP/r.md" && no "markdown report leaks the token" || ok "markdown report never carries the token"
 
 plan "p['ads'][0]['expected']={'ctr':'0.6-1.0%'}; $GATE"
 echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"; echo "$FIX_DEAD" > "$TMP/insights.json"

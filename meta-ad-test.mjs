@@ -219,7 +219,9 @@ if (mode === "activate") {
     await sleep(35_000); // the flight call counts against the ad set's rate limit
   } catch (err) {
     if (!/1815377/.test(err.message)) throw err;
-    console.log("flight already locked by Meta; keeping the saved dates");
+    const saved = await graph(`${made.adset}?fields=end_time`, "GET");
+    if (!(Date.parse(saved.end_time) > Date.now() + 3_600_000)) throw new Error(`flight is locked and the saved end time ${saved.end_time} is not in the future. Recreate the ad set.`);
+    console.log(`flight already locked by Meta; keeping the saved dates (ends ${saved.end_time})`);
   }
   try {
     for (const id of [made.adset, ...Object.values(made.ads), made.campaign]) await retryRate(() => graph(id, "POST", { status: "ACTIVE" }));
@@ -240,29 +242,45 @@ if (mode === "activate") {
 if (mode === "report") {
   if (applyKillGate && insightsFile) throw new Error("--apply-kill-gate refuses to act on a saved fixture. Run it against the live account.");
   const made = JSON.parse(readFileSync(createdFile, "utf8"));
+  async function allInsights() {
+    // Follow every page. An ad on a later page would otherwise read as no delivery and escape its gate.
+    const rows = [];
+    let after;
+    do {
+      const r = await graph(`${made.adset}/insights?level=ad&date_preset=maximum&limit=100&fields=ad_id,spend,impressions,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click${after ? `&after=${after}` : ""}`, "GET");
+      rows.push(...(r.data ?? []));
+      after = r.paging?.next ? r.paging.cursors?.after : undefined;
+    } while (after);
+    return rows;
+  }
   const read = insightsFile
     ? JSON.parse(readFileSync(insightsFile, "utf8"))
     : {
         adset: await graph(`${made.adset}?fields=effective_status,lifetime_budget,budget_remaining`, "GET"),
         ads: Object.fromEntries(await Promise.all(Object.values(made.ads).map(async (id) => [id, await graph(`${id}?fields=effective_status`, "GET")]))),
-        insights: (await graph(`${made.adset}/insights?level=ad&date_preset=maximum&fields=ad_id,spend,impressions,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click`, "GET")).data ?? [],
+        currency: (await graph(`${ACT}?fields=currency`, "GET")).currency,
+        insights: await allInsights(),
       };
   const range = (text) => {
     const m = /(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/.exec(String(text ?? ""));
     return m ? [Number(m[1]), Number(m[2])] : null;
   };
   const parseGate = (text) => {
-    const m = /spent\s+(?:[A-Za-z]{3}|\$)?\s*(\d+(?:\.\d+)?)\s+with fewer than\s+(\d+)\s+link clicks?/i.exec(String(text ?? ""));
-    return m ? { spend: Number(m[1]), clicks: Number(m[2]) } : null;
+    // Exact form only, with a currency code. A looser match can pause the wrong ad.
+    const m = /^Stop this ad if it has spent ([A-Z]{3}) (\d+(?:\.\d+)?) with fewer than (\d+) link clicks?\.?$/.exec(String(text ?? "").trim());
+    return m ? { currency: m[1], spend: Number(m[2]), clicks: Number(m[3]) } : null;
   };
   const MIN_IMPRESSIONS = 1000;
   const rows = ads.map((ad) => {
     const id = made.ads[ad.id];
     const row = (read.insights ?? []).find((r) => r.ad_id === id);
     const status = read.ads?.[id]?.effective_status ?? "UNKNOWN";
+    // Meta leaves a metric out of a row when it is zero, so a missing click count on a row that has impressions means zero.
     const spend = Number(row?.spend ?? 0), impressions = Number(row?.impressions ?? 0), clicks = Number(row?.inline_link_clicks ?? 0);
     const ctr = Math.round(Number(row?.inline_link_click_ctr ?? 0) * 100) / 100, cpc = Math.round(Number(row?.cost_per_inline_link_click ?? 0) * 100) / 100;
-    const gate = parseGate(ad.killGate), expCtr = range(ad.expected?.ctr), expCpcText = ad.expected?.cpc ?? Object.entries(ad.expected ?? {}).find(([k]) => /cpc/i.test(k))?.[1], expCpc = range(expCpcText);
+    const parsed = parseGate(ad.killGate);
+    const gate = parsed && read.currency && parsed.currency === read.currency ? parsed : null;
+    const expCtr = range(ad.expected?.ctr), expCpcText = ad.expected?.cpc ?? Object.entries(ad.expected ?? {}).find(([k]) => /cpc/i.test(k))?.[1], expCpc = range(expCpcText);
     const notes = [];
     if (!gate) notes.push("gate unreadable: not acted on, check it by hand");
     let verdict, why;
@@ -290,10 +308,10 @@ if (mode === "report") {
   console.log(scrub(out.join("\n")));
   if (mdFile) {
     const md = ["| ad | verdict | spend | impressions | link clicks | CTR | CPC | hypothesis |", "|---|---|---|---|---|---|---|---|", ...rows.map((r) => `| ${r.ad.id} | ${r.verdict} | ${r.spend.toFixed(2)} | ${r.impressions} | ${r.clicks} | ${r.ctr}% | ${r.cpc} | ${String(r.ad.hypothesis).replace(/\|/g, "/")} |`)];
-    writeFileSync(mdFile, md.join("\n") + "\n");
+    writeFileSync(mdFile, scrub(md.join("\n") + "\n"));
   }
   if (applyKillGate) {
-    for (const r of rows.filter((x) => x.verdict === "KILL" && x.status === "ACTIVE")) {
+    for (const r of rows.filter((x) => x.verdict === "KILL" && !["PAUSED", "ARCHIVED", "DELETED"].includes(x.status))) {
       await graph(r.id, "POST", { status: "PAUSED" });
       console.log(`PAUSED ${r.ad.id}: ${r.why}`);
     }
