@@ -247,6 +247,8 @@ if (mode === "activate") {
 if (mode === "add") {
   if (process.env.I_APPROVE_SPEND !== "yes") throw new Error("Adding ads changes what the budget is spent on. Set I_APPROVE_SPEND=yes.");
   const made = JSON.parse(readFileSync(createdFile, "utf8"));
+  const retired = ads.filter((a) => made.retired?.[a.id]).map((a) => a.id);
+  if (retired.length) throw new Error(`these ads were retired and are still in the plan: ${retired.join(", ")}. Remove them from the plan so --add does not bring them back.`);
   const fresh = ads.filter((a) => !made.ads[a.id]);
   if (!fresh.length) {
     console.log("nothing to add: every ad in the plan is already in created.json");
@@ -281,6 +283,8 @@ if (mode === "retire") {
   if (!old.length) throw new Error("--retire needs the ad ids to pause");
   if (!after.length) throw new Error("--retire needs --after <the ads that replace them>, so a rejected ad cannot leave the test empty");
   for (const id of [...old, ...after]) if (!made.ads[id]) throw new Error(`unknown ad id: ${id}`);
+  const both = old.filter((id) => after.includes(id));
+  if (both.length) throw new Error(`an ad cannot be both retired and its own replacement: ${both.join(", ")}`);
   const states = await Promise.all(after.map(async (id) => [id, (await graph(`${made.ads[id]}?fields=effective_status`, "GET")).effective_status]));
   const waiting = states.filter(([, st]) => st !== "ACTIVE");
   if (waiting.length) throw new Error(`not retiring yet: ${waiting.map(([id, st]) => `${id} is ${st}`).join(", ")}`);

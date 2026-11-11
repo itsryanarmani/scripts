@@ -112,6 +112,11 @@ addrun "add with nothing new says so and sends nothing" "nothing to add" I_APPRO
 addrun "retire refuses an unknown ad id" "unknown ad id" node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --retire nope --after a-1
 addrun "retire refuses with no replacement named" "--after" node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --retire a-1
 
+echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"},"retired":{"a-0":"AD0"}}' > "$TMP/created.json"
+addrun "retire refuses an ad that is also its own replacement" "both" node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --retire a-1 --after a-1
+plan "p['ads'].append(dict(p['ads'][0], id='a-0'))"
+addrun "add refuses to bring back a retired ad" "retired" I_APPROVE_SPEND=yes node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --add
+
 # The renderer needs a browser library. Check the spec guards only when it is present.
 if node -e "require.resolve('playwright')" 2>/dev/null; then
   echo '{"brand":{"name":"B","url":"b.test"},"ads":[]}' > "$TMP/spec.json"
