@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# gmail-sendas-add — add Gmail "Send mail as" aliases through the Gmail UI
+# (the only path that works on consumer Gmail; sendAs.create is restricted
+# to Workspace domain-wide delegation), then auto-confirm the verification
+# email when it lands in the same Gmail via a forward.
+#
+# Requirements: agent-browser (a session already signed into the Gmail
+# account), gog CLI (reads mail to extract the confirmation link), and an
+# env file exporting the SMTP password.
+#
+# Env:
+#   GMAIL_ACCOUNT    the primary Gmail address (required)
+#   AB_SESSION       agent-browser session to drive (required)
+#   SMTP_ENV         file exporting SMTP_PASSWORD (required)
+#   SMTP_HOST        default smtp.mx.cloudflare.net
+#   SMTP_PORT        default 465
+#   SMTP_USER        default api_token (Cloudflare Email Service shape)
+#   ALIAS_LOCAL      local part of the alias, default "pooria"
+#
+# Usage: gmail-sendas-add domain [domain ...]
+# Results land in ./sendas-results.txt: VERIFIED | PENDING <why> | FAIL <why>
+set -u
+: "${GMAIL_ACCOUNT:?set GMAIL_ACCOUNT}"
+: "${AB_SESSION:?set AB_SESSION (agent-browser session signed into Gmail)}"
+: "${SMTP_ENV:?set SMTP_ENV (file exporting SMTP_PASSWORD)}"
+SMTP_HOST="${SMTP_HOST:-smtp.mx.cloudflare.net}"
+SMTP_PORT="${SMTP_PORT:-465}"
+SMTP_USER="${SMTP_USER:-api_token}"
+ALIAS_LOCAL="${ALIAS_LOCAL:-pooria}"
+set -a; . "$SMTP_ENV"; set +a
+: "${SMTP_PASSWORD:?SMTP_ENV must export SMTP_PASSWORD}"
+AB="agent-browser --session $AB_SESSION"
+RESULTS=sendas-results.txt
+
+popup_tab(){ $AB tab list 2>/dev/null | grep "view=cf" | tail -1 | grep -oE "t[0-9]+"; }
+
+wait_for(){
+  local needle="$1" tries="${2:-12}"
+  for i in $(seq 1 "$tries"); do
+    if $AB eval "(()=>document.body.innerText)()" 2>/dev/null | grep -q "$needle"; then return 0; fi
+    sleep 2
+  done; return 1
+}
+
+for domain in "$@"; do
+  alias="$ALIAS_LOCAL@$domain"
+  $AB open "https://mail.google.com/mail/u/0/#settings/accounts" >/dev/null 2>&1; sleep 4
+  $AB find text "Add another email address" click >/dev/null 2>&1; sleep 3
+  PT=$(popup_tab)
+  [ -z "$PT" ] && { echo "$alias FAIL no-popup" >> "$RESULTS"; continue; }
+  $AB tab "$PT" >/dev/null 2>&1
+  wait_for "Enter information" || { echo "$alias FAIL step1" >> "$RESULTS"; $AB tab "$PT" >/dev/null 2>&1; $AB tab close >/dev/null 2>&1; continue; }
+  $AB fill "input[name=cfa]" "$alias" >/dev/null 2>&1
+  $AB click "#bttn_sub" >/dev/null 2>&1
+  wait_for "Send mail through your SMTP" || { echo "$alias FAIL step2" >> "$RESULTS"; $AB tab "$PT" >/dev/null 2>&1; $AB tab close >/dev/null 2>&1; continue; }
+  $AB fill "input[name=cfss]" "$SMTP_HOST" >/dev/null 2>&1
+  $AB select "select[name=cfsp]" "$SMTP_PORT" >/dev/null 2>&1
+  $AB fill "input[name=cfsl]" "$SMTP_USER" >/dev/null 2>&1
+  $AB fill "input[name=cfsw]" "$SMTP_PASSWORD" >/dev/null 2>&1
+  $AB click "#focus" >/dev/null 2>&1
+  wait_for "confirmation link\|Authentication\|failed" 8
+  $AB eval "(()=>document.body.innerText)()" 2>/dev/null | grep -q "confirmation link" \
+    || { echo "$alias FAIL smtp" >> "$RESULTS"; $AB tab "$PT" >/dev/null 2>&1; $AB tab close >/dev/null 2>&1; continue; }
+  MSGID=""
+  for i in $(seq 1 15); do
+    MSGID=$(gog gmail search "to:$alias subject:\"Gmail Confirmation\"" -a "$GMAIL_ACCOUNT" -j --results-only --select id 2>/dev/null \
+      | python3 -c "import json,sys;d=json.load(sys.stdin);print(d[0]['id'] if d else '')" 2>/dev/null)
+    [ -n "$MSGID" ] && break; sleep 6
+  done
+  [ -z "$MSGID" ] && { echo "$alias PENDING no-email" >> "$RESULTS"; $AB tab "$PT" >/dev/null 2>&1; $AB tab close >/dev/null 2>&1; continue; }
+  LINK=$(gog gmail raw "$MSGID" -a "$GMAIL_ACCOUNT" 2>/dev/null | python3 -c "
+import json,sys,base64,re
+d=json.load(sys.stdin);p=d.get('payload',{})
+def B(x):
+    for pt in x.get('parts',[x]):
+        if pt.get('body',{}).get('data'): yield base64.urlsafe_b64decode(pt['body']['data']+'==').decode('utf-8','replace')
+        yield from B(pt) if pt.get('parts') else iter(())
+m=re.findall(r'https://mail\.google\.com/mail/f-\S+','\n'.join(B(p)))
+print(m[0].rstrip('\"<>.,)') if m else '')")
+  [ -z "$LINK" ] && { echo "$alias PENDING no-link" >> "$RESULTS"; $AB tab "$PT" >/dev/null 2>&1; $AB tab close >/dev/null 2>&1; continue; }
+  $AB tab "$PT" >/dev/null 2>&1
+  $AB open "$LINK" >/dev/null 2>&1; sleep 4
+  $AB click "input[type=submit][value=Confirm]" >/dev/null 2>&1; sleep 4
+  $AB eval "(()=>document.body.innerText)()" 2>/dev/null | grep -q "Confirmation Success" \
+    && echo "$alias VERIFIED" >> "$RESULTS" || echo "$alias FAIL confirm" >> "$RESULTS"
+  $AB tab "$PT" >/dev/null 2>&1; $AB tab close >/dev/null 2>&1
+done
+cat "$RESULTS"
