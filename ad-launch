@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""ad-launch: create one Meta image-ad test from an ad spec, all PAUSED. Dry run by default.
+No code path sets ACTIVE: a human activates in Ads Manager. See ad-launch.md."""
+import argparse, base64, datetime as dt, json, os, re, sys, time
+import urllib.error, urllib.parse, urllib.request
+RATE_LIMIT = (17, 2446079)  # ads-management "user request limit reached"; nothing else is retried
+WAITS = (60, 120, 240)
+PAUSED_STATES = {"PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED"}
+HARDSHIP = re.compile(
+    r"facing foreclosure|behind on|can'?t pay|cannot pay|los(e|ing) your (home|house|job)|save your home|"
+    r"your (debt|mortgage|loan|credit|diagnosis|condition)|struggl|in trouble|are you (broke|in debt|sick)|"
+    r"\bdo you have\b|\bare you\b", re.I)
+CUR = r"(?:[$€£]|\b(?:[A-Z]{3}|(?i:usd|cad|eur|gbp|aud|nzd|jpy|inr|chf|mxn|dollars?|euros?|pounds?|bucks))\b)"
+PRICE = re.compile(rf"{CUR}\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*{CUR}")
+SECRETS = []
+def scrub(s):
+    s = re.sub(r"(access_token=)[^&\s\"']+", r"\1<redacted>", str(s))
+    for v in SECRETS:
+        s = s.replace(v, "<redacted>")
+    return s
+say = lambda *parts: print(scrub(" ".join(str(p) for p in parts)), flush=True)
+def load_env(path):
+    pairs = (l.strip().split("=", 1) for l in open(path) if "=" in l and not l.strip().startswith("#"))
+    return {k.strip(): v.strip().strip("\"'") for k, v in pairs}
+class Graph:
+    def __init__(self, token, version):
+        self.token = token
+        self.base = os.environ.get("AD_LAUNCH_GRAPH_URL", "https://graph.facebook.com").rstrip("/") + "/" + version
+        self.scale = float(os.environ.get("AD_LAUNCH_SLEEP_SCALE", "1"))  # tests set 0
+    def call(self, method, path, params=None):
+        for attempt in range(len(WAITS) + 1):
+            status, body = self._once(method, path, params)
+            err = body.get("error") or {}
+            if (err.get("code"), err.get("subcode")) != RATE_LIMIT or attempt == len(WAITS):
+                return status, body
+            say(f"   rate limited (code 17 / 2446079) on {method} {path.split('/')[-1]}; "
+                f"retry {attempt + 1}/{len(WAITS)} in {WAITS[attempt]}s")
+            time.sleep(WAITS[attempt] * self.scale)
+    def _once(self, method, path, params):
+        enc = urllib.parse.urlencode({k: v if isinstance(v, str) else json.dumps(v) for k, v in (params or {}).items()})
+        url = f"{self.base}/{path}" + (f"?{enc}" if method == "GET" else "")
+        # The token goes in a header, never in the URL, so a logged URL cannot leak it.
+        req = urllib.request.Request(url, data=None if method == "GET" else enc.encode(), method=method,
+                                     headers={"Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            err = json.loads(raw).get("error", {}) if raw.strip().startswith(b"{") else {}
+            return e.code, {"error": {"code": err.get("code"), "subcode": err.get("error_subcode"),
+                                      "message": scrub(err.get("message", ""))}}
+numbers = lambda text: set(re.findall(r"\d+(?:[.,]\d+)?", text))
+def validate(spec, spec_dir, source):
+    problems, c, a = [], spec["campaign"], spec["ad_set"]
+    cats = c.get("special_ad_categories") or []
+    if cats and not c.get("special_ad_category_country"):
+        problems.append("special_ad_categories is set, so special_ad_category_country is required")
+    if "HOUSING" in cats and (a.get("age_min") != 18 or a.get("age_max") != 65):
+        problems.append("HOUSING needs age_min 18 and age_max 65")
+    problems += [f"ad_set.{k} is required" for k in ("lifetime_budget", "duration_days", "countries") if not a.get(k)]
+    problems += [] if source.strip() else ["source_text or source_text_file is required for the copy guard"]
+    flat = lambda p: re.sub(r"\s+", "", p).lower()
+    src_prices = {flat(p) for p in PRICE.findall(source)}  # whole prices: $5 is not $50
+    for ad in spec["ads"]:
+        copy = " ".join(" ".join(ad.get(k, "") for k in ("primary_text", "headline", "description")).split())
+        t, copy = ad["id"], copy.replace("\u2019", "'").replace("\u2018", "'")  # curly quotes
+        problems += [f"{t}: hardship wording '{m.group()}'" for m in [HARDSHIP.search(copy)] if m]
+        problems += [f"{t}: price {p} is not in the source text" for p in PRICE.findall(copy)
+                     if flat(p) not in src_prices]
+        problems += [f"{t}: number {n} is not in the source text"
+                     for n in sorted(numbers(PRICE.sub(" ", copy)) - numbers(source))]
+        if not os.path.isfile(os.path.join(spec_dir, ad["image"])):
+            problems.append(f"{t}: image not found: {ad['image']}")
+        if not ad["link_url"].startswith(("https://", "http://")):
+            problems.append(f"{t}: link_url must be an absolute URL")
+    return problems
+def landing_status(url):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ad-launch/1.0"}), timeout=20) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception as e:  # an unreachable page is a result, not a crash
+        return type(e).__name__
+def build_plan(spec, ids, start, instagram):
+    c, a, acct = spec["campaign"], spec["ad_set"], ids["account"]
+    cats = c.get("special_ad_categories") or []
+    targeting = {"geo_locations": {"countries": a["countries"], "location_types": ["home", "recent"]},
+                 "age_min": a["age_min"], "age_max": a["age_max"], "targeting_automation": {"advantage_audience": 0},
+                 "publisher_platforms": ["facebook"], "facebook_positions": ["feed"]}
+    if instagram:  # Instagram placements only when the Page has an Instagram identity
+        targeting.update(publisher_platforms=["facebook", "instagram"], instagram_positions=["stream"])
+    plan = [("campaign", f"{acct}/campaigns", {
+        "name": c["name"], "objective": c.get("objective", "OUTCOME_LEADS"), "status": "PAUSED",
+        "buying_type": "AUCTION", "special_ad_categories": cats,
+        **({"special_ad_category_country": c["special_ad_category_country"]} if cats else {}),
+        "is_adset_budget_sharing_enabled": False}),  # the budget is on the ad set, so Meta needs this flag
+        ("adset", f"{acct}/adsets", {
+            "name": a["name"], "campaign_id": "{campaign}", "status": "PAUSED",
+            "lifetime_budget": int(round(a["lifetime_budget"] * 100)),  # minor units of the account currency
+            "start_time": start.isoformat(), "end_time": (start + dt.timedelta(days=a["duration_days"])).isoformat(),
+            "billing_event": "IMPRESSIONS", "optimization_goal": a.get("optimization_goal", "OFFSITE_CONVERSIONS"),
+            "bid_strategy": "LOWEST_COST_WITHOUT_CAP", "destination_type": "WEBSITE",
+            "promoted_object": {"pixel_id": ids["pixel"], "custom_event_type": a.get("custom_event_type", "LEAD")},
+            "targeting": targeting})]
+    for ad in spec["ads"]:
+        oss = {"page_id": ids["page"], "link_data": {
+            "link": ad["link_url"], "message": ad["primary_text"], "name": ad["headline"],
+            "description": ad["description"], "image_hash": "{hash:%s}" % ad["id"],
+            "call_to_action": {"type": ad.get("cta", "LEARN_MORE"), "value": {"link": ad["link_url"]}}}}
+        if instagram:
+            oss["instagram_user_id"] = instagram
+        plan += [("image", f"{acct}/adimages", {"image": ad["image"], "_ad": ad["id"]}),
+                 ("creative", f"{acct}/adcreatives", {"name": ad["name"] + "_creative", "object_story_spec": oss,
+                                                      "_ad": ad["id"]}),
+                 ("ad", f"{acct}/ads", {"name": ad["name"], "adset_id": "{adset}", "status": "PAUSED", "_ad": ad["id"],
+                                        "creative": {"creative_id": "{creative:%s}" % ad["id"]}})]
+    for _, _, body in plan:
+        paused_only(body)
+    return plan
+def paused_only(body):  # hard guard: no write may carry any status but PAUSED
+    if body.get("status", "PAUSED") != "PAUSED" or "ACTIVE" in json.dumps(body):
+        raise SystemExit("internal guard: a write is not PAUSED")
+def execute(g, plan, spec_dir):
+    made, ref = [], {}
+    for kind, path, body in plan:
+        ad_id = body.pop("_ad", None)
+        if kind == "image":
+            raw = open(os.path.join(spec_dir, body["image"]), "rb").read()
+            s, r = g.call("POST", path, {"bytes": base64.b64encode(raw).decode()})
+            if s != 200 or "images" not in r:
+                return made, f"image upload failed: http={s} {json.dumps(r)}"
+            ref[f"hash:{ad_id}"] = next(iter(r["images"].values()))["hash"]
+            continue
+        if kind == "adset":  # fill only the id fields; copy and links stay as validated
+            body["campaign_id"] = ref["campaign"]
+        if kind == "creative":
+            body["object_story_spec"]["link_data"]["image_hash"] = ref[f"hash:{ad_id}"]
+        if kind == "ad":
+            body.update(adset_id=ref["adset"], creative={"creative_id": ref[f"creative:{ad_id}"]})
+        paused_only(body)
+        s, r = g.call("POST", path, body)
+        if s != 200 or "id" not in r:
+            return made, f"{kind} create failed: http={s} {json.dumps(r)}"
+        made.append((kind, r["id"], body["name"]))
+        ref[kind if kind in ("campaign", "adset") else f"{kind}:{ad_id}"] = r["id"]
+    return made, None
+FIELDS = {"campaign": "name,configured_status,effective_status,special_ad_categories,special_ad_category_country",
+          "adset": "name,configured_status,effective_status,lifetime_budget,start_time,end_time,targeting",
+          "creative": "name,object_story_spec", "ad": "name,configured_status,effective_status,creative"}
+def read_back(g, made):
+    say("\nREAD-BACK (check every line before anyone activates):")
+    warn = 0  # count of objects that are not PAUSED or not readable
+    for kind, oid, _ in made:
+        s, r = g.call("GET", oid, {"fields": FIELDS[kind]})
+        v = r.get
+        bad = s != 200 or kind != "creative" and (v("configured_status") != "PAUSED" or v("effective_status") not in PAUSED_STATES)
+        say(f"- {kind} {oid} http={s} {v('name')}" + ("" if kind == "creative" else
+            f" configured={v('configured_status')} effective={v('effective_status')}"))
+        if bad:
+            say(f"  WARNING: {kind} {oid} is not PAUSED or could not be read. Check it in Ads Manager now.")
+        warn += bad
+        say({"campaign": f"  special_ad_categories={v('special_ad_categories')} country={v('special_ad_category_country')}",
+             "adset": f"  lifetime_budget={v('lifetime_budget')} (minor units) start={v('start_time')} end={v('end_time')}"
+                      f"\n  targeting={json.dumps(v('targeting'), sort_keys=True)}",
+             "creative": f"  link={((v('object_story_spec') or {}).get('link_data') or {}).get('link')}",
+             "ad": f"  creative={v('creative')}"}[kind])
+    return warn
+def refusals(args, spec, ids, token, g):
+    need = (("--ad-account-id", args.ad_account_id), ("--page-id", args.page_id), ("--pixel-id", args.pixel_id),
+            ("META_MARKETING_TOKEN in the env file", token))
+    if any(not v for _, v in need):
+        return [f"missing {n}" for n, v in need if not v]
+    s, r = g.call("GET", ids["account"], {"fields": "currency"})
+    cur = r.get("currency") if s == 200 else None
+    if not cur:
+        return [f"could not read the ad account currency (http={s})"]
+    if args.accept_currency != cur:
+        return [f"account currency is {cur}; the budget {spec['ad_set']['lifetime_budget']} is {cur}. "
+                f"Re-run with --accept-currency {cur} if that is intended"]
+    flt = [{"field": "name", "operator": "EQUAL", "value": spec["campaign"]["name"]}]
+    s, r = g.call("GET", f"{ids['account']}/campaigns", {"fields": "name", "filtering": flt})
+    if s != 200:
+        return [f"could not check for a duplicate campaign (http={s})"]
+    return [f"a campaign named {flt[0]['value']} already exists. Duplicate run?"] if r.get("data") else []
+def main():
+    ap = argparse.ArgumentParser(description="Create a Meta image-ad test, all PAUSED. Dry run by default.")
+    ap.add_argument("spec", help="ad spec JSON file (see ad-launch.md)")
+    ap.add_argument("--execute", action="store_true", help="create every object PAUSED (writes to Meta)")
+    ap.add_argument("--env-file", default=os.environ.get("AD_LAUNCH_ENV_FILE"), help="file with META_MARKETING_TOKEN=")
+    for name in ("ad-account-id", "page-id", "pixel-id", "instagram-user-id"):
+        var = "META_" + name.upper().replace("-", "_")
+        ap.add_argument("--" + name, default=os.environ.get(var), help=f"default: ${var}")
+    ap.add_argument("--accept-currency", help="the ad account currency you accept for the budget, e.g. CAD")
+    ap.add_argument("--start", help="ISO start time with offset. Default: tomorrow 06:00 local")
+    ap.add_argument("--api-version", default="v23.0")
+    args = ap.parse_args()
+    env = load_env(args.env_file) if args.env_file and os.path.isfile(args.env_file) else {}
+    SECRETS.extend(v for k, v in env.items() if v and re.search(r"TOKEN|SECRET|KEY", k))
+    token, spec_dir = env.get("META_MARKETING_TOKEN", ""), os.path.dirname(os.path.abspath(args.spec))
+    spec = json.load(open(args.spec))
+    source = spec.get("source_text") or ""
+    if spec.get("source_text_file"):
+        source = open(os.path.join(spec_dir, spec["source_text_file"])).read()
+    say("== EXECUTE (creates PAUSED objects) ==" if args.execute else "== DRY RUN (no writes) ==")
+    problems = validate(spec, spec_dir, source)
+    for url in dict.fromkeys(ad["link_url"] for ad in spec["ads"]):
+        st = landing_status(url)  # a GET of every full ad link must return 200
+        say(f"landing: {st} {url}")
+        if st != 200:
+            problems.append(f"landing URL returned {st}: {url}")
+    now = dt.datetime.now().astimezone()
+    start = dt.datetime.fromisoformat(args.start) if args.start else (now + dt.timedelta(days=1)).replace(
+        hour=6, minute=0, second=0, microsecond=0)
+    start = start if start.tzinfo else start.astimezone()
+    if start < now:
+        problems.append("start time is in the past")
+    say("validation:", "PASS" if not problems else "FAIL", *(f"\n  PROBLEM: {p}" for p in problems))
+    acct = args.ad_account_id or "<AD_ACCOUNT_ID>"
+    ids = {"account": acct if acct.startswith("act_") else "act_" + acct,
+           "page": args.page_id or "<PAGE_ID>", "pixel": args.pixel_id or "<PIXEL_ID>"}
+    where = "Facebook + Instagram" if args.instagram_user_id else "Facebook only"
+    say(f"\nCalls, in order (all PAUSED; budget in minor units; {where}):")
+    for i, (kind, path, body) in enumerate(build_plan(spec, ids, start, args.instagram_user_id), 1):
+        shown = json.dumps({k: v for k, v in body.items() if k != "_ad"}, ensure_ascii=False)
+        say(f"  [{i}] POST /{args.api_version}/{path}  {scrub(shown)[:600]}")  # scrub before cutting, so no token prefix shows
+    if not args.execute:
+        say("\nDry run done. Nothing was sent to Meta.")
+        return 1 if problems else 0
+    g = Graph(token, args.api_version)
+    blockers = problems or refusals(args, spec, ids, token, g)
+    if blockers:
+        say("\nREFUSING to execute:", *(f"\n  - {b}" for b in blockers))
+        return 2
+    made, err = execute(g, build_plan(spec, ids, start, args.instagram_user_id), spec_dir)
+    for kind, oid, name in made:
+        say(f"exists now{'' if kind == 'creative' else ', PAUSED'}: {kind} {oid} {name}")
+    warn = read_back(g, made) if made else 0
+    if err:
+        say("\nSTOPPED:", err, "\nThe objects above exist, PAUSED. Delete them in Ads Manager, or fix and finish by hand.")
+        return 3
+    if warn:
+        say(f"\n{warn} WARNING(S). Fix them in Ads Manager before anything else.")
+        return 4
+    say("\nAll objects are PAUSED. Next: live event check, then a human activates in Ads Manager.")
+    return 0
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as e:  # never let a traceback print a secret
+        say(f"error: {type(e).__name__}: {e}")
+        sys.exit(2)

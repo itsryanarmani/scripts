@@ -1,0 +1,18 @@
+{
+  "campaign": {"name": "shed_guide_ca_leads", "objective": "OUTCOME_LEADS", "special_ad_categories": [], "special_ad_category_country": []},
+  "ad_set": {
+    "name": "shed_guide_broad_ca_25-65", "lifetime_budget": 20.00, "duration_days": 7,
+    "countries": ["CA"], "age_min": 25, "age_max": 65, "custom_event_type": "LEAD"
+  },
+  "source_text": "# Free shed base guide\n\nA 5-step guide to a level, dry shed base.\n\n## Step 1: Pick the spot\nKeep the shed 2 feet from any fence.\n",
+  "ads": [
+    {"id": "a1", "name": "shed_guide_a1_level", "cta": "DOWNLOAD", "image": "images/shed-a.jpg",
+     "primary_text": "A level base keeps the doors square. The free 5-step guide shows how.",
+     "headline": "Free 5-step shed base guide", "description": "Pick the spot, then build",
+     "link_url": "https://shed-plans.example/guide?utm_source=facebook&utm_medium=paid_social&utm_content=a1"},
+    {"id": "a2", "name": "shed_guide_a2_fence", "cta": "DOWNLOAD", "image": "images/shed-b.jpg",
+     "primary_text": "Keep the shed 2 feet from any fence. Step 1 of the free guide.",
+     "headline": "Where to put a new shed", "description": "Free shed base guide",
+     "link_url": "https://shed-plans.example/guide?utm_source=facebook&utm_medium=paid_social&utm_content=a2"}
+  ]
+}

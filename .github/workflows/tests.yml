@@ -65,6 +65,7 @@ jobs:
           python3 gh-app.test.py
           ./gh-app-per-repo-rollout.test.sh
           python3 fb-page.test.py
+          python3 -I ad-launch.test.py
           python3 boat-ci.test.py
           python3 build-repo-prefixes.test.py
           python3 worker-preview-provision.test.py
