@@ -220,7 +220,8 @@ if (mode === "activate") {
   } catch (err) {
     if (!/1815377/.test(err.message)) throw err;
     const saved = await graph(`${made.adset}?fields=end_time`, "GET");
-    if (!(Date.parse(saved.end_time) > Date.now() + 3_600_000)) throw new Error(`flight is locked and the saved end time ${saved.end_time} is not in the future. Recreate the ad set.`);
+    const end = Date.parse(saved.end_time);
+    if (!(end > Date.now() + 3_600_000 && end <= Date.now() + (c.flightDays + 1) * 86_400_000)) throw new Error(`flight is locked and the saved end time ${saved.end_time} is outside the approved ${c.flightDays}-day flight. Recreate the ad set.`);
     console.log(`flight already locked by Meta; keeping the saved dates (ends ${saved.end_time})`);
   }
   try {
@@ -313,7 +314,7 @@ if (mode === "report") {
   if (applyKillGate) {
     for (const r of rows.filter((x) => x.verdict === "KILL" && !["PAUSED", "ARCHIVED", "DELETED"].includes(x.status))) {
       await graph(r.id, "POST", { status: "PAUSED" });
-      console.log(`PAUSED ${r.ad.id}: ${r.why}`);
+      console.log(scrub(`PAUSED ${r.ad.id}: ${r.why}`));
     }
   }
 }
