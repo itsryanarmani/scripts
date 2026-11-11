@@ -50,7 +50,8 @@ function validate() {
     need(ad.hypothesis && ad.killGate, `ad ${ad.id} needs a hypothesis and a kill gate`);
   }
 }
-validate();
+// --pause must work from the saved ids even when the plan no longer validates.
+if (mode !== "pause") validate();
 
 const TOKEN = process.env.META_MARKETING_TOKEN ?? "";
 const ACT = `act_${(process.env.META_ADS_AD_ACCOUNT_ID ?? "").replace(/^act_/, "")}`;
@@ -172,6 +173,10 @@ if (mode === "create") {
 if (mode === "activate") {
   if (process.env.I_APPROVE_SPEND !== "yes") throw new Error(`Going live spends up to ${c.lifetimeBudget}. Set I_APPROVE_SPEND=yes.`);
   const made = JSON.parse(readFileSync(createdFile, "utf8"));
+  // Trust the saved objects, not the plan file: the plan may have been edited since --create.
+  const saved = await graph(`${made.adset}?fields=lifetime_budget`, "GET");
+  const planned = Math.round(c.lifetimeBudget * (c.currencyMinorUnit ?? 100));
+  if (Number(saved.lifetime_budget) !== planned) throw new Error(`ad set budget is ${saved.lifetime_budget} but the plan says ${planned}. Refusing to activate.`);
   for (const ad of ads) {
     const res = await fetch(link(ad), { redirect: "follow" });
     if (res.status !== 200) throw new Error(`${link(ad)} answers ${res.status}. Ship the landing pages first.`);

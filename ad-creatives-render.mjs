@@ -89,7 +89,8 @@ try {
   for (const ad of spec.ads) {
     const make = TEMPLATES[ad.template];
     const theme = themes[ad.theme];
-    if (!ad.id || !make) throw new Error(`ad ${ad.id ?? "?"}: unknown template ${ad.template}`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(ad.id ?? "")) throw new Error(`ad id ${JSON.stringify(ad.id)} must use only letters, digits, - and _`);
+    if (!make) throw new Error(`ad ${ad.id ?? "?"}: unknown template ${ad.template}`);
     if (!theme) throw new Error(`ad ${ad.id}: unknown theme ${ad.theme}`);
     for (const [size, [w, h]] of Object.entries(SIZES)) {
       const page = await browser.newPage({ viewport: { width: w, height: h } });
