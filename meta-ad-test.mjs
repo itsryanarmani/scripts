@@ -73,6 +73,17 @@ async function graph(path, method, body) {
   return json;
 }
 
+// Pause runs first and needs only the saved ids, so a broken plan cannot block an emergency stop.
+async function pauseAll() {
+  const made = JSON.parse(readFileSync(createdFile, "utf8"));
+  for (const id of [made.campaign, made.adset, ...Object.values(made.ads)]) await graph(id, "POST", { status: "PAUSED" });
+}
+if (mode === "pause") {
+  await pauseAll();
+  console.log("PAUSED all");
+  process.exit(0);
+}
+
 const slug = (s) => s.replace(/-/g, "_");
 const utm = (ad) => plan.utmTemplate.replace("{campaign}", c.slug).replace("{ad}", slug(ad.id)).replace("{persona}", slug(ad.persona ?? "all"));
 const link = (ad) => `${c.baseUrl}${ad.landing}`;
@@ -182,12 +193,13 @@ if (mode === "activate") {
     if (res.status !== 200) throw new Error(`${link(ad)} answers ${res.status}. Ship the landing pages first.`);
   }
   await graph(made.adset, "POST", flight(Date.now() + 300_000));
-  for (const id of [made.adset, ...Object.values(made.ads), made.campaign]) await graph(id, "POST", { status: "ACTIVE" });
+  try {
+    for (const id of [made.adset, ...Object.values(made.ads), made.campaign]) await graph(id, "POST", { status: "ACTIVE" });
+  } catch (err) {
+    // A half-activated test can spend. Put everything back to PAUSED before failing.
+    await pauseAll().catch(() => {});
+    throw new Error(`activation failed, everything paused: ${err.message}`);
+  }
   console.log("ACTIVE. Lifetime cap", c.lifetimeBudget);
 }
 
-if (mode === "pause") {
-  const made = JSON.parse(readFileSync(createdFile, "utf8"));
-  for (const id of [made.campaign, made.adset, ...Object.values(made.ads)]) await graph(id, "POST", { status: "PAUSED" });
-  console.log("PAUSED all");
-}
