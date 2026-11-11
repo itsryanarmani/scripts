@@ -10,7 +10,8 @@ HARDSHIP = re.compile(
     r"facing foreclosure|behind on|can'?t pay|cannot pay|los(e|ing) your (home|house|job)|save your home|"
     r"your (debt|mortgage|loan|credit|diagnosis|condition)|struggl|in trouble|are you (broke|in debt|sick)|"
     r"\bdo you have\b|\bare you\b", re.I)
-PRICE = re.compile(r"(?:[$€£]|\b[A-Z]{3}\b)\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:[$€£]|\b[A-Z]{3}\b)")
+CUR = r"(?:[$€£]|\b(?:[A-Z]{3}|(?i:usd|cad|eur|gbp|aud|nzd|jpy|inr|chf|mxn|dollars?|euros?|pounds?|bucks))\b)"
+PRICE = re.compile(rf"{CUR}\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*{CUR}")
 SECRETS = []
 def scrub(s):
     s = re.sub(r"(access_token=)[^&\s\"']+", r"\1<redacted>", str(s))
@@ -59,7 +60,7 @@ def validate(spec, spec_dir, source):
         problems.append("HOUSING needs age_min 18 and age_max 65")
     problems += [f"ad_set.{k} is required" for k in ("lifetime_budget", "duration_days", "countries") if not a.get(k)]
     problems += [] if source.strip() else ["source_text or source_text_file is required for the copy guard"]
-    flat = lambda p: re.sub(r"\s+", "", p)
+    flat = lambda p: re.sub(r"\s+", "", p).lower()
     src_prices = {flat(p) for p in PRICE.findall(source)}  # whole prices: $5 is not $50
     for ad in spec["ads"]:
         copy = " ".join(" ".join(ad.get(k, "") for k in ("primary_text", "headline", "description")).split())

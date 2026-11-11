@@ -116,8 +116,8 @@ def main():
         primary_text="You can\u2019t\npay for a shed? Get the guide."))], 1, ["hardship wording"])
     run("refuses a number not in the source", {}, [spec(lambda s: s["ads"][0].update(
         headline="12 steps to a level base"))], 1, ["number 12 is not in the source"])
-    run("refuses a price not in the source", {}, [spec(lambda s: (s["ads"][1].update(description="From $5 or 5  USD"),
-        s.update(source_text=s["source_text"] + "Plans from $50.")))], 1, [r"price \$5 is not in the source"])
+    run("refuses a price not in the source", {}, [spec(lambda s: (s["ads"][1].update(description="From $5 or 5  usd"),
+        s.update(source_text=s["source_text"] + "Plans from $50.")))], 1, [r"price \$5 is not", "price 5 usd is not"])
     run("refuses a special category with no country", {}, [spec(lambda s: s["campaign"].update(
         special_ad_categories=["HOUSING"], special_ad_category_country=[]))], 1, ["special_ad_category_country"])
     run("retries the rate limit 60/120 then succeeds", {"rate_limit": 2}, [spec(), *ex], 0,

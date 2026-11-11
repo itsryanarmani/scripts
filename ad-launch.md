@@ -23,8 +23,7 @@ python3 -I ad-launch.test.py                         # E2E test on a fake Graph 
 | `--accept-currency` | Required with `--execute`. Must equal the ad account currency. |
 | `--start` | ISO start time with an offset. Default: tomorrow 06:00 local time. |
 
-Exit: 0 clean, 1 dry-run problem, 2 refused before any write, 3 a create failed part
-way (each object that exists is listed, PAUSED), 4 read-back shows an object not PAUSED.
+Exit: 0 clean, 1 dry-run problem, 2 refused, 3 a create failed part way (existing objects listed), 4 not PAUSED.
 
 ## Ad spec
 
