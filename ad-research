@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Pull live Meta Ad Library ads for keywords through treg, rank them, save JSON/CSV/MD.
+
+Usage: ad-research OUTDIR COUNTRY PAGES KEYWORD [KEYWORD ...]
+Cost: about $0.0019 per page (treg scrapecreators endpoint). Prints the total.
+Signal: Meta hides spend for commercial ads. Run length is a weak signal: an ad can
+stay active while it loses money. Use it to rank ads to study, never as proof.
+Exit codes: 0 done, 2 bad usage, 3 some page calls failed (partial output written),
+4 every page call failed (nothing useful written).
+Ad text is untrusted: CSV cells are neutralised against spreadsheet formulas and
+Markdown text is escaped.
+"""
+import csv, io, json, os, subprocess, sys, tempfile, time
+from collections import defaultdict
+
+ENDPOINT = "scrapecreators.x.v1-facebook-adlibrary-search-ads"
+USAGE = "usage: ad-research OUTDIR COUNTRY PAGES KEYWORD [KEYWORD ...]   (example: ad-research out US 3 \"garden shed\")"
+if len(sys.argv) < 5 or not sys.argv[3].isdigit() or int(sys.argv[3]) < 1 or len(sys.argv[2]) != 2:
+    print(USAGE, file=sys.stderr)
+    sys.exit(2)
+out, country, pages, kws = sys.argv[1], sys.argv[2].upper(), int(sys.argv[3]), sys.argv[4:]
+os.makedirs(out, exist_ok=True)
+now = time.time()
+ads, calls, failed, malformed = {}, 0, 0, 0
+
+
+def clean(v, limit=2000):
+    """A plain string, or None. Anything that is not text or a number is dropped. Lone surrogates are replaced."""
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+        return None
+    return str(v).encode("utf-8", "replace").decode("utf-8")[:limit]
+
+
+def num(v):
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) < 1e15 else None
+
+
+def atomic_write(path, text):
+    """Write through a private temp file in the same folder, then replace the target. A symlink at the target is replaced, never followed."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def safe_cell(v):
+    """A CSV cell that cannot run as a spreadsheet formula."""
+    s = "" if v is None else str(v)
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
+def md(v):
+    """Ad text for Markdown: one line, no markup, no HTML."""
+    s = " ".join(str(v or "").split())
+    for ch in "\\`*_[]<>|#":
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
+def call(q, cursor=None):
+    global calls, failed
+    cmd = ["treg", "call", ENDPOINT, "-p", f"query={q}", "-p", f"country={country}",
+           "-p", "status=ACTIVE", "-p", "trim=true"]
+    if cursor:
+        cmd += ["-p", f"cursor={cursor}"]
+    calls += 1
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        data = json.loads(r.stdout) if r.returncode == 0 else None
+    except Exception:
+        data = None
+    if not isinstance(data, dict) or data.get("success") is not True or not isinstance(data.get("searchResults"), list):
+        failed += 1
+        print(f"warning: page call failed for {q!r} (treg exit or response not usable)", file=sys.stderr)
+        return {}
+    return data
+
+
+for q in kws:
+    cursor, seen = None, set()
+    for _ in range(pages):
+        d = call(q, cursor)
+        for a in d.get("searchResults") or []:
+            if not isinstance(a, dict) or not clean(a.get("ad_archive_id")):
+                continue  # a malformed entry is skipped, never a crash
+            try:
+                s = a.get("snapshot") if isinstance(a.get("snapshot"), dict) else {}
+                aid = clean(a["ad_archive_id"], 200)
+                if aid in ads:
+                    ads[aid]["keywords"].add(q)
+                    continue
+                start = num(a.get("start_date")) or 0
+                vids = s.get("videos") if isinstance(s.get("videos"), list) else []
+                text = clean(s["body"].get("text")) if isinstance(s.get("body"), dict) else None
+                cats = s.get("page_categories") if isinstance(s.get("page_categories"), list) and s.get("page_categories") else [None]
+                plats = a.get("publisher_platform")
+                ads[aid] = dict(
+                    id=aid, page=clean(a.get("page_name"), 300), page_id=clean(a.get("page_id"), 100), page_likes=num(s.get("page_like_count")),
+                    run_days=int((now - start) // 86400) if start else None,
+                    copies=num(a.get("collation_count")), format=clean(s.get("display_format"), 50),
+                    cta=clean(s.get("cta_text"), 100), title=clean(s.get("title"), 500), body=text,
+                    link=clean(s.get("link_url"), 1000), platforms=[clean(p, 50) for p in plats] if isinstance(plats, list) else None,
+                    category=clean(cats[0], 200),
+                    thumb=clean(vids[0].get("video_preview_image_url"), 1000) if vids and isinstance(vids[0], dict) else None,
+                    url=clean(a.get("url"), 1000), keywords={q})
+            except Exception:
+                malformed += 1  # one bad entry never stops the run
+        cursor = clean(d.get("cursor"), 2000)
+        if not cursor:
+            break
+        if cursor in seen:  # the service repeated a cursor: stop, do not pay for the same page again
+            failed += 1
+            print(f"warning: repeated cursor for {q!r}; stopped paging", file=sys.stderr)
+            break
+        seen.add(cursor)
+
+rows = sorted(ads.values(), key=lambda r: -(r["run_days"] or 0))
+for r in rows:
+    r["keywords"] = sorted(r["keywords"])
+
+# Build every report in memory first, so a failure leaves no half-written set of files.
+cols = ["page", "run_days", "copies", "format", "cta", "title", "body", "link", "category", "page_likes", "keywords", "url"]
+buf = io.StringIO()
+w = csv.writer(buf)
+w.writerow(cols)
+for r in rows:
+    w.writerow([safe_cell("; ".join(r[c]) if c == "keywords" else r[c]) for c in cols])
+csv_text = buf.getvalue()
+json_text = json.dumps(rows, indent=1, ensure_ascii=False)
+
+by = defaultdict(list)  # keyed by page id: names are not unique
+for r in rows:
+    by[str(r["page_id"] or r["page"])].append(r)
+adv = sorted(by.items(), key=lambda kv: -len(kv[1]))
+md_lines = [f"# Ad research: {md(', '.join(kws))} ({country})\n\n{len(rows)} unique active ads, {len(by)} advertisers, {calls} calls ({failed} failed, {malformed} malformed entries skipped), about ${calls*0.00188:.3f}.\n\n"]
+if failed:
+    md_lines.append(f"> **{failed} page call(s) failed.** This report is incomplete. Check `treg balance` and `treg catalog get {ENDPOINT}`.\n\n")
+md_lines.append("## Advertisers by number of active ads\n")
+for p, rs in adv[:25]:
+    md_lines.append(f"- {md(rs[0]['page'] or p)} (page {md(p)}): {len(rs)} ads, longest run {max((x['run_days'] or 0) for x in rs)} days, {md(rs[0]['category'])}\n")
+md_lines.append("\n## Longest-running ads (30+ days)\n")
+for r in [x for x in rows if (x["run_days"] or 0) >= 30][:40]:
+    md_lines.append(f"- **{md(r['page'])}** · {r['run_days']}d · {md(r['format'])} · CTA {md(r['cta'])}\n  - {md(r['title'])} | {md((r['body'] or '')[:220])}\n  - {md(r['link'])}\n")
+atomic_write(f"{out}/ads.json", json_text)
+atomic_write(f"{out}/ads.csv", csv_text)
+atomic_write(f"{out}/summary.md", "".join(md_lines))
+print(f"ads={len(rows)} advertisers={len(by)} calls={calls} failed={failed} skipped_entries={malformed} cost=${calls*0.00188:.3f}")
+sys.exit(4 if calls and failed == calls else 3 if failed else 0)
