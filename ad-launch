@@ -10,7 +10,7 @@ HARDSHIP = re.compile(
     r"facing foreclosure|behind on|can'?t pay|cannot pay|los(e|ing) your (home|house|job)|save your home|"
     r"your (debt|mortgage|loan|credit|diagnosis|condition)|struggl|in trouble|are you (broke|in debt|sick)|"
     r"\bdo you have\b|\bare you\b", re.I)
-PRICE = re.compile(r"(?:[$€£]|\b[A-Z]{3}\s?)\d[\d,]*(?:\.\d+)?")
+PRICE = re.compile(r"(?:[$€£]|\b[A-Z]{3})\s?\d[\d,]*(?:\.\d+)?")
 SECRETS = []
 def scrub(s):
     s = re.sub(r"(access_token=)[^&\s\"']+", r"\1<redacted>", str(s))
@@ -59,14 +59,16 @@ def validate(spec, spec_dir, source):
         problems.append("HOUSING needs age_min 18 and age_max 65")
     problems += [f"ad_set.{k} is required" for k in ("lifetime_budget", "duration_days", "countries") if not a.get(k)]
     problems += [] if source.strip() else ["source_text or source_text_file is required for the copy guard"]
-    src_flat = re.sub(r"\s+", "", source)
+    flat = lambda p: re.sub(r"\s+", "", p)
+    src_prices = {flat(p) for p in PRICE.findall(source)}  # whole prices: $5 is not $50
     for ad in spec["ads"]:
-        t, copy = ad["id"], " ".join(ad.get(k, "") for k in ("primary_text", "headline", "description"))
+        copy = " ".join(ad.get(k, "") for k in ("primary_text", "headline", "description"))
+        t, copy = ad["id"], copy.replace("\u2019", "'").replace("\u2018", "'")  # curly quotes
         m = HARDSHIP.search(copy)
         if m:
             problems.append(f"{t}: hardship wording '{m.group()}'")
         problems += [f"{t}: price {p} is not in the source text" for p in PRICE.findall(copy)
-                     if re.sub(r"\s+", "", p) not in src_flat]
+                     if flat(p) not in src_prices]
         problems += [f"{t}: number {n} is not in the source text"
                      for n in sorted(numbers(PRICE.sub(" ", copy)) - numbers(source))]
         if not os.path.isfile(os.path.join(spec_dir, ad["image"])):
@@ -200,11 +202,11 @@ def main():
         source = open(os.path.join(spec_dir, spec["source_text_file"])).read()
     say("== EXECUTE (creates PAUSED objects) ==" if args.execute else "== DRY RUN (no writes) ==")
     problems = validate(spec, spec_dir, source)
-    for page, url in {ad["link_url"].split("?")[0]: ad["link_url"] for ad in spec["ads"]}.items():
-        st = landing_status(url)  # a GET of the real ad link must return 200
-        say(f"landing: {st} {page}")
+    for url in dict.fromkeys(ad["link_url"] for ad in spec["ads"]):
+        st = landing_status(url)  # a GET of every full ad link must return 200
+        say(f"landing: {st} {url}")
         if st != 200:
-            problems.append(f"landing URL returned {st}: {page}")
+            problems.append(f"landing URL returned {st}: {url}")
     now = dt.datetime.now().astimezone()
     start = dt.datetime.fromisoformat(args.start) if args.start else (now + dt.timedelta(days=1)).replace(
         hour=6, minute=0, second=0, microsecond=0)
@@ -219,7 +221,7 @@ def main():
     say(f"\nCalls, in order (all PAUSED; budget in minor units; {where}):")
     for i, (kind, path, body) in enumerate(build_plan(spec, ids, start, args.instagram_user_id), 1):
         shown = json.dumps({k: v for k, v in body.items() if k != "_ad"}, ensure_ascii=False)
-        say(f"  [{i}] POST /{args.api_version}/{path}  {shown[:600]}")
+        say(f"  [{i}] POST /{args.api_version}/{path}  {scrub(shown)[:600]}")  # scrub before cutting, so no token prefix shows
     if not args.execute:
         say("\nDry run done. Nothing was sent to Meta.")
         return 1 if problems else 0

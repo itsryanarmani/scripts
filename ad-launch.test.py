@@ -38,7 +38,7 @@ class Fake(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         STATE["paths"].append(self.path)
         if u.path.startswith("/landing/"):
-            return self.send(200 if u.path.endswith("/ok") else 404, "page")
+            return self.send(404 if "dead" in self.path else 200, "page")
         if self.headers.get("Authorization") != f"Bearer {TOKEN}":
             return self.send(401, {"error": {"code": 190, "message": "bad token"}})
         m, parts = STATE["mode"], u.path.strip("/").split("/")[1:]
@@ -79,14 +79,14 @@ def main():
     (tmp / "creds.env").write_text(f"META_MARKETING_TOKEN={TOKEN}\n")
     (tmp / "images").mkdir()
     [(tmp / "images" / n).write_bytes(b"\xff\xd8fake\xff\xd9") for n in ("shed-a.jpg", "shed-b.jpg")]
-    env = {**os.environ, "AD_LAUNCH_GRAPH_URL": base, "AD_LAUNCH_SLEEP_SCALE": "0",
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith(("META_", "AD_LAUNCH_"))}, "AD_LAUNCH_GRAPH_URL": base, "AD_LAUNCH_SLEEP_SCALE": "0",
            "AD_LAUNCH_ENV_FILE": str(tmp / "creds.env"), "META_AD_ACCOUNT_ID": "111",
            "META_PAGE_ID": "222", "META_PIXEL_ID": "333"}
     log, fails = [], []
-    def spec(edit=None, landing="ok"):
+    def spec(edit=None):
         s = json.loads(EXAMPLE.read_text())
         for ad in s["ads"]:
-            ad["link_url"] = ad["link_url"].replace("https://shed-plans.example/guide", f"{base}/landing/{landing}")
+            ad["link_url"] = ad["link_url"].replace("https://shed-plans.example/guide", f"{base}/landing/ok")
         edit and edit(s)
         (tmp / "spec.json").write_text(json.dumps(s))
         return str(tmp / "spec.json")
@@ -107,16 +107,17 @@ def main():
     posts = lambda kind: [b for k, b in STATE["posts"] if k == kind]
     ex, nowrite = ["--execute", "--accept-currency", "CAD"], lambda: ["wrote"] if STATE["posts"] else []
     run("dry run makes no write", {}, [spec()], 0, ["DRY RUN", "landing: 200"], nowrite)
-    run("refuses a dead landing URL", {}, [spec(landing="dead"), *ex], 2, ["landing URL returned 404"], nowrite)
+    run("refuses a dead landing URL", {}, [spec(lambda s: s["ads"][0].update(link_url=s["ads"][0]["link_url"] + "&v=dead")),
+        *ex], 2, ["landing URL returned 404"], nowrite)
     run("refuses without --accept-currency", {}, [spec(), "--execute"], 2, ["--accept-currency CAD"])
     run("refuses a wrong currency", {"currency": "USD"}, [spec(), *ex], 2, ["account currency is USD"])
     run("refuses a duplicate run", {"dup": "shed_guide_ca_leads"}, [spec(), *ex], 2, ["already exists"], nowrite)
     run("refuses hardship wording", {}, [spec(lambda s: s["ads"][0].update(
-        primary_text="Behind on your shed payments? Get the guide."))], 1, ["hardship wording"])
+        primary_text="You can\u2019t pay for a shed? Get the guide."))], 1, ["hardship wording"])
     run("refuses a number not in the source", {}, [spec(lambda s: s["ads"][0].update(
         headline="12 steps to a level base"))], 1, ["number 12 is not in the source"])
-    run("refuses a price not in the source", {}, [spec(lambda s: s["ads"][1].update(
-        description="Plans from $49"))], 1, [r"price \$49 is not in the source"])
+    run("refuses a price not in the source", {}, [spec(lambda s: (s["ads"][1].update(description="Plans from $5"),
+        s.update(source_text=s["source_text"] + "Plans from $50.")))], 1, [r"price \$5 is not in the source"])
     run("refuses a special category with no country", {}, [spec(lambda s: s["campaign"].update(
         special_ad_categories=["HOUSING"], special_ad_category_country=[]))], 1, ["special_ad_category_country"])
     run("retries the rate limit 60/120 then succeeds", {"rate_limit": 2}, [spec(), *ex], 0,

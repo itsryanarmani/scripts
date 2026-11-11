@@ -62,5 +62,4 @@ The copy guard refuses wording about the reader's own hardship ("behind on",
 
 ## Test
 
-`AD_LAUNCH_TRANSCRIPT=/tmp/ad-launch.txt python3 -I ad-launch.test.py` runs the real tool
-against a fake Graph API server. The failure cases are at the top of the test file.
+`python3 -I ad-launch.test.py` runs the real tool on a fake Graph API server. Cases are at its top.
