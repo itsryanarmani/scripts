@@ -18,7 +18,7 @@
 // plan = {
 //   campaign: { name, slug, objective?, lifetimeBudget, currencyMinorUnit?, flightDays, pageId, baseUrl,
 //               geo: { regionKey } | { countries: ["CA"] }, age: [min, max], placements: { facebook: ["feed"],
-//               instagram: ["stream"] }, optimizationGoal?, targetingSuggestions?: { <id>: <label> } },
+//               instagram: ["stream"] }, optimizationGoal?, targetingSuggestions?: { <id>: <label> }, advantageAudience?: boolean },
 //   utmTemplate: "utm_source=meta&...&utm_content={ad}&utm_term={persona}&meta_ad_id={{ad.id}}",
 //   creativesDir: "creatives",                     // relative to the plan; holds each ad's image file
 //   ads: [ { id, persona, landing, creative, headline, description, primaryText, cta, hypothesis, killGate } ]
@@ -55,6 +55,11 @@ function validate() {
   need(Number.isFinite(c.lifetimeBudget) && c.lifetimeBudget > 0, "campaign.lifetimeBudget is required (a cap Meta cannot exceed)");
   need(Number.isInteger(c.flightDays) && c.flightDays > 0, "campaign.flightDays is required");
   need(Array.isArray(c.age) && c.age.length === 2, "campaign.age must be [min, max]");
+  // Meta reads a max age of 65 as "65 and older". A first live test with 25-65 spent 79% on people 65 and over.
+  need(c.age[1] < 65, "campaign.age max of 65 means 65 and older on Meta. Use 64 or less to stop at 64");
+  // With the automatic audience on, age and these titles are only hints Meta may ignore. With it off they are hard
+  // filters, and a narrow title audience falls under the platform's 1,000-person floor and cannot deliver.
+  need(!c.targetingSuggestions || c.advantageAudience === true, "targetingSuggestions only work as hints when advantageAudience is true. As a hard filter a narrow audience cannot deliver");
   need(plan.utmTemplate?.includes("utm_content={ad}"), "utmTemplate must carry utm_content={ad}");
   need(Array.isArray(ads) && ads.length > 0, "plan needs at least one ad");
   for (const ad of ads) {
@@ -110,7 +115,7 @@ const targeting = {
   ...(c.placements?.instagram ? { instagram_positions: c.placements.instagram } : {}),
   // Automatic audience on: suggestions are hints, not a hard filter. A narrow hard filter can fall under
   // the platform's reporting floor and saturate on a small budget.
-  targeting_automation: { advantage_audience: 1 },
+  targeting_automation: { advantage_audience: c.advantageAudience === true ? 1 : 0 },
   ...(c.targetingSuggestions ? { flexible_spec: [{ work_positions: Object.entries(c.targetingSuggestions).map(([id, name]) => ({ id, name })) }] } : {}),
 };
 
@@ -320,6 +325,7 @@ if (mode === "report") {
         ads: Object.fromEntries(await Promise.all(Object.values(made.ads).map(async (id) => [id, await graph(`${id}?fields=effective_status`, "GET")]))),
         currency: (await graph(`${ACT}?fields=currency`, "GET")).currency,
         insights: await allInsights(),
+        ages: (await graph(`${made.adset}/insights?date_preset=maximum&breakdowns=age&limit=100&fields=impressions,spend,inline_link_clicks`, "GET")).data ?? [],
       };
   const range = (text) => {
     const m = /(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/.exec(String(text ?? ""));
@@ -362,6 +368,24 @@ if (mode === "report") {
     for (const n of r.notes) out.push(`  note: ${n}`);
     if (r.ad.outcome) out.push(`  outcome: ${r.ad.outcome}`);
     if (r.ad.nextHypothesis) out.push(`  next hypothesis: ${r.ad.nextHypothesis}`);
+  }
+  // Where did the delivery go? A setting Meta ignores shows up here first.
+  const ageRange = (label) => {
+    const m = /^(\d+)(?:-(\d+)|\+)$/.exec(String(label));
+    return m ? [Number(m[1]), m[2] ? Number(m[2]) : 999] : null;
+  };
+  if (Array.isArray(read.ages) && read.ages.length) {
+    let total = 0, outside = 0, spendTotal = 0, spendOutside = 0;
+    for (const a of read.ages) {
+      const r = ageRange(a.age);
+      const i = Number(a.impressions ?? 0), sp = Number(a.spend ?? 0);
+      total += i; spendTotal += sp;
+      if (r && (r[0] > c.age[1] || r[1] < c.age[0])) { outside += i; spendOutside += sp; }
+    }
+    const share = total ? Math.round((100 * outside) / total) : 0;
+    const spendShare = spendTotal ? Math.round((100 * spendOutside) / spendTotal) : 0;
+    out.push("", `age check: ${share}% of impressions and ${spendShare}% of spend were outside the plan's age range ${c.age[0]}-${c.age[1]}`);
+    if (total >= 100 && share > 20) out.push(`WARNING: ${share}% of impressions went outside the plan's age range ${c.age[0]}-${c.age[1]}. The audience setting is not holding. Check advantageAudience and the ad set's age.`);
   }
   const done = rows.filter((r) => r.verdict === "KILL" || r.verdict === "LEADING");
   if (done.length) out.push("", `Record an outcome and a nextHypothesis in the plan for: ${done.map((r) => r.ad.id).join(", ")}.`);

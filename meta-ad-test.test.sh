@@ -12,7 +12,7 @@ plan() { # plan <jq-free python edit> ; writes $TMP/plan.json from the valid bas
   python3 - "$1" > "$TMP/plan.json" <<'PY'
 import json,sys
 p={"campaign":{"name":"t","slug":"t_2601","lifetimeBudget":100,"flightDays":7,"pageId":"1","baseUrl":"https://example.test",
- "geo":{"countries":["CA"]},"age":[25,65],"placements":{"facebook":["feed"]}},
+ "geo":{"countries":["CA"]},"age":[25,64],"placements":{"facebook":["feed"]}},
  "utmTemplate":"utm_source=meta&utm_content={ad}&utm_term={persona}",
  "ads":[{"id":"a-1","persona":"p","landing":"/lp/p","creative":"a.png","headline":"h","primaryText":"t","hypothesis":"h","killGate":"k"}]}
 exec(sys.argv[1])
@@ -116,6 +116,28 @@ echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"},"retired":{"a-0":"AD0"}}' 
 addrun "retire refuses an ad that is also its own replacement" "both" node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --retire a-1 --after a-1
 plan "p['ads'].append(dict(p['ads'][0], id='a-0'))"
 addrun "add refuses to bring back a retired ad" "retired" I_APPROVE_SPEND=yes node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --add
+
+# Audience settings that Meta quietly ignores must be refused or made visible.
+refused "an age max of 65 (Meta reads it as 65 and older)" 'p["campaign"]["age"]=[25,65]' "65 and older"
+refused "job-title hints with the automatic audience off" 'p["campaign"]["targetingSuggestions"]={"1":"Lawyer"}' "targetingSuggestions"
+plan 'pass'
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" 2>&1)"
+echo "$out" | grep -q '"advantage_audience":0' && ok "the automatic audience is off unless the plan turns it on" || no "the automatic audience is off unless the plan turns it on"
+plan 'p["campaign"]["advantageAudience"]=True; p["campaign"]["targetingSuggestions"]={"1":"Lawyer"}'
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" 2>&1)"
+echo "$out" | grep -q '"advantage_audience":1' && ok "advantageAudience true turns it on, and hints are then allowed" || no "advantageAudience true turns it on, and hints are then allowed"
+
+# The report must show delivery outside the plan's ages, and stay quiet when there is none.
+AGES_BAD='"ages":[{"age":"65+","impressions":"750","spend":"8.00","inline_link_clicks":"19"},{"age":"25-34","impressions":"100","spend":"1.00","inline_link_clicks":"1"},{"age":"35-44","impressions":"150","spend":"1.50","inline_link_clicks":"2"}]'
+AGES_OK='"ages":[{"age":"65+","impressions":"50","spend":"0.50","inline_link_clicks":"1"},{"age":"25-34","impressions":"450","spend":"4.50","inline_link_clicks":"5"},{"age":"45-54","impressions":"500","spend":"5.00","inline_link_clicks":"6"}]'
+report "the report warns when most delivery is outside the plan ages" "$GATE" "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_BAD}" "WARNING.*outside the plan's age range"
+report "the report shows the share outside the plan ages" "$GATE" "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_BAD}" "75%"
+plan "$GATE"
+echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"
+echo "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_OK}" > "$TMP/insights.json"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" 2>&1)"
+echo "$out" | grep -q "WARNING" && no "the report stays quiet when delivery is inside the plan ages" || ok "the report stays quiet when delivery is inside the plan ages"
+echo "$out" | grep -q "age check" && ok "the report still prints the age check line" || no "the report still prints the age check line"
 
 # The renderer needs a browser library. Check the spec guards only when it is present.
 if node -e "require.resolve('playwright')" 2>/dev/null; then
