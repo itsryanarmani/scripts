@@ -152,6 +152,47 @@ out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan
 echo "$out" | grep -q "not holding" && no "with the automatic audience on, the report does not call expansion a failure" || ok "with the automatic audience on, the report does not call expansion a failure"
 echo "$out" | grep -qi "hint" && ok "with the automatic audience on, the report explains age is a hint" || no "with the automatic audience on, the report explains age is a hint"
 
+# The report reads what is actually live, not what the plan says, and a saved 25-65 plan must still be reportable.
+plan "p['campaign']['age']=[25,65]; $GATE"
+echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"
+echo "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_OK}" > "$TMP/insights.json"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && ok "a saved plan with age max 65 can still be reported" || { no "a saved plan with age max 65 can still be reported (rc=$rc)"; echo "$out" | head -2; }
+plan "$GATE"
+echo "{\"currency\":\"CAD\",\"targeting\":{\"age_min\":25,\"age_max\":64,\"targeting_automation\":{\"advantage_audience\":1}},\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_BAD}" > "$TMP/insights.json"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" 2>&1)"
+echo "$out" | grep -qi "hint" && echo "$out" | grep -q "not holding" && no "the warning follows the live ad set (automatic audience on), not the plan" || { echo "$out" | grep -qi "hint" && ok "the warning follows the live ad set (automatic audience on), not the plan" || no "the warning follows the live ad set (automatic audience on), not the plan"; }
+AGES_EDGE='"ages":[{"age":"65+","impressions":"206","spend":"2.00","inline_link_clicks":"1"},{"age":"25-34","impressions":"794","spend":"8.00","inline_link_clicks":"5"}]'
+echo "{\"currency\":\"CAD\",\"targeting\":{\"age_min\":25,\"age_max\":64,\"targeting_automation\":{\"advantage_audience\":0}},\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_EDGE}" > "$TMP/insights.json"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" 2>&1)"
+echo "$out" | grep -q "at least 20%" && ok "the age share is floored, so 20.6% shows as at least 20%" || no "the age share is floored, so 20.6% shows as at least 20%"
+echo "$out" | grep -q "WARNING" && ok "20.6% is above the 20% threshold, so it warns while the display is floored" || no "20.6% is above the 20% threshold, so it warns while the display is floored"
+plan "p['campaign']['age']=[25,65]; p['campaign']['allowAge65Plus']=True; $GATE"
+echo "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_OK}" > "$TMP/insights.json"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" 2>&1)"
+echo "$out" | grep -q "25-65+" && ok "an age max of 65 is shown as 65+" || no "an age max of 65 is shown as 65+"
+
+# --since limits the report to days after a change, so old delivery cannot hide or fake the new result.
+plan "$GATE"
+echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"
+echo "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[]}" > "$TMP/insights.json"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --since tomorrow 2>&1)"; rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -qi -- "--since" && ok "--since refuses a value that is not a date" || no "--since refuses a value that is not a date (rc=$rc)"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --since 2026-11-13 2>&1)"; rc=$?
+[ $rc -eq 0 ] && echo "$out" | grep -q "since 2026-11-13" && ok "--since 2026-11-13 is accepted and named in the report" || no "--since 2026-11-13 is accepted and named in the report (rc=$rc)"
+
+# Instagram placement needs an Instagram account on the Page. With the automatic audience on, Meta quietly skips it;
+# with it off, every ad errors. The plan must say the account is connected, or the tool warns.
+plan 'p["campaign"]["placements"]={"facebook":["feed"],"instagram":["stream"]}'
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && echo "$out" | grep -q "WARNING.*Instagram" && ok "instagram placement without a connected account warns" || no "instagram placement without a connected account warns (rc=$rc)"
+plan 'p["campaign"]["placements"]={"facebook":["feed"],"instagram":["stream"]}; p["campaign"]["instagramConnected"]=True'
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" 2>&1)"
+echo "$out" | grep -q "WARNING.*Instagram" && no "instagramConnected true silences the warning" || ok "instagramConnected true silences the warning"
+plan 'pass'
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" 2>&1)"
+echo "$out" | grep -q "WARNING.*Instagram" && no "a facebook-only plan does not warn about instagram" || ok "a facebook-only plan does not warn about instagram"
+
 # The renderer needs a browser library. Check the spec guards only when it is present.
 if node -e "require.resolve('playwright')" 2>/dev/null; then
   echo '{"brand":{"name":"B","url":"b.test"},"ads":[]}' > "$TMP/spec.json"
