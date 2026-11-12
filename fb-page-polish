@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""Brand an existing Facebook Page: profile picture, cover photo, bio and website.
+
+`assets` builds the images locally. `apply` drives the logged-in Chrome through `browse execute`.
+Every name, link and colour comes from the spec, a flag or an env var. See fb-page-polish.md.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+BIO_MAX = 101  # Facebook's limit for a Page bio.
+PROFILE = (1024, 1024)
+COVER = (1640, 720)
+SAFE = (180, 48, 1460, 672)  # Cover area that desktop and mobile crops both keep.
+SERIF = ['/System/Library/Fonts/Supplemental/Georgia.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf']
+SANS = ['/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']
+PARTS = ('cover', 'profile', 'bio', 'website')
+
+def fail(message):
+    print(f'fb-page-polish: {message}', file=sys.stderr)
+    sys.exit(1)
+
+def slug_of(page):
+    return page.get('slug') or re.sub(r'[^a-z0-9]+', '-', page['name'].lower()).strip('-')
+
+def load_spec(path, need):
+    """Read the spec and refuse it before any work if a field is missing or wrong."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as error:
+        fail(f'cannot read spec {path}: {error.__class__.__name__}')
+    pages = data.get('pages') if isinstance(data, dict) else data
+    if not isinstance(pages, list) or not pages:
+        fail('spec has no pages')
+    base = Path(path).resolve().parent
+    for i, page in enumerate(pages):
+        where = f'page {i + 1}'
+        for key in ('name', 'about', 'website', 'color', *need):
+            if not page.get(key):
+                fail(f'{where}: missing "{key}"')
+        for bad, why in ((len(page['about']) > BIO_MAX, f'about is {len(page["about"])} characters; Facebook allows {BIO_MAX}'),
+                         (not page['website'].startswith('https://'), 'website must start with https://'),
+                         (not re.fullmatch(r'#[0-9a-fA-F]{6}', page['color']), 'color must look like #2f5d50')):
+            if bad:
+                fail(f'{where}: {why}')
+        if 'logo' in page:
+            page['logo'] = str((base / page['logo']).resolve())
+    return pages
+
+def need_pillow():
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageOps  # noqa: F401
+    except ImportError:
+        fail('Pillow is required for assets. Install it: python3 -m pip install Pillow')
+    return Image, ImageDraw, ImageFont, ImageOps
+
+def load_logo(Image, path):
+    if not Path(path).is_file():
+        fail(f'logo not found: {Path(path).name}')
+    if not path.lower().endswith('.svg'):
+        return Image.open(path).convert('RGBA')
+    if not shutil.which('rsvg-convert'):
+        fail('rsvg-convert is required for an SVG logo (brew install librsvg, or apt install librsvg2-bin). '
+             'Or give a PNG logo.')
+    with tempfile.TemporaryDirectory() as tmp:
+        png = os.path.join(tmp, 'logo.png')
+        subprocess.run(['rsvg-convert', '-w', '1024', '-h', '1024', '--keep-aspect-ratio', '-o', png, path], check=True)
+        return Image.open(png).convert('RGBA')
+
+def font(ImageFont, paths, size):
+    for p in paths:
+        if os.path.exists(p):
+            return ImageFont.truetype(p, size)
+    return ImageFont.load_default(size=size)
+
+def wrap(draw, text, fnt, width):
+    lines, cur = [], ''
+    for word in text.split():
+        trial = f'{cur} {word}'.strip()
+        if draw.textlength(trial, font=fnt) <= width or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+    return lines + [cur] if cur else lines
+
+def build(page, out):
+    Image, ImageDraw, ImageFont, ImageOps = need_pillow()
+    logo = load_logo(Image, page['logo'])
+    colour = tuple(int(page['color'][i:i + 2], 16) for i in (1, 3, 5))
+    ink = (255, 255, 255) if (0.2126 * colour[0] + 0.7152 * colour[1] + 0.0722 * colour[2]) < 128 else (20, 20, 20)
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Profile: a 680 px logo square has a 481 px half-diagonal, inside the 512 px circle crop.
+    profile = Image.new('RGBA', PROFILE, colour + (255,))
+    inner = ImageOps.contain(logo, (680, 680))
+    profile.alpha_composite(inner, ((PROFILE[0] - inner.width) // 2, (PROFILE[1] - inner.height) // 2))
+    profile.convert('RGB').save(out / 'profile.png')
+
+    # Cover: logo tile left, name and about line right, all inside SAFE.
+    cover = Image.new('RGB', COVER, colour)
+    draw = ImageDraw.Draw(cover)
+    tile = ImageOps.contain(logo, (300, 300))
+    cover.paste(tile, (SAFE[0] + 40, (COVER[1] - tile.height) // 2), tile)
+    x, width = SAFE[0] + 420, SAFE[2] - SAFE[0] - 420
+    size = 88
+    while size > 32:  # scale the name down until it fits the safe area
+        size -= 4
+        name_font = font(ImageFont, SERIF, size)
+        if draw.textlength(page['name'], font=name_font) <= width:
+            break
+    about_font = font(ImageFont, SANS, 38)
+    lines = wrap(draw, page['about'], about_font, width)[:3]
+    y = (COVER[1] - (size + 30 + 50 * len(lines))) // 2
+    draw.text((x, y), page['name'], font=name_font, fill=ink)
+    for i, line in enumerate(lines):
+        draw.text((x, y + size + 30 + 50 * i), line, font=about_font, fill=ink)
+    cover.save(out / 'cover.png')
+
+def cmd_assets(args):
+    for page in load_spec(args.spec, need=('logo',)):
+        build(page, out := Path(args.assets_dir) / slug_of(page))
+        print(json.dumps({'page': slug_of(page), 'profile': str(out / 'profile.png'), 'cover': str(out / 'cover.png')}))
+
+# Shared by every step. Each step is one `browse execute` call, so Python owns the order.
+PRELUDE = r'''
+const P = __PARAMS__;
+const GO = { waitUntil: "domcontentloaded", timeout: 60000 };
+const lost = (name) => { throw new Error("Control not found: " + name); };
+// In-page element.click(): Facebook ignores some synthetic Playwright clicks on menus.
+const find = (sel, pattern, click) => page.evaluate(([s, p, c]) => {
+  const e = [...document.querySelectorAll(s)].find(e => new RegExp(p).test((e.innerText || e.textContent || "").trim()));
+  if (e && c) (e.closest("[role=button],[role=link],[role=menuitem],a") || e).click();
+  return Boolean(e);
+}, [sel, pattern, click]);
+const has = (sel, pattern) => find(sel, pattern, false);
+const tap = async (sel, pattern, name) => { if (!(await find(sel, pattern, true))) lost(name); };
+const body = () => page.innerText("body");
+// A new Page shows "Welcome to your new Page"; it blocks every click until "Use Page".
+const usePage = async () => { if (await has("[role=button],button", "^Use Page$")) { await tap("[role=button],button", "^Use Page$", "Use Page"); await page.waitForTimeout(1500); } };
+const open = async (url) => { await page.bringToFront(); await page.goto(url, GO); await page.waitForTimeout(7000); await usePage(); };
+const aboutUrl = P.link.includes("?") ? P.link + "&sk=about" : P.link.replace(/\/$/, "") + "/about";
+'''
+
+STEPS = {
+    # The personal profile has a "Friends" entry; a Page does not.
+    'personal': r'''
+await page.bringToFront(); await page.goto("https://www.facebook.com/", GO); await page.waitForTimeout(6000);
+if (!(await body()).includes("Friends")) {
+  await tap("[aria-label=\"Account, your profile\"][role=button]", "", "Account, your profile");
+  await page.waitForTimeout(2500);
+  const me = page.locator("[role=dialog]").getByText(P.owner, { exact: true }).first();
+  if (!(await me.count())) lost("owner profile in the account switcher");
+  await me.click({ force: true }); await page.waitForTimeout(7000);
+}
+return { state: (await body()).includes("Friends") ? "personal" : "page" };''',
+    'switch': r'''
+await open(P.link);
+const sw = await has("[role=button],button", "^Switch Now$");
+if (sw) { await tap("[role=button],button", "^Switch Now$", "Switch Now"); await page.waitForTimeout(8000); await open(P.link); }
+return { switched: sw };''',
+    'cover': r'''
+await open(P.link);
+if (!(await has("span", "^Add cover photo$"))) return { cover: "already set" };
+await tap("span", "^Add cover photo$", "Add cover photo"); await page.waitForTimeout(2500);
+const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 20000 }), tap("[role=menuitem]", "Upload photo", "Upload photo")]);
+await chooser.setFiles(P.cover); await page.waitForTimeout(7000);
+await tap("[role=button],button", "^Save changes$", "Save changes"); await page.waitForTimeout(8000);
+// "Edit cover photo" appears once a cover exists. Checking other text gave false failures.
+return { cover: (await body()).includes("Edit cover photo") ? "saved" : "not confirmed: no Edit cover photo" };''',
+    'profile': r'''
+await open(P.link);
+await tap("[aria-label=\"Profile picture actions\"][role=button]", "", "Profile picture actions"); await page.waitForTimeout(2500);
+await tap("[role=menuitem]", "Choose profile picture", "Choose profile picture"); await page.waitForTimeout(3500);
+const input = page.locator("[role=dialog] input[type=file]").first();
+if (!(await input.count())) lost("profile picture file input");
+await input.setInputFiles(P.profile); await page.waitForTimeout(7000);
+await tap("[role=dialog] [role=button],[role=dialog] button", "^Save$", "Save (profile picture)"); await page.waitForTimeout(9000);
+return { profile: "saved, verify by screenshot" };''',
+    'bio': r'''
+await open(aboutUrl);
+if (!(await has("span", "^About you$"))) return { bio: "already set" };
+await tap("span", "^About you$", "About you"); await page.waitForTimeout(2500);
+const box = page.locator("textarea:visible").first();
+if (!(await box.count())) lost("bio text box");
+await box.click(); await page.keyboard.insertText(P.bio); await page.waitForTimeout(800);
+await tap("[role=button]", "^Save$", "Save (bio)"); await page.waitForTimeout(4000);
+return { bio: (await body()).includes(P.bio.slice(0, 20)) ? "saved" : "not confirmed" };''',
+    'website': r'''
+await open(aboutUrl);
+await tap("span", "^Links$", "Links"); await page.waitForTimeout(4000);
+const host = P.website.replace(/^https:\/\//, "").replace(/\/$/, "");
+if ((await body()).includes(host)) return { website: "already set" };
+await tap("span", "^Websites, blogs, portfolios$", "Websites, blogs, portfolios"); await page.waitForTimeout(2500);
+const field = page.locator("input[type=text]:visible,input[type=url]:visible,input:not([type]):visible").last();
+if (!(await field.count())) lost("website text box");
+await field.click(); await page.keyboard.insertText(P.website); await page.waitForTimeout(800);
+await tap("[role=button]", "^Save$", "Save (website)"); await page.waitForTimeout(5000);
+return { website: (await body()).includes(host) ? "saved" : "not confirmed" };''',
+}
+
+def run_step(step, params, session):
+    """Run one step. Print only the step result or a control name, never raw browser output."""
+    code = PRELUDE.replace('__PARAMS__', json.dumps(params)) + f'// step: {step}\n' + STEPS[step]
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as handle:
+        handle.write(code)
+    try:
+        result = subprocess.run(['browse', 'execute', '-s', session, '--timeout-ms', '240000', '--json',
+                                 '--file', handle.name], capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f'step {step} timed out') from None
+    finally:
+        os.unlink(handle.name)
+    text = result.stdout
+    try:
+        envelope = json.JSONDecoder().raw_decode(text[text.index('{'):])[0]
+    except ValueError:
+        envelope = {}
+    if envelope.get('ok') and isinstance(envelope.get('value'), dict):
+        return envelope['value']
+    found = re.search(r'Control not found: [A-Za-z ,()]+', text + result.stderr)
+    raise RuntimeError(f'step {step}: {found.group(0) if found else "browse failed; output withheld"}')
+
+def stage(page, assets_dir, stage_dir):
+    """The browse sandbox reads files only under /tmp, so copy the images there."""
+    src, dst = Path(assets_dir) / slug_of(page), Path(stage_dir) / slug_of(page)
+    dst.mkdir(parents=True, exist_ok=True)
+    for name in ('cover.png', 'profile.png'):
+        if not (src / name).is_file():
+            fail(f'{slug_of(page)}: {name} missing; run assets first')
+        shutil.copyfile(src / name, dst / name)
+    return dst
+
+def back_to_personal(params, session):
+    if run_step('personal', params, session).get('state') != 'personal':
+        raise RuntimeError('session still acts as a Page; switch to the personal profile by hand')
+
+def polish(page, args, owner):
+    dst = stage(page, args.assets_dir, args.stage_dir)
+    params = {'owner': owner, 'link': page['link'], 'cover': str(dst / 'cover.png'),
+              'profile': str(dst / 'profile.png'), 'bio': page['about'], 'website': page['website']}
+    report, ok = {'page': slug_of(page)}, True
+    # A failed run leaves Chrome acting as a Page, so return to the personal profile first and last.
+    try:
+        back_to_personal(params, args.session)
+        report.update(run_step('switch', params, args.session))
+        for part in args.parts:
+            report.update(run_step(part, params, args.session))
+            ok = ok and not str(report[part]).startswith('not confirmed')
+    except RuntimeError as error:
+        report['error'], ok = str(error), False
+    finally:
+        try:
+            back_to_personal(params, args.session)
+            report['back'] = 'personal profile'
+        except RuntimeError as error:
+            report['back'], ok = str(error), False
+    print(json.dumps(report))
+    return ok
+
+def cmd_apply(args):
+    if not (owner := os.environ.get('FB_OWNER_NAME')):
+        fail('set FB_OWNER_NAME to the personal profile name shown in the account switcher')
+    if not shutil.which('browse'):
+        fail('browse CLI not found. Install it and pair Chrome: browse install')
+    if not os.path.realpath(args.stage_dir).startswith(('/tmp/', '/private/tmp/')):
+        fail('--stage-dir must be under /tmp; the browse sandbox reads files only there')
+    results = [polish(page, args, owner) for page in load_spec(args.spec, need=('link',))]
+    sys.exit(0 if all(results) else 1)
+
+def main():
+    parser = argparse.ArgumentParser(prog='fb-page-polish', description=__doc__.split('\n')[0])
+    sub = parser.add_subparsers(dest='command', required=True)
+    for name in ('assets', 'apply'):
+        p = sub.add_parser(name)
+        p.add_argument('--spec', required=True, help='spec JSON; see fb-page-polish.md')
+        p.add_argument('--assets-dir', required=True, help='where assets writes and apply reads <slug>/*.png')
+    apply = sub.choices['apply']
+    apply.add_argument('--session', default=os.environ.get('FB_POLISH_SESSION', 'personal'), help='browse session')
+    apply.add_argument('--stage-dir', default='/tmp/fb-page-polish', help='copy of the images under /tmp')
+    apply.add_argument('--parts', default=','.join(PARTS), type=lambda v: [p for p in v.split(',') if p],
+                       help='comma list of cover,profile,bio,website')
+    args = parser.parse_args()
+    if args.command == 'apply' and (not args.parts or set(args.parts) - set(PARTS)):
+        fail(f'--parts takes {",".join(PARTS)}')
+    (cmd_assets if args.command == 'assets' else cmd_apply)(args)
+
+if __name__ == '__main__':
+    main()
