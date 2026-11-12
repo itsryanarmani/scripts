@@ -18,7 +18,7 @@
 // plan = {
 //   campaign: { name, slug, objective?, lifetimeBudget, currencyMinorUnit?, flightDays, pageId, baseUrl,
 //               geo: { regionKey } | { countries: ["CA"] }, age: [min, max], placements: { facebook: ["feed"],
-//               instagram: ["stream"] }, optimizationGoal?, targetingSuggestions?: { <id>: <label> }, advantageAudience?: boolean },
+//               instagram: ["stream"] }, optimizationGoal?, targetingSuggestions?: { <id>: <label> }, advantageAudience?: boolean, allowAge65Plus?: boolean },
 //   utmTemplate: "utm_source=meta&...&utm_content={ad}&utm_term={persona}&meta_ad_id={{ad.id}}",
 //   creativesDir: "creatives",                     // relative to the plan; holds each ad's image file
 //   ads: [ { id, persona, landing, creative, headline, description, primaryText, cta, hypothesis, killGate } ]
@@ -56,10 +56,10 @@ function validate() {
   need(Number.isInteger(c.flightDays) && c.flightDays > 0, "campaign.flightDays is required");
   need(Array.isArray(c.age) && c.age.length === 2, "campaign.age must be [min, max]");
   // Meta reads a max age of 65 as "65 and older". A first live test with 25-65 spent 79% on people 65 and over.
-  need(c.age[1] < 65, "campaign.age max of 65 means 65 and older on Meta. Use 64 or less to stop at 64");
+  need(c.age[1] < 65 || c.allowAge65Plus === true, "campaign.age max of 65 means 65 and older on Meta. Use 64 or less to stop at 64, or set allowAge65Plus: true if you mean 65 and older");
   // With the automatic audience on, age and these titles are only hints Meta may ignore. With it off they are hard
   // filters, and a narrow title audience falls under the platform's 1,000-person floor and cannot deliver.
-  need(!c.targetingSuggestions || c.advantageAudience === true, "targetingSuggestions only work as hints when advantageAudience is true. As a hard filter a narrow audience cannot deliver");
+  // (Checked below as a warning, not a refusal: a narrow hard audience wastes time, it does not risk spend.)
   need(plan.utmTemplate?.includes("utm_content={ad}"), "utmTemplate must carry utm_content={ad}");
   need(Array.isArray(ads) && ads.length > 0, "plan needs at least one ad");
   for (const ad of ads) {
@@ -69,6 +69,9 @@ function validate() {
 }
 // --pause must work from the saved ids even when the plan no longer validates.
 if (mode !== "pause") validate();
+if (mode !== "pause" && c.targetingSuggestions && c.advantageAudience !== true) {
+  console.error("WARNING: targetingSuggestions are a hard filter while advantageAudience is off. A narrow audience (a few job titles in one region) can fall under the platform's 1,000-person floor and not deliver. Check the delivery estimate first.");
+}
 
 const TOKEN = process.env.META_MARKETING_TOKEN ?? "";
 const ACT = `act_${(process.env.META_ADS_AD_ACCOUNT_ID ?? "").replace(/^act_/, "")}`;
@@ -384,8 +387,13 @@ if (mode === "report") {
     }
     const share = total ? Math.round((100 * outside) / total) : 0;
     const spendShare = spendTotal ? Math.round((100 * spendOutside) / spendTotal) : 0;
-    out.push("", `age check: ${share}% of impressions and ${spendShare}% of spend were outside the plan's age range ${c.age[0]}-${c.age[1]}`);
-    if (total >= 100 && share > 20) out.push(`WARNING: ${share}% of impressions went outside the plan's age range ${c.age[0]}-${c.age[1]}. The audience setting is not holding. Check advantageAudience and the ad set's age.`);
+    // A bucket that only partly overlaps the plan range counts as inside, so these shares are lower bounds.
+    out.push("", `age check: at least ${share}% of impressions and ${spendShare}% of spend were outside the plan's age range ${c.age[0]}-${c.age[1]}`);
+    if (total >= 100 && share > 20) {
+      out.push(c.advantageAudience === true
+        ? `WARNING: at least ${share}% of impressions went outside the plan's age range. With advantageAudience on, age is only a hint Meta may expand past, so some of this is expected. Turn it off to make the age a hard limit.`
+        : `WARNING: at least ${share}% of impressions went outside the plan's age range ${c.age[0]}-${c.age[1]} even though advantageAudience is off. The age limit is not holding. Check the ad set's age in Ads Manager.`);
+    }
   }
   const done = rows.filter((r) => r.verdict === "KILL" || r.verdict === "LEADING");
   if (done.length) out.push("", `Record an outcome and a nextHypothesis in the plan for: ${done.map((r) => r.ad.id).join(", ")}.`);

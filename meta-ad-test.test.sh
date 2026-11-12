@@ -119,7 +119,13 @@ addrun "add refuses to bring back a retired ad" "retired" I_APPROVE_SPEND=yes no
 
 # Audience settings that Meta quietly ignores must be refused or made visible.
 refused "an age max of 65 (Meta reads it as 65 and older)" 'p["campaign"]["age"]=[25,65]' "65 and older"
-refused "job-title hints with the automatic audience off" 'p["campaign"]["targetingSuggestions"]={"1":"Lawyer"}' "targetingSuggestions"
+plan 'p["campaign"]["targetingSuggestions"]={"1":"Lawyer"}'
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && echo "$out" | grep -q "WARNING.*hard filter" && ok "job-title hints with the automatic audience off run, with a hard-filter warning" || no "job-title hints with the automatic audience off run, with a hard-filter warning (rc=$rc)"
+# (a) age 65 is allowed only when the plan says it means 65 and older
+plan 'p["campaign"]["age"]=[25,65]; p["campaign"]["allowAge65Plus"]=True'
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" 2>&1)"; rc=$?
+[ $rc -eq 0 ] && ok "age max 65 is accepted when the plan says allowAge65Plus" || no "age max 65 is accepted when the plan says allowAge65Plus (rc=$rc)"
 plan 'pass'
 out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" 2>&1)"
 echo "$out" | grep -q '"advantage_audience":0' && ok "the automatic audience is off unless the plan turns it on" || no "the automatic audience is off unless the plan turns it on"
@@ -130,7 +136,7 @@ echo "$out" | grep -q '"advantage_audience":1' && ok "advantageAudience true tur
 # The report must show delivery outside the plan's ages, and stay quiet when there is none.
 AGES_BAD='"ages":[{"age":"65+","impressions":"750","spend":"8.00","inline_link_clicks":"19"},{"age":"25-34","impressions":"100","spend":"1.00","inline_link_clicks":"1"},{"age":"35-44","impressions":"150","spend":"1.50","inline_link_clicks":"2"}]'
 AGES_OK='"ages":[{"age":"65+","impressions":"50","spend":"0.50","inline_link_clicks":"1"},{"age":"25-34","impressions":"450","spend":"4.50","inline_link_clicks":"5"},{"age":"45-54","impressions":"500","spend":"5.00","inline_link_clicks":"6"}]'
-report "the report warns when most delivery is outside the plan ages" "$GATE" "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_BAD}" "WARNING.*outside the plan's age range"
+report "the report warns when most delivery is outside the plan ages" "$GATE" "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_BAD}" "WARNING.*at least 75% of impressions"
 report "the report shows the share outside the plan ages" "$GATE" "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_BAD}" "75%"
 plan "$GATE"
 echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"
@@ -138,6 +144,13 @@ echo "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":
 out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" 2>&1)"
 echo "$out" | grep -q "WARNING" && no "the report stays quiet when delivery is inside the plan ages" || ok "the report stays quiet when delivery is inside the plan ages"
 echo "$out" | grep -q "age check" && ok "the report still prints the age check line" || no "the report still prints the age check line"
+
+plan "p['campaign']['advantageAudience']=True; $GATE"
+echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"
+echo "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_BAD}" > "$TMP/insights.json"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" 2>&1)"
+echo "$out" | grep -q "not holding" && no "with the automatic audience on, the report does not call expansion a failure" || ok "with the automatic audience on, the report does not call expansion a failure"
+echo "$out" | grep -qi "hint" && ok "with the automatic audience on, the report explains age is a hint" || no "with the automatic audience on, the report explains age is a hint"
 
 # The renderer needs a browser library. Check the spec guards only when it is present.
 if node -e "require.resolve('playwright')" 2>/dev/null; then
