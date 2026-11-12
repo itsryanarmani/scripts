@@ -166,6 +166,7 @@ AGES_EDGE='"ages":[{"age":"65+","impressions":"206","spend":"2.00","inline_link_
 echo "{\"currency\":\"CAD\",\"targeting\":{\"age_min\":25,\"age_max\":64,\"targeting_automation\":{\"advantage_audience\":0}},\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_EDGE}" > "$TMP/insights.json"
 out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" 2>&1)"
 echo "$out" | grep -q "at least 20%" && ok "the age share is floored, so 20.6% shows as at least 20%" || no "the age share is floored, so 20.6% shows as at least 20%"
+echo "$out" | grep -q "whole days" && ok "the warning says Meta reports whole days, so a same-day change can still show" || no "the warning says Meta reports whole days, so a same-day change can still show"
 echo "$out" | grep -q "WARNING" && ok "20.6% is above the 20% threshold, so it warns while the display is floored" || no "20.6% is above the 20% threshold, so it warns while the display is floored"
 plan "p['campaign']['age']=[25,65]; p['campaign']['allowAge65Plus']=True; $GATE"
 echo "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[],$AGES_OK}" > "$TMP/insights.json"
@@ -178,8 +179,12 @@ echo '{"campaign":"C","adset":"S","ads":{"a-1":"AD1"}}' > "$TMP/created.json"
 echo "{\"currency\":\"CAD\",\"adset\":{\"effective_status\":\"ACTIVE\"},\"ads\":{\"AD1\":{\"effective_status\":\"ACTIVE\"}},\"insights\":[]}" > "$TMP/insights.json"
 out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --since tomorrow 2>&1)"; rc=$?
 [ $rc -ne 0 ] && echo "$out" | grep -qi -- "--since" && ok "--since refuses a value that is not a date" || no "--since refuses a value that is not a date (rc=$rc)"
-out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --since 2026-11-13 2>&1)"; rc=$?
-[ $rc -eq 0 ] && echo "$out" | grep -q "since 2026-11-13" && ok "--since 2026-11-13 is accepted and named in the report" || no "--since 2026-11-13 is accepted and named in the report (rc=$rc)"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --since 2026-11-01 2>&1)"; rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -qi "saved file" && ok "--since refuses a saved fixture, which has no dates to filter" || no "--since refuses a saved fixture, which has no dates to filter (rc=$rc)"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --since 2026-02-31 2>&1)"; rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -qi -- "--since" && ok "--since refuses a date that does not exist" || no "--since refuses a date that does not exist (rc=$rc)"
+out="$(META_MARKETING_TOKEN=SECRETTOKEN node "$HERE/meta-ad-test.mjs" "$TMP/plan.json" --report --insights "$TMP/insights.json" --since 2999-01-01 2>&1)"; rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -qi -- "--since" && ok "--since refuses a date in the future" || no "--since refuses a date in the future (rc=$rc)"
 
 # Instagram placement needs an Instagram account on the Page. With the automatic audience on, Meta quietly skips it;
 # with it off, every ad errors. The plan must say the account is connected, or the tool warns.

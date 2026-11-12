@@ -41,7 +41,12 @@ const flagValue = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] 
 const insightsFile = flagValue("--insights");
 const mdFile = flagValue("--md");
 const since = flagValue("--since");
-if (argv.includes("--since") && !/^\d{4}-\d{2}-\d{2}$/.test(since ?? "")) throw new Error("--since needs a date like 2026-11-13");
+if (argv.includes("--since")) {
+  const real = /^\d{4}-\d{2}-\d{2}$/.test(since ?? "") && new Date(`${since}T00:00:00Z`).toISOString().slice(0, 10) === since;
+  if (!real) throw new Error("--since needs a real date like 2026-11-13");
+  if (since > new Date().toISOString().slice(0, 10)) throw new Error("--since cannot be a date in the future");
+  if (insightsFile) throw new Error("--since cannot filter a saved file: it has no dates. Run it against the live account");
+}
 const applyKillGate = argv.includes("--apply-kill-gate");
 const idList = (name) => (flagValue(name) ?? "").split(",").map((x) => x.trim()).filter(Boolean);
 const root = dirname(resolve(planPath));
@@ -73,7 +78,7 @@ function validate() {
 // --pause must work from the saved ids even when the plan no longer validates.
 if (mode !== "pause") validate();
 if (mode !== "pause" && c.placements?.instagram?.length && c.instagramConnected !== true) {
-  console.error("WARNING: the plan uses an Instagram placement but does not say an Instagram account is connected to the Page (instagramConnected: true). With the automatic audience on, Meta quietly skips Instagram. With it off, every ad errors until an account exists. Use Facebook only, or connect an account first.");
+  console.error("WARNING: the plan uses an Instagram placement but does not say an Instagram account is connected to the Page (instagramConnected: true). Meta may reject the ads without an Instagram identity: in one live test, with the automatic audience off, every ad errored until the placement was removed. Use Facebook only, or connect an account first.");
 }
 if (mode !== "pause" && c.targetingSuggestions && c.advantageAudience !== true) {
   console.error("WARNING: targetingSuggestions are a hard filter while advantageAudience is off. A narrow audience (a few job titles in one region) can fall under the platform's 1,000-person floor and not deliver. Check the delivery estimate first.");
@@ -404,8 +409,8 @@ if (mode === "report") {
     out.push("", `age check: at least ${share}% of impressions and ${spendShare}% of spend were outside the live age range ${liveMin}-${maxLabel}`);
     if (total >= 100 && rawShare > 20) {
       out.push(autoOn
-        ? `WARNING: at least ${share}% of impressions went outside the age range. With the automatic audience on, age is only a hint Meta may expand past, so some of this is expected. Turn it off to make the age a hard limit.`
-        : `WARNING: at least ${share}% of impressions went outside the age range ${liveMin}-${maxLabel} even though the automatic audience is off. The age limit is not holding. Check the ad set's age in Ads Manager.`);
+        ? `WARNING: at least ${share}% of impressions went outside the age range. With the automatic audience on, age is only a hint Meta may expand past, so some of this is expected. Turn it off to make the age a hard limit. Meta reports whole days, so use --since with the first full day after a change.`
+        : `WARNING: at least ${share}% of impressions went outside the age range ${liveMin}-${maxLabel} even though the automatic audience is off. The age limit is not holding. Meta reports whole days, so a change made today can still show here: use --since with the first full day after it. If it still shows, check the ad set's age in Ads Manager.`);
     }
   }
   const done = rows.filter((r) => r.verdict === "KILL" || r.verdict === "LEADING");
