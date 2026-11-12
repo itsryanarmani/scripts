@@ -10,6 +10,7 @@
 //   meta-ad-test.mjs plan.json --retire old1,old2 --after new1,new2   # pause old ads once the new ones are approved
 //   meta-ad-test.mjs plan.json --report    # spend, CTR and CPC per ad vs the plan; verdict per ad (read only)
 //   meta-ad-test.mjs plan.json --report --apply-kill-gate   # also pause every ad that hit its kill gate
+//   meta-ad-test.mjs plan.json --report --since 2026-11-13   # only count days from that date (after a targeting change)
 //   meta-ad-test.mjs plan.json --report --insights saved.json [--md report.md]   # offline: read a saved fixture
 //
 // Environment: META_MARKETING_TOKEN, META_ADS_AD_ACCOUNT_ID, META_PIXEL_ID (optional). The token goes in a
@@ -18,7 +19,7 @@
 // plan = {
 //   campaign: { name, slug, objective?, lifetimeBudget, currencyMinorUnit?, flightDays, pageId, baseUrl,
 //               geo: { regionKey } | { countries: ["CA"] }, age: [min, max], placements: { facebook: ["feed"],
-//               instagram: ["stream"] }, optimizationGoal?, targetingSuggestions?: { <id>: <label> } },
+//               instagram: ["stream"] }, optimizationGoal?, targetingSuggestions?: { <id>: <label> }, advantageAudience?: boolean, allowAge65Plus?: boolean, instagramConnected?: boolean },
 //   utmTemplate: "utm_source=meta&...&utm_content={ad}&utm_term={persona}&meta_ad_id={{ad.id}}",
 //   creativesDir: "creatives",                     // relative to the plan; holds each ad's image file
 //   ads: [ { id, persona, landing, creative, headline, description, primaryText, cta, hypothesis, killGate } ]
@@ -39,6 +40,13 @@ const mode = argv.includes("--create") ? "create" : argv.includes("--activate") 
 const flagValue = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
 const insightsFile = flagValue("--insights");
 const mdFile = flagValue("--md");
+const since = flagValue("--since");
+if (argv.includes("--since")) {
+  const real = /^\d{4}-\d{2}-\d{2}$/.test(since ?? "") && new Date(`${since}T00:00:00Z`).toISOString().slice(0, 10) === since;
+  if (!real) throw new Error("--since needs a real date like 2026-11-13");
+  if (since > new Date().toISOString().slice(0, 10)) throw new Error("--since cannot be a date in the future");
+  if (insightsFile) throw new Error("--since cannot filter a saved file: it has no dates. Run it against the live account");
+}
 const applyKillGate = argv.includes("--apply-kill-gate");
 const idList = (name) => (flagValue(name) ?? "").split(",").map((x) => x.trim()).filter(Boolean);
 const root = dirname(resolve(planPath));
@@ -55,6 +63,11 @@ function validate() {
   need(Number.isFinite(c.lifetimeBudget) && c.lifetimeBudget > 0, "campaign.lifetimeBudget is required (a cap Meta cannot exceed)");
   need(Number.isInteger(c.flightDays) && c.flightDays > 0, "campaign.flightDays is required");
   need(Array.isArray(c.age) && c.age.length === 2, "campaign.age must be [min, max]");
+  // Meta reads a max age of 65 as "65 and older". A first live test with 25-65 spent 79% on people 65 and over.
+  need(!["dry", "create"].includes(mode) || c.age[1] < 65 || c.allowAge65Plus === true, "campaign.age max of 65 means 65 and older on Meta. Use 64 or less to stop at 64, or set allowAge65Plus: true if you mean 65 and older");
+  // With the automatic audience on, age and these titles are only hints Meta may ignore. With it off they are hard
+  // filters, and a narrow title audience falls under the platform's 1,000-person floor and cannot deliver.
+  // (Checked below as a warning, not a refusal: a narrow hard audience wastes time, it does not risk spend.)
   need(plan.utmTemplate?.includes("utm_content={ad}"), "utmTemplate must carry utm_content={ad}");
   need(Array.isArray(ads) && ads.length > 0, "plan needs at least one ad");
   for (const ad of ads) {
@@ -64,6 +77,12 @@ function validate() {
 }
 // --pause must work from the saved ids even when the plan no longer validates.
 if (mode !== "pause") validate();
+if (mode !== "pause" && c.placements?.instagram?.length && c.instagramConnected !== true) {
+  console.error("WARNING: the plan uses an Instagram placement but does not say an Instagram account is connected to the Page (instagramConnected: true). Meta may reject the ads without an Instagram identity: in one live test, with the automatic audience off, every ad errored until the placement was removed. Use Facebook only, or connect an account first.");
+}
+if (mode !== "pause" && c.targetingSuggestions && c.advantageAudience !== true) {
+  console.error("WARNING: targetingSuggestions are a hard filter while advantageAudience is off. A narrow audience (a few job titles in one region) can fall under the platform's 1,000-person floor and not deliver. Check the delivery estimate first.");
+}
 
 const TOKEN = process.env.META_MARKETING_TOKEN ?? "";
 const ACT = `act_${(process.env.META_ADS_AD_ACCOUNT_ID ?? "").replace(/^act_/, "")}`;
@@ -110,7 +129,7 @@ const targeting = {
   ...(c.placements?.instagram ? { instagram_positions: c.placements.instagram } : {}),
   // Automatic audience on: suggestions are hints, not a hard filter. A narrow hard filter can fall under
   // the platform's reporting floor and saturate on a small budget.
-  targeting_automation: { advantage_audience: 1 },
+  targeting_automation: { advantage_audience: c.advantageAudience === true ? 1 : 0 },
   ...(c.targetingSuggestions ? { flexible_spec: [{ work_positions: Object.entries(c.targetingSuggestions).map(([id, name]) => ({ id, name })) }] } : {}),
 };
 
@@ -302,12 +321,13 @@ if (mode === "retire") {
 if (mode === "report") {
   if (applyKillGate && insightsFile) throw new Error("--apply-kill-gate refuses to act on a saved fixture. Run it against the live account.");
   const made = JSON.parse(readFileSync(createdFile, "utf8"));
+  const dateRange = since ? `time_range=${encodeURIComponent(JSON.stringify({ since, until: new Date().toISOString().slice(0, 10) }))}` : "date_preset=maximum";
   async function allInsights() {
     // Follow every page. An ad on a later page would otherwise read as no delivery and escape its gate.
     const rows = [];
     let after;
     do {
-      const r = await graph(`${made.adset}/insights?level=ad&date_preset=maximum&limit=100&fields=ad_id,spend,impressions,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click${after ? `&after=${after}` : ""}`, "GET");
+      const r = await graph(`${made.adset}/insights?level=ad&${dateRange}&limit=100&fields=ad_id,spend,impressions,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click${after ? `&after=${after}` : ""}`, "GET");
       rows.push(...(r.data ?? []));
       after = r.paging?.next ? r.paging.cursors?.after : undefined;
     } while (after);
@@ -319,7 +339,9 @@ if (mode === "report") {
         adset: await graph(`${made.adset}?fields=effective_status,lifetime_budget,budget_remaining`, "GET"),
         ads: Object.fromEntries(await Promise.all(Object.values(made.ads).map(async (id) => [id, await graph(`${id}?fields=effective_status`, "GET")]))),
         currency: (await graph(`${ACT}?fields=currency`, "GET")).currency,
+        targeting: (await graph(`${made.adset}?fields=targeting`, "GET")).targeting,
         insights: await allInsights(),
+        ages: (await graph(`${made.adset}/insights?${dateRange}&breakdowns=age&limit=100&fields=impressions,spend,inline_link_clicks`, "GET")).data ?? [],
       };
   const range = (text) => {
     const m = /(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/.exec(String(text ?? ""));
@@ -355,13 +377,41 @@ if (mode === "report") {
   });
   const out = [];
   const a = read.adset ?? {};
-  out.push(`ad set ${a.effective_status ?? "?"}: budget remaining ${a.budget_remaining ?? "?"} of ${a.lifetime_budget ?? "?"} (minor units)`);
+  out.push(`${since ? `numbers since ${since} only. ` : ""}ad set ${a.effective_status ?? "?"}: budget remaining ${a.budget_remaining ?? "?"} of ${a.lifetime_budget ?? "?"} (minor units)`);
   for (const r of rows) {
     out.push("", `${r.ad.id}  ${r.verdict}  [${r.status}]  spend ${r.spend.toFixed(2)}  impressions ${r.impressions}  link clicks ${r.clicks}  CTR ${r.ctr}%  CPC ${r.cpc}`);
     out.push(`  verdict: ${r.why}`, `  hypothesis: ${r.ad.hypothesis}`, `  expected: ctr ${r.ad.expected?.ctr ?? "-"}, cpc ${r.expCpcText ?? "-"}; kill gate: ${r.ad.killGate}`);
     for (const n of r.notes) out.push(`  note: ${n}`);
     if (r.ad.outcome) out.push(`  outcome: ${r.ad.outcome}`);
     if (r.ad.nextHypothesis) out.push(`  next hypothesis: ${r.ad.nextHypothesis}`);
+  }
+  // Where did the delivery go? A setting Meta ignores shows up here first.
+  const ageRange = (label) => {
+    const m = /^(\d+)(?:-(\d+)|\+)$/.exec(String(label));
+    return m ? [Number(m[1]), m[2] ? Number(m[2]) : 999] : null;
+  };
+  if (Array.isArray(read.ages) && read.ages.length) {
+    // Judge delivery against what Meta actually has live, not against what the plan says.
+    const liveMin = read.targeting?.age_min ?? c.age[0], liveMax = read.targeting?.age_max ?? c.age[1];
+    const autoOn = read.targeting?.targeting_automation ? read.targeting.targeting_automation.advantage_audience === 1 : c.advantageAudience === true;
+    const maxLabel = liveMax >= 65 ? "65+" : String(liveMax);
+    let total = 0, outside = 0, spendTotal = 0, spendOutside = 0;
+    for (const a of read.ages) {
+      const r = ageRange(a.age);
+      const i = Number(a.impressions ?? 0), sp = Number(a.spend ?? 0);
+      total += i; spendTotal += sp;
+      if (r && (r[0] > liveMax || r[1] < liveMin)) { outside += i; spendOutside += sp; }
+    }
+    // Floored, and a bucket that only partly overlaps the range counts as inside, so both are lower bounds.
+    const rawShare = total ? (100 * outside) / total : 0;
+    const share = Math.floor(rawShare);
+    const spendShare = spendTotal ? Math.floor((100 * spendOutside) / spendTotal) : 0;
+    out.push("", `age check: at least ${share}% of impressions and ${spendShare}% of spend were outside the live age range ${liveMin}-${maxLabel}`);
+    if (total >= 100 && rawShare > 20) {
+      out.push(autoOn
+        ? `WARNING: at least ${share}% of impressions went outside the age range. With the automatic audience on, age is only a hint Meta may expand past, so some of this is expected. Turn it off to make the age a hard limit. Meta reports whole days, so use --since with the first full day after a change.`
+        : `WARNING: at least ${share}% of impressions went outside the age range ${liveMin}-${maxLabel} even though the automatic audience is off. The age limit is not holding. Meta reports whole days, so a change made today can still show here: use --since with the first full day after it. If it still shows, check the ad set's age in Ads Manager.`);
+    }
   }
   const done = rows.filter((r) => r.verdict === "KILL" || r.verdict === "LEADING");
   if (done.length) out.push("", `Record an outcome and a nextHypothesis in the plan for: ${done.map((r) => r.ad.id).join(", ")}.`);
