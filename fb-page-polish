@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Brand an existing Facebook Page: profile picture, cover photo, bio and website.
+"""Brand an existing Facebook Page and manage its posts.
 
-`assets` builds the images locally. `apply` drives the logged-in Chrome through `browse execute`.
+`assets` builds the images locally. `apply`, `post`, `hide-autoposts` and `verify` drive the
+logged-in Chrome through `browse execute`.
 Every name, link and colour comes from the spec, a flag or an env var. See fb-page-polish.md.
 """
 import argparse
@@ -146,6 +147,13 @@ const body = () => page.innerText("body");
 // A new Page shows "Welcome to your new Page"; it blocks every click until "Use Page".
 const usePage = async () => { if (await has("[role=button],button", "^Use Page$")) { await tap("[role=button],button", "^Use Page$", "Use Page"); await page.waitForTimeout(1500); } };
 const open = async (url) => { await page.bringToFront(); await page.goto(url, GO); await page.waitForTimeout(7000); await usePage(); };
+const dialogButton = (label) => page.evaluate((l) => {
+  const b = [...document.querySelectorAll("[role=dialog] [role=button],[role=dialog] button")]
+    .find(e => (e.innerText || e.getAttribute("aria-label") || "").trim() === l);
+  if (b) b.click();
+  return Boolean(b);
+}, label);
+const scroll = async () => { for (let i = 0; i < (P.scrolls || 0); i++) { await page.mouse.wheel(0, 1800); await page.waitForTimeout(1500); } };
 const aboutUrl = P.link.includes("?") ? P.link + "&sk=about" : P.link.replace(/\/$/, "") + "/about";
 '''
 
@@ -204,6 +212,50 @@ if (!(await field.count())) lost("website text box");
 await field.click(); await page.keyboard.insertText(P.website); await page.waitForTimeout(800);
 await tap("[role=button]", "^Save$", "Save (website)"); await page.waitForTimeout(5000);
 return { website: (await body()).includes(host) ? "saved" : "not confirmed" };''',
+    # Read-only. Scrolls load the recent posts. It counts text, not post boxes. Python normalises the keys.
+    'count': r'''
+await open(P.link);
+await scroll();
+const text = (await body()).replace(/\s+/g, " ");
+return { counts: P.keys.map(k => text.split(k).length - 1) };''',
+    # A fixed wait sometimes found no composer, so wait for it. Step 1 of the composer ends with Next.
+    'compose': r'''
+await open(P.link);
+const ready = await page.waitForFunction(() => [...document.querySelectorAll("span")]
+  .some(e => /^(What.s on your mind\?|Share a thought\.\.\.)$/.test((e.textContent || "").trim())), null, { timeout: 30000 })
+  .then(() => true, () => false);
+if (!ready) lost("What's on your mind? box");
+await tap("span", "^(What.s on your mind\\?|Share a thought\\.\\.\\.)$", "What's on your mind? box"); await page.waitForTimeout(3500);
+const box = page.locator("[role=dialog] [role=textbox][contenteditable=true]").first();
+if (!(await box.count())) lost("post text box");
+await box.click(); await page.keyboard.insertText(P.text); await page.waitForTimeout(2500);
+if (!(await dialogButton("Next"))) lost("Next (composer)");
+return { composed: true };''',
+    # Step 2 ends with Post. Right after Next the button is not ready and a click publishes nothing,
+    # so wait first. Python calls this step again until the dialog closes.
+    'publish': r'''
+await page.waitForTimeout(P.settle);
+const clicked = await dialogButton("Post");
+await page.waitForTimeout(5000);
+const still = await page.evaluate(() => [...document.querySelectorAll("[role=dialog]")].some(d => /Create post|Post settings/.test(d.innerText)));
+return { clicked, open: still };''',
+    # Facebook offers only "Hide from Page" for its own profile-picture and cover-photo posts.
+    'hide': r'''
+await open(P.link); await scroll();
+const found = await page.evaluate(() => {
+  const head = [...document.querySelectorAll("span,a")]
+    .find(e => e.children.length <= 2 && /updated their (profile picture|cover photo)/i.test(e.textContent || ""));
+  if (!head) return "none";
+  let p = head, btn = null;
+  for (let i = 0; i < 12 && p && !btn; i++) { btn = p.querySelector("[aria-label^=\"Actions for this post\"]"); p = p.parentElement; }
+  if (!btn) return "no button";
+  btn.scrollIntoView({ block: "center" }); btn.click(); return "open";
+});
+if (found === "none") return { hidden: false };
+if (found !== "open") lost("Actions for this post");
+await page.waitForTimeout(2000);
+await tap("span", "^Hide from Page$", "Hide from Page"); await page.waitForTimeout(4000);
+return { hidden: true };''',
 }
 
 CONTROLS = set(re.findall(r'(?:lost\(|, )"([^"^$]+)"\)', PRELUDE + ''.join(STEPS.values())))
@@ -245,34 +297,156 @@ def back_to_personal(params, session):
     if run_step('personal', params, session).get('state') != 'personal':
         raise RuntimeError('session still acts as a Page; switch to the personal profile by hand')
 
-def polish(page, args, owner):
-    dst = stage(page, args.assets_dir, args.stage_dir)
-    params = {'owner': owner, 'link': page['link'], 'cover': str(dst / 'cover.png'),
-              'profile': str(dst / 'profile.png'), 'bio': page['about'], 'website': page['website']}
+def as_owner(page, params, session, work):
+    """Run work(report) between two switches to the personal profile.
+
+    A failed run leaves Chrome acting as a Page, so switch back first and last, also after a failure.
+    """
     report, ok = {'page': slug_of(page)}, True
-    # A failed run leaves Chrome acting as a Page, so return to the personal profile first and last.
     try:
-        back_to_personal(params, args.session)
-        report.update(run_step('switch', params, args.session))
-        for part in args.parts:
-            report.update(run_step(part, params, args.session))
-            ok = ok and not str(report[part]).startswith('not confirmed')
+        back_to_personal(params, session)
+        ok = work(report)
     except RuntimeError as error:
         report['error'], ok = str(error), False
     finally:
         try:
-            back_to_personal(params, args.session)
+            back_to_personal(params, session)
             report['back'] = 'personal profile'
         except RuntimeError as error:
             report['back'], ok = str(error), False
     print(json.dumps(report))
     return ok
 
-def cmd_apply(args):
-    if not (owner := os.environ.get('FB_OWNER_NAME')):
+def polish(page, args, owner):
+    dst = stage(page, args.assets_dir, args.stage_dir)
+    params = {'owner': owner, 'link': page['link'], 'cover': str(dst / 'cover.png'),
+              'profile': str(dst / 'profile.png'), 'bio': page['about'], 'website': page['website']}
+    def work(report):
+        report.update(run_step('switch', params, args.session))
+        ok = True
+        for part in args.parts:
+            report.update(run_step(part, params, args.session))
+            ok = ok and not str(report[part]).startswith('not confirmed')
+        return ok
+    return as_owner(page, params, args.session, work)
+
+def key_of(text):
+    """First line, whitespace normalised, 45 characters. A 25-character key matched the Page name."""
+    return ' '.join(text.strip().split('\n')[0].split())[:45]
+
+def load_posts(path, pages):
+    """Read {"posts": [{"page": "<slug>", "text": "..."}]} and group it by Page, in file order."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as error:
+        fail(f'cannot read posts {path}: {error.__class__.__name__}')
+    posts = data.get('posts') if isinstance(data, dict) else None
+    if not isinstance(posts, list) or not posts:
+        fail('posts file has no posts')
+    by_slug, plan = {slug_of(p): p for p in pages}, {}
+    for i, post in enumerate(posts):
+        where = f'post {i + 1}'
+        if not isinstance(post, dict) or not all(isinstance(post.get(k), str) and post[k].strip() for k in ('page', 'text')):
+            fail(f'{where}: needs "page" (a spec slug) and "text"')
+        if post['page'] not in by_slug:
+            fail(f'{where}: no page with slug "{post["page"]}" in the spec')
+        page, key = by_slug[post['page']], key_of(post['text'])
+        if len(key) < 20 or key in page['name'] or key in page['about']:
+            fail(f'{where}: the first line is too short or repeats the Page name or bio, so it cannot be counted')
+        rows = plan.setdefault(post['page'], [])
+        if key in [k for k, _ in rows]:
+            fail(f'{where}: starts like an earlier post for the same Page')
+        rows.append((key, post['text']))
+    return [(by_slug[slug], rows) for slug, rows in plan.items()]
+
+def switch_in(report, params, session):
+    """Without Switch Now the composer posts as the owner and the Page menus are missing."""
+    report.update(run_step('switch', params, session))
+    if not report.get('switched'):
+        raise RuntimeError('Switch Now not found; refusing to act as the personal profile')
+
+def post_page(page, rows, args, owner):
+    params = {'owner': owner, 'link': page['link'], 'settle': int(args.settle * 1000), 'scrolls': args.scrolls}
+    def work(report):
+        counts = run_step('count', dict(params, keys=[k for k, _ in rows]), args.session)['counts']
+        report['posts'], ok, switched = [], True, False
+        for (key, text), seen in zip(rows, counts):
+            entry = {'post': key[:30]}
+            report['posts'].append(entry)
+            if seen:  # Never post a duplicate.
+                entry['status'] = 'already on the Page' if seen == 1 else f'doubled ({seen}), not posted'
+                ok = ok and seen == 1
+                continue
+            if not switched:  # The composer shows the Page as the author only after Switch Now.
+                switch_in(report, params, args.session)
+                switched = True
+            run_step('compose', dict(params, text=text), args.session)
+            for _ in range(args.tries):
+                if not run_step('publish', params, args.session).get('open'):
+                    break
+            else:
+                entry['status'] = f'not confirmed: dialog still open after {args.tries} tries'
+                return False
+            seen = run_step('count', dict(params, keys=[key]), args.session)['counts'][0]
+            entry['status'] = 'posted' if seen == 1 else f'not confirmed: seen {seen} times'
+            ok = ok and seen == 1
+        return ok
+    return as_owner(page, params, args.session, work)
+
+def hide_page(page, args, owner):
+    params = {'owner': owner, 'link': page['link'], 'scrolls': args.scrolls}
+    def work(report):
+        switch_in(report, params, args.session)
+        report['hidden'] = 0
+        for _ in range(args.max_rounds):
+            if not run_step('hide', params, args.session).get('hidden'):
+                report['autoposts'] = 'none left'
+                return True
+            report['hidden'] += 1
+        report['autoposts'] = f'some may be left after {args.max_rounds} rounds'
+        return False
+    return as_owner(page, params, args.session, work)
+
+def verify_page(page, rows, session, scrolls):
+    report = {'page': slug_of(page)}
+    try:
+        counts = run_step('count', {'link': page['link'], 'keys': [k for k, _ in rows], 'scrolls': scrolls}, session)['counts']
+    except RuntimeError as error:
+        report['error'] = str(error)
+        print(json.dumps(report))
+        return False
+    report['posts'] = [{'post': k[:30], 'count': n, 'status': {0: 'missing', 1: 'ok'}.get(n, 'doubled')}
+                       for (k, _), n in zip(rows, counts)]
+    print(json.dumps(report))
+    return all(n == 1 for n in counts)
+
+def preflight(owner_needed=True):
+    owner = os.environ.get('FB_OWNER_NAME')
+    if owner_needed and not owner:
         fail('set FB_OWNER_NAME to the personal profile name shown in the account switcher')
     if not shutil.which('browse'):
         fail('browse CLI not found. Install it and pair Chrome: browse install')
+    return owner
+
+def cmd_post(args):
+    if not args.approved:
+        fail('posts are public. Pass --approved only after the owner approved every text in the posts file')
+    plan = load_posts(args.posts, load_spec(args.spec, need=('link',)))
+    owner = preflight()
+    sys.exit(0 if all([post_page(page, rows, args, owner) for page, rows in plan]) else 1)
+
+def cmd_hide(args):
+    pages = load_spec(args.spec, need=('link',))
+    owner = preflight()
+    sys.exit(0 if all([hide_page(page, args, owner) for page in pages]) else 1)
+
+def cmd_verify(args):
+    plan = load_posts(args.posts, load_spec(args.spec, need=('link',)))
+    preflight(owner_needed=False)
+    sys.exit(0 if all([verify_page(page, rows, args.session, args.scrolls) for page, rows in plan]) else 1)
+
+def cmd_apply(args):
+    owner = preflight()
     if not os.path.realpath(args.stage_dir).startswith(('/tmp/', '/private/tmp/')):
         fail('--stage-dir must be under /tmp; the browse sandbox reads files only there')
     results = [polish(page, args, owner) for page in load_spec(args.spec, need=('link',))]
@@ -281,19 +455,31 @@ def cmd_apply(args):
 def main():
     parser = argparse.ArgumentParser(prog='fb-page-polish', description=__doc__.split('\n')[0])
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('assets', 'apply'):
+    commands = {'assets': cmd_assets, 'apply': cmd_apply, 'post': cmd_post, 'hide-autoposts': cmd_hide, 'verify': cmd_verify}
+    for name in commands:
         p = sub.add_parser(name)
         p.add_argument('--spec', required=True, help='spec JSON; see fb-page-polish.md')
-        p.add_argument('--assets-dir', required=True, help='where assets writes and apply reads <slug>/*.png')
+        if name in ('assets', 'apply'):
+            p.add_argument('--assets-dir', required=True, help='where assets writes and apply reads <slug>/*.png')
+        if name in ('post', 'verify'):
+            p.add_argument('--posts', required=True, help='posts JSON; see fb-page-polish.md')
+        if name in ('post', 'hide-autoposts', 'verify'):
+            p.add_argument('--scrolls', type=int, default=6, help='scrolls before reading the Page; raise it for an older Page')
+        if name != 'assets':
+            p.add_argument('--session', default=os.environ.get('FB_POLISH_SESSION', 'personal'), help='browse session')
     apply = sub.choices['apply']
-    apply.add_argument('--session', default=os.environ.get('FB_POLISH_SESSION', 'personal'), help='browse session')
     apply.add_argument('--stage-dir', default='/tmp/fb-page-polish', help='copy of the images under /tmp')
     apply.add_argument('--parts', default=','.join(PARTS), type=lambda v: [p for p in v.split(',') if p],
                        help='comma list of cover,profile,bio,website')
+    post = sub.choices['post']
+    post.add_argument('--approved', action='store_true', help='the owner approved every text in the posts file')
+    post.add_argument('--settle', type=float, default=6, help='seconds to wait before each Post click')
+    post.add_argument('--tries', type=int, default=4, help='Post clicks before giving up')
+    sub.choices['hide-autoposts'].add_argument('--max-rounds', type=int, default=10, help='most posts to hide per Page')
     args = parser.parse_args()
     if args.command == 'apply' and (not args.parts or set(args.parts) - set(PARTS)):
         fail(f'--parts takes {",".join(PARTS)}')
-    (cmd_assets if args.command == 'assets' else cmd_apply)(args)
+    commands[args.command](args)
 
 if __name__ == '__main__':
     main()
