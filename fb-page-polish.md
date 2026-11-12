@@ -21,7 +21,6 @@ FB_OWNER_NAME="<your profile name>" fb-page-polish apply --spec spec.json --asse
 
 `apply` flags: `--session` (`FB_POLISH_SESSION`, default `personal`), `--stage-dir`
 (default `/tmp/fb-page-polish`), `--parts` (default `cover,profile,bio,website`).
-
 ## Spec
 
 ```json
@@ -45,8 +44,8 @@ spec. `color` is `#rrggbb`. `link` is the Page profile link (`apply` only).
 6. Website: **About** > **Links** > **Websites, blogs, portfolios** > **Save**.
 7. Switch to the personal profile again, even when a step failed.
 
-A part that has a value is skipped. The profile picture has no reliable "set"
-sign, so `apply` always sets it unless `--parts` leaves it out.
+A part that has a value is skipped. The profile picture has no "set" sign, so
+`apply` always uploads it and reports `uploaded, verify by screenshot`.
 
 ## Traps
 
@@ -66,9 +65,10 @@ sign, so `apply` always sets it unless `--parts` leaves it out.
 - Check the cover with `Edit cover photo`. Other text gave a false failure.
 - Meta's public picture endpoint shows a silhouette for a real photo. Use a
   screenshot of the Page instead.
-- Meta limits Page creation, not edits.
+- Meta limits Page creation, not edits. The personal-profile check looks for
+  "Friends" in the page text; it is a heuristic, so screenshot the end state.
 
-`apply` never prints raw browser output, so a token in an error stays out of logs.
+`apply` never prints raw browser output. An error names only a control this file defines.
 
 ## Test
 

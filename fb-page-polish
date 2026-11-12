@@ -42,11 +42,12 @@ def load_spec(path, need):
     for i, page in enumerate(pages):
         where = f'page {i + 1}'
         for key in ('name', 'about', 'website', 'color', *need):
-            if not page.get(key):
-                fail(f'{where}: missing "{key}"')
+            if not isinstance(page, dict) or not isinstance(page.get(key), str) or not page[key]:
+                fail(f'{where}: missing "{key}" (text)')
         for bad, why in ((len(page['about']) > BIO_MAX, f'about is {len(page["about"])} characters; Facebook allows {BIO_MAX}'),
                          (not page['website'].startswith('https://'), 'website must start with https://'),
-                         (not re.fullmatch(r'#[0-9a-fA-F]{6}', page['color']), 'color must look like #2f5d50')):
+                         (not re.fullmatch(r'#[0-9a-fA-F]{6}', page['color']), 'color must look like #2f5d50'),
+                         (not re.fullmatch(r'[a-z0-9-]+', slug_of(page)), 'slug takes only a-z, 0-9 and -')):
             if bad:
                 fail(f'{where}: {why}')
         if 'logo' in page:
@@ -182,7 +183,7 @@ const input = page.locator("[role=dialog] input[type=file]").first();
 if (!(await input.count())) lost("profile picture file input");
 await input.setInputFiles(P.profile); await page.waitForTimeout(7000);
 await tap("[role=dialog] [role=button],[role=dialog] button", "^Save$", "Save (profile picture)"); await page.waitForTimeout(9000);
-return { profile: "saved, verify by screenshot" };''',
+return { profile: "uploaded, verify by screenshot" };''',
     'bio': r'''
 await open(aboutUrl);
 if (!(await has("span", "^About you$"))) return { bio: "already set" };
@@ -205,6 +206,8 @@ await tap("[role=button]", "^Save$", "Save (website)"); await page.waitForTimeou
 return { website: (await body()).includes(host) ? "saved" : "not confirmed" };''',
 }
 
+CONTROLS = set(re.findall(r'(?:lost\(|, )"([^"^$]+)"\)', PRELUDE + ''.join(STEPS.values())))
+
 def run_step(step, params, session):
     """Run one step. Print only the step result or a control name, never raw browser output."""
     code = PRELUDE.replace('__PARAMS__', json.dumps(params)) + f'// step: {step}\n' + STEPS[step]
@@ -224,8 +227,9 @@ def run_step(step, params, session):
         envelope = {}
     if envelope.get('ok') and isinstance(envelope.get('value'), dict):
         return envelope['value']
-    found = re.search(r'Control not found: [A-Za-z ,()]+', text + result.stderr)
-    raise RuntimeError(f'step {step}: {found.group(0) if found else "browse failed; output withheld"}')
+    # Name only a control this file defines, so no browser text can ride along.
+    found = [n for n in CONTROLS if f'Control not found: {n}' in text + result.stderr]
+    raise RuntimeError(f'step {step}: ' + (f'Control not found: {max(found, key=len)}' if found else 'browse failed; output withheld'))
 
 def stage(page, assets_dir, stage_dir):
     """The browse sandbox reads files only under /tmp, so copy the images there."""

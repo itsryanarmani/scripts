@@ -34,10 +34,10 @@ mode = os.environ['FAKE_MODE']
 if mode == 'crash':
     print('cookie=' + os.environ['FAKE_SECRET']); sys.exit(1)
 if mode == 'nocontrol' and step == 'cover':
-    print(json.dumps({'ok': False, 'error': {'message': 'Error: Control not found: Add cover photo',
+    print(json.dumps({'ok': False, 'error': {'message': 'Error: Control not found: Add cover photo token=x',
                                              'stack': 'token=' + os.environ['FAKE_SECRET']}})); sys.exit(1)
 value = {'personal': {'state': 'page' if mode == 'stuck' else 'personal'}, 'switch': {'switched': True},
-         'profile': {'profile': 'saved'}}.get(step, {step: 'already set' if mode == 'set' else 'saved'})
+         'profile': {'profile': 'uploaded'}}.get(step, {step: 'already set' if mode == 'set' else 'saved'})
 print(json.dumps({'ok': True, 'value': value, 'logs': []}))
 '''
 LOGO = '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120"><rect width="200" height="120" fill="#f4e9d8"/></svg>'
@@ -68,8 +68,7 @@ def run(tmp, args, mode='ok', python=(sys.executable,)):
     return result, out
 
 def steps(tmp):
-    log = Path(tmp) / 'log.jsonl'
-    return [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
+    return [json.loads(l) for l in Path(tmp, 'log.jsonl').read_text().splitlines()] if Path(tmp, 'log.jsonl').exists() else []
 
 def main():
     stage = tempfile.mkdtemp(prefix='fbpp-test-', dir='/tmp')
@@ -108,14 +107,14 @@ def main():
                   'parts that have a value are skipped', out)
             r, out = run(tmp, apply_args, mode='nocontrol')
             order = [s['step'] for s in steps(tmp)]
-            check(r.returncode == 1 and 'Control not found: Add cover photo' in out and order[-1] == 'personal',
+            check(r.returncode == 1 and 'Control not found: Add cover photo' in out and 'token=x' not in out and order[-1] == 'personal',
                   '5. control not found is named and the run switches back', out)
             r, out = run(tmp, apply_args, mode='stuck')
             check(r.returncode == 1 and 'session still acts as a Page' in out, '6. session left as a Page fails', out)
             r, out = run(tmp, apply_args, mode='crash')
             check(r.returncode == 1 and 'output withheld' in out, '7. browse crash withholds output', out)
-            r, out = run(tmp, ['apply', '--stage-dir', tmp])
-            check(r.returncode == 1 and 'under /tmp' in out or tmp.startswith('/tmp'), 'stage dir outside /tmp refused', out)
+            r, out = run(tmp, ['apply', '--stage-dir', str(SCRIPT.parent)])  # the repo is never under /tmp
+            check(r.returncode == 1 and 'under /tmp' in out, 'stage dir outside /tmp refused', out)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     print(f'{len(failures)} failures')
