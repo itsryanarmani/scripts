@@ -24,6 +24,13 @@ cannot take a deployment runner. Standard-tier jobs keep FIFO order.
 Running jobs continue. This policy adds no machines and removes no checks.
 Deploy job names alone do not grant priority. Use the exclusive label.
 
+The 25-second wait runs in the Worker, not in the Durable Object. The Worker
+holds a hibernatable WebSocket to the object, asks for one claim, and asks
+again when the object announces a queued job. A job in mint backoff wakes
+the boxes by an alarm. Between messages the object hibernates and bills no
+duration. `npm run proof:hibernation` measures object busy time in local
+workerd for `origin/main` and for the working tree.
+
 One SQLite Durable Object stores atomic claims, independent runner leases and
 terminal event tombstones. Cron every two minutes expires queued claims after
 three minutes, retries runner deletion and recovers missed jobs for repositories

@@ -19,6 +19,37 @@ writeFileSync(compiled, ts.transpileModule(readFileSync(join(root, 'src/index.ts
 }).outputText);
 const { default: worker, BrokerDO } = await import(pathToFileURL(compiled));
 const secret = 'fixture-secret-must-not-appear-in-receipt';
+// Node has no WebSocketPair and refuses status 101. These fakes deliver
+// messages between the real Worker lease loop and the real BrokerDO handlers.
+const NativeResponse = Response;
+globalThis.Response = class extends NativeResponse {
+  constructor(body, init) {
+    super(body, init?.status === 101 ? { status: 200 } : init);
+    if (init?.status === 101) Object.defineProperties(this, { status: { value: 101 }, webSocket: { value: init.webSocket } });
+  }
+};
+class FakeSocket {
+  listeners = { message: [], close: [], error: [] };
+  open = true;
+  addEventListener(type, fn) { this.listeners[type].push(fn); }
+  accept() {}
+  serializeAttachment(value) { this.attachment = value; }
+  deserializeAttachment() { return this.attachment; }
+  send(data) { if (!this.open) throw new Error('closed'); queueMicrotask(() => this.peer.receive(data)); }
+  receive(data) {
+    if (this.broker) return this.broker.webSocketMessage(this, data);
+    for (const fn of this.listeners.message) fn({ data });
+  }
+  close() {
+    if (!this.open) return;
+    this.open = this.peer.open = false;
+    for (const fn of this.peer.listeners.close) fn({});
+  }
+}
+globalThis.WebSocketPair = class { constructor() { const a = new FakeSocket(), b = new FakeSocket(); a.peer = b; b.peer = a; this[0] = a; this[1] = b; } };
+// The Worker waits 25 seconds of real time; run that wait in 20 ms here.
+const nativeSetTimeout = setTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => nativeSetTimeout(fn, ms >= 25_000 ? 20 : ms, ...args);
 const nativeNow = Date.now;
 let clock = nativeNow();
 Date.now = () => clock;
@@ -38,7 +69,16 @@ function fixture(parent = 'completed', lookupStatus = 200, jobLookupStatus = 200
   const mintedLabels = [];
   const knownJobs = new Map();
   const env = { WEBHOOK_SECRET: secret, POOL_TOKEN: secret };
-  const broker = new BrokerDO({ storage }, env);
+  let alarm = null;
+  storage.getAlarm = async () => alarm;
+  storage.setAlarm = async at => { alarm = at; };
+  const sockets = new Set();
+  const ctx = {
+    storage,
+    acceptWebSocket(ws) { ws.broker = broker; sockets.add(ws); },
+    getWebSockets: () => [...sockets].filter(ws => ws.open),
+  };
+  const broker = new BrokerDO(ctx, env);
   env.BROKER = { idFromName: () => 'broker', get: () => ({ fetch: (req, init) => broker.fetch(req instanceof Request ? req : new Request(req, init)) }) };
   // Only GitHub transport is replaced. Router, signatures, SQL, claims, cleanup,
   // and reconciliation execute the real broker code.
@@ -74,7 +114,7 @@ function fixture(parent = 'completed', lookupStatus = 200, jobLookupStatus = 200
     assert.equal(response.status, 200);
     assert.equal(broker.rows('SELECT id FROM jobs WHERE id=?', job.id).length, retained ? 1 : 0);
   }
-  return { db, broker, env, request, seed, setParent: value => { parentState = value; }, mints: () => mints, mintedLabels, jobs: () => broker.rows('SELECT * FROM jobs') };
+  return { db, broker, env, request, seed, alarm: () => alarm, sockets: () => ctx.getWebSockets().length, setParent: value => { parentState = value; }, mints: () => mints, mintedLabels, jobs: () => broker.rows('SELECT * FROM jobs') };
 }
 
 const results = [];
@@ -248,10 +288,35 @@ try {
         assert.equal(response.status, 502);
         assert.equal(f.mints(), 0);
         assert.equal(f.jobs().length, 1);
-        return { status: response.status, runnerMints: f.mints(), jobsRemaining: f.jobs().length };
+        // The backoff end wakes boxes by alarm, not by a timer in the object.
+        assert.equal(f.alarm(), f.jobs()[0].next);
+        return { status: response.status, runnerMints: f.mints(), jobsRemaining: f.jobs().length, backoffAlarm: true };
       } finally { f.db.close(); }
     });
   }
+  await scenario('waiting box is woken by a job queued mid-poll', async () => {
+    const f = fixture('in_progress');
+    try {
+      const pending = f.request('/lease?label=boat&box=fixture');
+      await new Promise(r => nativeSetTimeout(r, 5));
+      assert.equal(f.sockets(), 1); // The box waits on a hibernatable socket.
+      await f.seed();
+      const response = await pending;
+      assert.equal(response.status, 200);
+      assert.equal(f.mints(), 1);
+      assert.equal(f.sockets(), 0);
+      return { status: response.status, runnerMints: f.mints(), socketsLeft: 0 };
+    } finally { f.db.close(); }
+  });
+  await scenario('empty poll answers 204 and leaves no socket', async () => {
+    const f = fixture('in_progress');
+    try {
+      const response = await f.request('/lease?label=boat&box=fixture');
+      assert.equal(response.status, 204);
+      assert.equal(f.sockets(), 0);
+      return { status: response.status, socketsLeft: 0 };
+    } finally { f.db.close(); }
+  });
   for (const parent of ['queued', 'in_progress']) {
     await scenario(`live ${parent} parent allocates a runner`, async () => {
       const f = fixture(parent);

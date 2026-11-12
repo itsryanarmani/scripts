@@ -1,1 +1,1 @@
-{"name":"boat-runners","private":true,"type":"module","scripts":{"dev":"wrangler dev","typecheck":"tsc --noEmit","test:e2e":"node e2e/terminal-runs.mjs"},"devDependencies":{"@cloudflare/workers-types":"^5.20261006.1","typescript":"^5.9.2","wrangler":"^4.157.0"}}
+{"name":"boat-runners","private":true,"type":"module","scripts":{"dev":"wrangler dev","typecheck":"tsc --noEmit","test:e2e":"node e2e/terminal-runs.mjs","proof:hibernation":"node e2e/hibernation-proof.mjs"},"devDependencies":{"@cloudflare/workers-types":"^5.20261006.1","typescript":"^5.9.2","wrangler":"^4.157.0"}}

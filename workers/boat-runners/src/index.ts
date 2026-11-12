@@ -3,7 +3,6 @@ const poolLabels = ['boat', 'boat-8'];
 const labels = [...poolLabels, 'boat-deploy'];
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const b64url = (bytes: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-const pause = (ms: number) => new Promise(r => setTimeout(r, ms));
 const repoPattern = /^itsryanarmani\/[A-Za-z0-9_.-]+$/;
 // Remove old-owner lease acceptance after 2026-11-21; running runners hold old lease files.
 const savedLeaseRepoPattern = /^(?:itsryanarmani|pooriaarab)\/[A-Za-z0-9_.-]+$/;
@@ -29,6 +28,7 @@ export default {
       }
       if (!['/lease', '/done', '/status'].includes(path)) return json({ error: 'Not found' }, 404);
       if (!env.POOL_TOKEN || req.headers.get('authorization') !== `Bearer ${env.POOL_TOKEN}`) return json({ error: 'Unauthorized' }, 401);
+      if (path === '/lease') return await lease(broker, req);
       return await broker.fetch(req);
     } catch (error) {
       return json({ error: error instanceof SyntaxError ? 'Bad JSON' : 'Broker unavailable' }, error instanceof SyntaxError ? 400 : 503);
@@ -39,6 +39,43 @@ export default {
     if (!response.ok) throw new Error('Reconciliation failed');
   },
 };
+// The 25-second long poll waits here, in the stateless Worker, not in the
+// Durable Object. Worker wall-clock time is free; an object that holds a
+// request open bills duration for all of it. The Worker holds a hibernatable
+// WebSocket to the object, asks for a claim, and asks again only when the
+// object announces new work. Between messages the object can hibernate.
+async function lease(broker: DurableObjectStub, req: Request): Promise<Response> {
+  const up = await broker.fetch(`https://broker/wait${new URL(req.url).search}`, { headers: { Upgrade: 'websocket' } });
+  const ws = up.webSocket;
+  if (up.status !== 101 || !ws) return up;
+  ws.accept();
+  return new Promise<Response>(resolve => {
+    let settled = false, busy = false, again = false, expired = false;
+    const finish = (response: Response) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { ws.close(1000, 'done'); } catch { /* already closed */ }
+      resolve(response);
+    };
+    const empty = () => finish(new Response(null, { status: 204 }));
+    const ask = () => { if (busy) { again = true; return; } busy = true; again = false; try { ws.send('claim'); } catch { empty(); } };
+    // A claim in flight at the deadline completes, as the old loop did. Its
+    // runner would otherwise wait for the three-minute lease sweep.
+    const timer = setTimeout(() => { expired = true; if (!busy) empty(); }, 25_000);
+    ws.addEventListener('message', event => {
+      const m = JSON.parse(String(event.data));
+      if (m.type === 'wake') return ask();
+      busy = false;
+      if (m.status !== 204) return finish(json(m.body, m.status));
+      if (expired) return empty();
+      if (again) ask();
+    });
+    ws.addEventListener('close', empty);
+    ws.addEventListener('error', empty);
+    ask();
+  });
+}
 type Row = Record<string, any>;
 export class BrokerDO {
   sql: SqlStorage;
@@ -195,6 +232,7 @@ export class BrokerDO {
         this.rows('UPDATE jobs SET lease=NULL, tries=tries+1, next=? WHERE lease=?', Date.now() + Math.min(600_000, 30_000 * 2 ** this.tries(l.job)), l.id);
       });
       await this.cleanup(l);
+      await this.wakeAtBackoff();
       return json({ error: 'Mint failed; claim released' }, 502);
     }
   }
@@ -203,21 +241,21 @@ export class BrokerDO {
     if (path === '/ingest' && req.method === 'POST') {
       const p: any = await req.json(), repo = p.repository.full_name, job = p.workflow_job;
       this.rows('INSERT OR REPLACE INTO repos VALUES(?,?)', repo, Date.now());
-      if (p.action === 'queued') this.add(repo, job);
+      if (p.action === 'queued') { this.add(repo, job); this.wake(); }
       if (['in_progress', 'completed'].includes(p.action)) await this.end(job.id, p.action === 'completed');
       return json({ ok: true });
     }
-    if (path === '/lease' && req.method === 'GET') {
+    if (path === '/wait' && req.method === 'GET') {
       const label = url.searchParams.get('label') ?? '', box = url.searchParams.get('box') ?? '';
       if (!poolLabels.includes(label) || !/^[\w.-]{1,80}$/.test(box)) return json({ error: 'Invalid label or box' }, 400);
+      if (req.headers.get('upgrade') !== 'websocket') return json({ error: 'Expected WebSocket' }, 426);
       this.rows('INSERT OR REPLACE INTO boxes VALUES(?,?,?)', box, label, Date.now());
-      const deadline = Date.now() + 25_000;
-      do {
-        const r = await this.mint(label, box);
-        if (r) return r;
-        await pause(Math.min(1000, Math.max(0, deadline - Date.now())));
-      } while (Date.now() < deadline);
-      return new Response(null, { status: 204 });
+      const [client, server] = Object.values(new WebSocketPair());
+      // acceptWebSocket, not server.accept(): the hibernation API. The object
+      // stays billable only while a message handler runs.
+      this.ctx.acceptWebSocket(server);
+      server.serializeAttachment({ label, box });
+      return new Response(null, { status: 101, webSocket: client });
     }
     if (path === '/done' && req.method === 'POST') {
       const b: any = await req.json();
@@ -237,9 +275,33 @@ export class BrokerDO {
       }
       return json({ open, claimed, boxes });
     }
-    if (path === '/sweep' && req.method === 'POST') return json(await this.sweep());
+    if (path === '/sweep' && req.method === 'POST') {
+      // Reconciliation can add jobs or release claims; tell waiting boxes.
+      try { return json(await this.sweep()); } finally { this.wake(); }
+    }
     return json({ error: 'Not found' }, 404);
   }
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+    if (message !== 'claim') return;
+    const { label, box } = ws.deserializeAttachment() as { label: string; box: string };
+    const r = await this.mint(label, box);
+    ws.send(JSON.stringify(r ? { status: r.status, body: await r.json() } : { status: 204 }));
+  }
+  webSocketClose(ws: WebSocket, code: number) { try { ws.close(code === 1005 ? 1000 : code); } catch { /* already closed */ } }
+  webSocketError() { /* The Worker answers 204; the box polls again. */ }
+  // Waiting boxes hear about new work at once instead of polling every second.
+  wake() {
+    for (const ws of this.ctx.getWebSockets()) try { ws.send('{"type":"wake"}'); } catch { /* closing */ }
+  }
+  // A job in mint backoff becomes claimable later. An alarm, not a timer,
+  // wakes the boxes then, so the object can hibernate in between.
+  async wakeAtBackoff() {
+    const next = this.rows('SELECT MIN(next) n FROM jobs WHERE lease IS NULL AND next>?', Date.now())[0]?.n;
+    if (!next) return;
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > next) await this.ctx.storage.setAlarm(next);
+  }
+  async alarm() { this.wake(); await this.wakeAtBackoff(); }
   async sweep() {
     let errors = 0;
     for (const l of this.rows('SELECT * FROM leases WHERE closing=1 OR created<?', Date.now() - 180_000)) {
