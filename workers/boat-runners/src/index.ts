@@ -28,7 +28,7 @@ export default {
       }
       if (!['/lease', '/done', '/status'].includes(path)) return json({ error: 'Not found' }, 404);
       if (!env.POOL_TOKEN || req.headers.get('authorization') !== `Bearer ${env.POOL_TOKEN}`) return json({ error: 'Unauthorized' }, 401);
-      if (path === '/lease') return await lease(broker, req);
+      if (path === '/lease' && req.method === 'GET') return await lease(broker, req);
       return await broker.fetch(req);
     } catch (error) {
       return json({ error: error instanceof SyntaxError ? 'Bad JSON' : 'Broker unavailable' }, error instanceof SyntaxError ? 400 : 503);
@@ -167,10 +167,14 @@ export class BrokerDO {
         const r = await this.gh(`/repos/${lease.repo}/actions/runners/${runner}`, 'DELETE');
         if (!r.ok && r.status !== 404) return false;
       }
-      this.ctx.storage.transactionSync(() => {
+      const released = this.ctx.storage.transactionSync(() => {
+        const queued = this.rows('SELECT id FROM jobs WHERE lease=? AND next<=?', lease.id, Date.now()).length;
         this.rows('UPDATE jobs SET lease=NULL WHERE lease=?', lease.id);
         this.rows('DELETE FROM leases WHERE id=?', lease.id);
+        return queued;
       });
+      // A released job is claimable again; waiting boxes must hear about it.
+      if (released) this.wake();
       return true;
     } catch { return false; }
   }
@@ -284,11 +288,18 @@ export class BrokerDO {
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     if (message !== 'claim') return;
     const { label, box } = ws.deserializeAttachment() as { label: string; box: string };
-    const r = await this.mint(label, box);
+    // mint() also returns null after it retires a stale queue head. Try the
+    // next job at once, as the old one-second loop did, while work remains.
+    let r: Response | null = null;
+    for (let attempt = 0; attempt < 10 && !r && this.claimable(label); attempt++) r = await this.mint(label, box);
     ws.send(JSON.stringify(r ? { status: r.status, body: await r.json() } : { status: 204 }));
   }
   webSocketClose(ws: WebSocket, code: number) { try { ws.close(code === 1005 ? 1000 : code); } catch { /* already closed */ } }
   webSocketError() { /* The Worker answers 204; the box polls again. */ }
+  claimable(label: string): boolean {
+    const wanted = label === 'boat-8' ? [label, 'boat-deploy'] : [label];
+    return wanted.some(l => this.rows('SELECT id FROM jobs WHERE label=? AND lease IS NULL AND next<=? LIMIT 1', l, Date.now()).length > 0);
+  }
   // Waiting boxes hear about new work at once instead of polling every second.
   wake() {
     for (const ws of this.ctx.getWebSockets()) try { ws.send('{"type":"wake"}'); } catch { /* closing */ }

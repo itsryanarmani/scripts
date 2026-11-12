@@ -49,7 +49,8 @@ class FakeSocket {
 globalThis.WebSocketPair = class { constructor() { const a = new FakeSocket(), b = new FakeSocket(); a.peer = b; b.peer = a; this[0] = a; this[1] = b; } };
 // The Worker waits 25 seconds of real time; run that wait in 20 ms here.
 const nativeSetTimeout = setTimeout;
-globalThis.setTimeout = (fn, ms, ...args) => nativeSetTimeout(fn, ms >= 25_000 ? 20 : ms, ...args);
+let longPollMs = 20; // Scenarios that act during a wait raise this.
+globalThis.setTimeout = (fn, ms, ...args) => nativeSetTimeout(fn, ms >= 25_000 ? longPollMs : ms, ...args);
 const nativeNow = Date.now;
 let clock = nativeNow();
 Date.now = () => clock;
@@ -114,7 +115,7 @@ function fixture(parent = 'completed', lookupStatus = 200, jobLookupStatus = 200
     assert.equal(response.status, 200);
     assert.equal(broker.rows('SELECT id FROM jobs WHERE id=?', job.id).length, retained ? 1 : 0);
   }
-  return { db, broker, env, request, seed, alarm: () => alarm, sockets: () => ctx.getWebSockets().length, setParent: value => { parentState = value; }, mints: () => mints, mintedLabels, jobs: () => broker.rows('SELECT * FROM jobs') };
+  return { db, broker, env, request, seed, knownJobs, alarm: () => alarm, sockets: () => ctx.getWebSockets().length, setParent: value => { parentState = value; }, mints: () => mints, mintedLabels, jobs: () => broker.rows('SELECT * FROM jobs') };
 }
 
 const results = [];
@@ -306,6 +307,63 @@ try {
       assert.equal(f.mints(), 1);
       assert.equal(f.sockets(), 0);
       return { status: response.status, runnerMints: f.mints(), socketsLeft: 0 };
+    } finally { f.db.close(); }
+  });
+  const waitFor = async check => { for (let i = 0; i < 100 && !check(); i++) await new Promise(r => nativeSetTimeout(r, 5)); };
+  await scenario('retired stale head does not hide the next job', async () => {
+    const f = fixture('in_progress');
+    try {
+      await f.seed({ id: 101 });
+      await f.seed({ id: 102 });
+      f.knownJobs.get(101).status = 'completed'; // GitHub already finished it.
+      const response = await f.request('/lease?label=boat&box=fixture');
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).job_id, 102);
+      return { status: response.status, claimed: 102 };
+    } finally { f.db.close(); }
+  });
+  await scenario('done that releases a queued job wakes a waiting box', async () => {
+    const f = fixture('in_progress');
+    longPollMs = 2000;
+    try {
+      await f.seed({ id: 101 });
+      f.broker.rows('INSERT INTO leases(id,job,repo,name,runner,created,pending) VALUES(?,?,?,?,?,?,0)', 'held', 101, 'itsryanarmani/fixture', 'held-runner', 7, Date.now());
+      f.broker.rows("UPDATE jobs SET lease='held' WHERE id=101");
+      const pending = f.request('/lease?label=boat&box=other');
+      await waitFor(() => f.sockets() === 1);
+      const done = await f.request('/done', { method: 'POST', body: JSON.stringify({ lease_id: 'held', repo: 'itsryanarmani/fixture', runner_id: 7 }) });
+      assert.equal(done.status, 200);
+      const response = await pending;
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).job_id, 101);
+      return { done: done.status, status: response.status };
+    } finally { longPollMs = 20; f.db.close(); }
+  });
+  await scenario('backoff alarm wakes a waiting box', async () => {
+    const f = fixture('in_progress');
+    longPollMs = 2000;
+    try {
+      await f.seed({ id: 101 });
+      f.broker.rows('UPDATE jobs SET next=? WHERE id=101', Date.now() + 60_000);
+      await f.broker.wakeAtBackoff();
+      assert.equal(f.alarm(), f.jobs()[0].next);
+      const pending = f.request('/lease?label=boat&box=fixture');
+      await waitFor(() => f.sockets() === 1);
+      clock += 61_000;
+      await f.broker.alarm();
+      const response = await pending;
+      assert.equal(response.status, 200);
+      return { status: response.status, runnerMints: f.mints() };
+    } finally { longPollMs = 20; f.db.close(); }
+  });
+  await scenario('POST lease is not a claim', async () => {
+    const f = fixture('in_progress');
+    try {
+      await f.seed();
+      const response = await f.request('/lease?label=boat&box=fixture', { method: 'POST' });
+      assert.equal(response.status, 404);
+      assert.equal(f.mints(), 0);
+      return { status: response.status, runnerMints: 0 };
     } finally { f.db.close(); }
   });
   await scenario('empty poll answers 204 and leaves no socket', async () => {
