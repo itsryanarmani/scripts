@@ -232,13 +232,28 @@ await box.click(); await page.keyboard.insertText(P.text); await page.waitForTim
 if (!(await dialogButton("Next"))) lost("Next (composer)");
 return { composed: true };''',
     # Step 2 ends with Post. Right after Next the button is not ready and a click publishes nothing,
-    # so wait first. Python calls this step again until the dialog closes.
+    # so wait first. Python runs publish and decline again until the dialog closes.
     'publish': r'''
 await page.waitForTimeout(P.settle);
 const clicked = await dialogButton("Post");
-await page.waitForTimeout(5000);
+await page.waitForTimeout(4000);
+return { clicked };''',
+    # After Post, some Pages get an offer dialog ("add a Call Now button") over the composer. The post stays
+    # on "Posting" until it is answered, and Post does nothing. Always decline; never accept the offer.
+    'decline': r'''
+// Search only dialogs that are not the composer, so a composer button is never clicked.
+const declined = await page.evaluate((labels) => {
+  const offers = [...document.querySelectorAll("[role=dialog]")].filter(d => !/Create post|Post settings/.test(d.innerText));
+  for (const l of labels) {
+    const b = offers.flatMap(d => [...d.querySelectorAll("[role=button],button")])
+      .find(e => (e.innerText || e.getAttribute("aria-label") || "").trim() === l);
+    if (b) { b.click(); return l; }
+  }
+  return null;
+}, ["Not now", "Skip", "Maybe later", "No thanks"]);
+if (declined) await page.waitForTimeout(4000);
 const still = await page.evaluate(() => [...document.querySelectorAll("[role=dialog]")].some(d => /Create post|Post settings/.test(d.innerText)));
-return { clicked, open: still };''',
+return { declined, open: still };''',
     # Facebook offers only "Hide from Page" for its own profile-picture and cover-photo posts.
     'hide': r'''
 await open(P.link); await scroll();
@@ -382,7 +397,11 @@ def post_page(page, rows, args, owner):
                 switched = True
             run_step('compose', dict(params, text=text), args.session)
             for _ in range(args.tries):
-                if not run_step('publish', params, args.session).get('open'):
+                run_step('publish', params, args.session)
+                result = run_step('decline', params, args.session)
+                if result.get('declined'):
+                    entry.setdefault('declined', []).append(result['declined'])
+                if not result.get('open'):
                     break
             else:
                 entry['status'] = f'not confirmed: dialog still open after {args.tries} tries'

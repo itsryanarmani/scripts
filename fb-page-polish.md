@@ -112,7 +112,8 @@ two posts with one key for the same Page stop the run before any work.
    Page as the author, with the audience Public.
 3. Wait up to 30 s for the **What's on your mind?** box, then click it.
 4. Type the text and press **Next**.
-5. Wait `--settle` seconds, press **Post**, and repeat until the dialog closes.
+5. Wait `--settle` seconds, press **Post**, decline any offer dialog, and
+   repeat until the composer closes.
 6. Count the key again.
 7. Switch to the personal profile again, even when a step failed.
 
@@ -121,6 +122,11 @@ two posts with one key for the same Page stop the run before any work.
 - The final **Post** button is not ready right after **Next**. A click that
   fires too early publishes nothing and gives no error. Three posts were lost
   this way. `post` waits, then clicks again until the dialog closes.
+- After **Post**, some Pages get an offer dialog over the composer, such as
+  "add a Call Now button". The post stays on "Posting" and a new **Post**
+  click does nothing, so it never publishes. 5 of 54 posts failed this way.
+  `post` clicks **Not now**, **Skip**, **Maybe later** or **No thanks**, never
+  the offer, then counts the post.
 - A fixed wait sometimes found no composer. `post` waits for the box with
   `waitForFunction` and fails with `Control not found: What's on your mind? box`.
 - A 25-character key matched the Page name and gave a false count of 10. Keys
@@ -146,7 +152,8 @@ failure mode, and that no secret reaches the output. Needs Pillow and rsvg-conve
 
 `python3 fb-page-polish-posts.test.py` runs `post`, `hide-autoposts` and
 `verify` against a fake `browse` that answers each step from a plan. It checks
-the Post retry, the composer that is missing, the skip of a post already on the
-Page, the session left as a Page, a doubled post, and a Page with no automatic
-posts. It prints the step order of each case, so its output is the transcript.
+the Post retry, the declined offer dialog, the composer that is missing, the
+skip of a post already on the Page, the session left as a Page, a doubled
+post, and a Page with no automatic posts. It prints the step order of each
+case, so its output is the transcript.
 The fake cannot run Facebook's page, so only a live run proves the selectors.

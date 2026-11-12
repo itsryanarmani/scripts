@@ -6,6 +6,9 @@ the retries, the skips and the switch-back. Only a live run proves the selectors
 
 Failure modes, written before the code:
   1. The Post button is not ready after Next: the first clicks leave the dialog open, so publish must retry.
+  1b. After Post, Facebook shows an offer dialog (a "Not now" button) over the composer. The post stays on
+      "Posting" until it is declined: decline runs after every Post click, and the run never clicks the offer.
+  1c. No offer dialog: decline clicks nothing and the post still counts once.
   2. The Post button never works: the run stops after --tries clicks and does not report "posted".
   3. The "What's on your mind?" box is missing: the step names it, no Post click, the run switches back.
   4. The text is already on the Page once: it is skipped with no composer. Twice: skipped and the run fails.
@@ -82,15 +85,30 @@ def statuses(reports):
 
 def main():
     code, out, order, log, rep = run('post', {'count': [{'counts': [0, 0]}, {'counts': [1]}],
-                                              'publish': [{'open': True}, {'open': True}, {'open': False}]})
-    check(code == 0 and order == ['personal', 'count', 'switch', 'compose', 'publish', 'publish', 'publish', 'count',
-                                  'compose', 'publish', 'count', 'personal'] and statuses(rep) == ['posted', 'posted'],
+                                              'decline': [{'open': True}, {'open': True}, {'open': False}]})
+    check(code == 0 and order == ['personal', 'count', 'switch', 'compose', 'publish', 'decline', 'publish', 'decline',
+                                  'publish', 'decline', 'count', 'compose', 'publish', 'decline', 'count', 'personal']
+          and statuses(rep) == ['posted', 'posted'],
           '1. Post button not ready: publish retries until the dialog closes', out)
     key = 'Our cedar sheds now ship with a ten year roof'
     check(json.dumps(key) in log[1]['code'] and 'Ask us how' not in log[1]['code'], '   count key is the 45-character first line')
     check('"text": "Our cedar' in log[3]['code'] and OWNER in log[0]['code'], '   text and owner name go to browse only')
 
-    code, out, order, _, rep = run('post', {'count': [{'counts': [0, 0]}], 'publish': [{'open': True}]}, extra=['--tries', '3'])
+    # The fake answers like the page: the composer stays open until the offer is declined.
+    code, out, order, log, rep = run('post', {'count': [{'counts': [0, 1]}, {'counts': [1]}],
+                                              'decline': [{'declined': 'Not now', 'open': False}]})
+    decline = next(s['code'] for s in log if s['step'] == 'decline')
+    check(code == 0 and order == ['personal', 'count', 'switch', 'compose', 'publish', 'decline', 'count', 'personal']
+          and statuses(rep) == ['posted', 'already on the Page'] and rep[0]['posts'][0].get('declined') == ['Not now'],
+          '1b. offer dialog after Post: declined with Not now, then the post counts once', out)
+    check(all(json.dumps(b) in decline for b in ('Not now', 'Skip', 'Maybe later', 'No thanks'))
+          and 'Add button' not in decline, '   decline clicks only decline buttons, never the offer')
+    code, out, order, _, rep = run('post', {'count': [{'counts': [0, 1]}, {'counts': [1]}],
+                                            'decline': [{'declined': None, 'open': False}]})
+    check(code == 0 and order.count('publish') == 1 and statuses(rep)[0] == 'posted'
+          and 'declined' not in rep[0]['posts'][0], '1c. no offer dialog: nothing declined, posted once', out)
+
+    code, out, order, _, rep = run('post', {'count': [{'counts': [0, 0]}], 'decline': [{'open': True}]}, extra=['--tries', '3'])
     check(code == 1 and order.count('publish') == 3 and 'compose' == order[3] and order.count('compose') == 1
           and order[-1] == 'personal' and 'posted' not in statuses(rep), '2. Post never works: stops after --tries', out)
 
