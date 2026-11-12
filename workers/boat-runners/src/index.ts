@@ -69,7 +69,7 @@ async function lease(broker: DurableObjectStub, req: Request): Promise<Response>
       busy = false;
       if (m.status !== 204) return finish(json(m.body, m.status));
       if (expired) return empty();
-      if (again) ask();
+      if (again || m.more) ask();
     });
     ws.addEventListener('close', empty);
     ws.addEventListener('error', empty);
@@ -289,10 +289,12 @@ export class BrokerDO {
     if (message !== 'claim') return;
     const { label, box } = ws.deserializeAttachment() as { label: string; box: string };
     // mint() also returns null after it retires a stale queue head. Try the
-    // next job at once, as the old one-second loop did, while work remains.
+    // next job at once while work remains, within a budget well under the
+    // Box's 60-second HTTP timeout. "more" tells the Worker to ask again.
+    const until = Date.now() + 10_000;
     let r: Response | null = null;
-    for (let attempt = 0; attempt < 10 && !r && this.claimable(label); attempt++) r = await this.mint(label, box);
-    ws.send(JSON.stringify(r ? { status: r.status, body: await r.json() } : { status: 204 }));
+    while (!r && Date.now() < until && this.claimable(label)) r = await this.mint(label, box);
+    ws.send(JSON.stringify(r ? { status: r.status, body: await r.json() } : { status: 204, more: this.claimable(label) }));
   }
   webSocketClose(ws: WebSocket, code: number) { try { ws.close(code === 1005 ? 1000 : code); } catch { /* already closed */ } }
   webSocketError() { /* The Worker answers 204; the box polls again. */ }
