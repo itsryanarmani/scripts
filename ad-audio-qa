@@ -91,8 +91,8 @@ def vad_onsets(path, audio):
 
 def energy_onsets(y, sr):
     """Stem cues, each a list of times: every sound's start, attack (first
-    frame within 10 dB of its max) and flat-topped-aware peak. Sounds under
-    0.25 s apart form one cue. Floor -60 dBFS."""
+    frame within 10 dB of its max) and flat-topped-aware peak. Sounds starting
+    under 0.25 s after a cue's first sound form that cue. Floor -60 dBFS."""
     import numpy as np
     db, hop = _frame_db(y, sr, 0.005, 0.020)
     cues, last = [], -9.0
@@ -103,8 +103,11 @@ def energy_onsets(y, sr):
         at = int(np.argmax(seg >= seg[pk] - 10))
         pk = pk if seg[pk] - seg[at] >= 3 else at
         t = [round(s, 3), round((i0 + at) * hop, 3), round((i0 + pk) * hop, 3)]
-        cues[-1].extend(t) if cues and s - last < 0.25 else cues.append(t)
-        last = e
+        if cues and s - last < 0.25:
+            cues[-1].extend(t)
+        else:
+            cues.append(t)
+            last = s
     return cues
 
 def scene_cuts(path):
