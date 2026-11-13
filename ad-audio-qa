@@ -1,0 +1,431 @@
+#!/usr/bin/env python3
+"""ad-audio-qa - measured audio rule checks for a finished video, via earshot.
+
+    ad-audio-qa VIDEO [--earshot DIR] [--out FILE] [--lines DIR|GLOB]
+                      [--voice-map JSON] [--transcript JSON]
+                      [--sfx-stem FILE] [--voice-stem FILE]
+
+Prints PASS / FAIL / NOT CHECKED / OWNER CHECK per rule with measured values.
+OWNER CHECK rows always need a person. Never runs `earshot llm` (it would
+upload the audio). Rules and thresholds: ad-audio-qa.md. --earshot (or
+AD_AUDIO_QA_EARSHOT) points at an earshot checkout (dir holding venv/), the
+venv itself, or its python binary; it runs any binary it names, the same
+trust as PATH. --sfx-stem is a wav of the sfx/laugh track alone, --voice-stem
+a wav of the voice alone; a mixed track cannot separate them. Exit: 0 no
+FAIL, 1 any FAIL, 2 usage.
+"""
+import argparse, glob, json, os, re, subprocess, sys
+
+ENV = 'AD_AUDIO_QA_EARSHOT'
+REEXEC = 'AD_AUDIO_QA_REEXEC'
+LUFS_LO, LUFS_HI, TP_MAX = -16.0, -12.0, -1.0
+DEAD_LUFS, DEAD_S, WPS_MAX = -60.0, 1.5, 3.4
+CUT_HIT_MIN, SFX_VS_VOICE_DB, F0_SPREAD = 0.8, 6.0, 1.6
+SYNC_S, SCENE_THR = 0.080, 0.3
+
+
+def earshot_python(loc):
+    """Resolve --earshot to a python with earshot importable, or None."""
+    if not loc:
+        return None
+    if os.path.isfile(loc):
+        return os.path.abspath(loc)
+    for base in (loc, os.path.join(loc, 'venv')):
+        for py in ('python', 'python3'):
+            c = os.path.join(base, 'bin', py)
+            if os.path.exists(c):
+                return os.path.abspath(c)
+    return None
+
+
+def load_earshot():
+    try:
+        from earshot import api, audio
+        return api, audio
+    except ImportError:
+        print('ad-audio-qa: earshot not importable; pass --earshot DIR or '
+              'set AD_AUDIO_QA_EARSHOT (see ad-audio-qa.md)', file=sys.stderr)
+        sys.exit(2)
+
+
+def f0_stats(path, audio):
+    import librosa, numpy as np
+    f0, _, _ = librosa.pyin(audio.load(path, mono=True), fmin=60, fmax=500,
+                            sr=audio.SR, frame_length=2048)
+    f0 = f0[~np.isnan(f0)]
+    return {'median_hz': round(float(np.median(f0)), 1)} if len(f0) >= 5 else None
+
+
+def _frame_db(y, sr, hop_s, win_s):
+    """Frame RMS dB of signal y: win_s windows, hop_s hop. Returns (db, hop)."""
+    import numpy as np
+    hop, win = int(hop_s * sr), int(win_s * sr)
+    if len(y) < win:
+        return np.array([]), hop_s
+    n = (len(y) - win) // hop + 1
+    fr = np.lib.stride_tricks.sliding_window_view(y, win)[::hop][:n]
+    return 20 * np.log10(np.sqrt(np.mean(fr ** 2, axis=1)) + 1e-10), hop_s
+
+
+def _onsets_from_db(db, hop, floor_pct, floor_db, min_run, merge_s):
+    """Onset times where frame dB crosses pct-floor + floor_db."""
+    import numpy as np
+    if not len(db):
+        return []
+    d = np.diff(np.concatenate([[0], (db > np.percentile(db, floor_pct)
+                                     + floor_db).astype(np.int8), [0]]))
+    st, en = np.where(d == 1)[0], np.where(d == -1)[0]
+    out = []
+    for i, j in zip(st, en):
+        t = i * hop
+        if (j - i) * hop >= min_run and (not out or t - out[-1] > merge_s):
+            out.append(round(t, 3))
+    return out
+
+
+def vad_onsets(path, audio):
+    """Speech onsets: 200-4000 Hz energy VAD, 25 ms windows / 10 ms hop,
+    floor+12 dB threshold, runs >= 80 ms kept."""
+    from scipy.signal import butter, sosfiltfilt
+    y = sosfiltfilt(butter(4, [200.0, 4000.0], btype='band', fs=audio.SR,
+                           output='sos'), audio.load(path, mono=True))
+    db, hop = _frame_db(y, audio.SR, 0.010, 0.025)
+    return _onsets_from_db(db, hop, 20, 12.0, 0.08, 0.0)
+
+
+def energy_onsets(y, sr):
+    """Model-free energy onsets on a stem: 20 ms windows / 5 ms hop, frame
+    RMS dB over the 10th-percentile floor + 15 dB, runs >= 20 ms, onsets
+    closer than 80 ms merged."""
+    db, hop = _frame_db(y, sr, 0.005, 0.020)
+    return _onsets_from_db(db, hop, 10, 15.0, 0.02, 0.08)
+
+
+def scene_cuts(path):
+    """Picture cut times via ffmpeg scene detection (score > 0.3)."""
+    r = subprocess.run(['ffmpeg', '-v', 'info', '-i', path,
+                        '-vf', f"select='gt(scene,{SCENE_THR})',showinfo",
+                        '-f', 'null', '-'], capture_output=True, text=True)
+    return [float(m.group(1)) for m in
+            re.finditer(r'pts_time:([\d.]+)', r.stderr)]
+
+
+def stem_level_db(path):
+    """Median active-frame RMS level in dB of an audio stem, measured by
+    ffmpeg astats reset every 100 ms; active frames sit >12 dB over the
+    stem's own 10th-percentile floor. None when nothing is active."""
+    r = subprocess.run(
+        ['ffmpeg', '-v', 'info', '-i', path, '-ac', '1', '-af',
+         'astats=metadata=1:reset=1:length=0.1,'
+         'ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
+         '-f', 'null', '-'], capture_output=True, text=True)
+    vals = sorted(float(x) for x in
+                  re.findall(r'RMS_level=(-?[\d.]+|-inf)', r.stdout)
+                  if x != '-inf')
+    if not vals:
+        return None
+    act = [v for v in vals if v > vals[len(vals) // 10] + 12.0]
+    return round(act[len(act) // 2], 1) if act else None
+
+
+def rule(status, value, detail):
+    return {'status': status, 'value': value, 'detail': detail}
+
+
+def check_file(path, args, api, audio):
+    import numpy as np
+    res = {'file': path, 'rules': {}}
+    R = res['rules']
+    try:
+        meas = api.measure(path)
+    except Exception as e:
+        meas = {'error': str(e)}
+    res['measure'] = meas
+    try:
+        tl = api.timeline(path, video=path, detail='high')
+    except Exception as e:
+        tl = {'error': str(e)}
+    if 'error' in tl:
+        res['timeline_error'] = tl['error']
+        tl = {}
+    loud = tl.get('loudness') or {}
+    transcript = None
+    if args.transcript:
+        try:
+            transcript = json.load(open(args.transcript))
+        except Exception as e:
+            R['transcript_input'] = rule('NOT CHECKED', None,
+                                         f'bad transcript JSON: {e}')
+    secs = [s for s in tl.get('sections') or []
+            if (s.get('ast') or {}).get('Speech', 0) >= 0.5]
+
+    # ---- R6 dead audio ----
+    lufs_tl = loud.get('integrated_lufs')
+    max_mom = (loud.get('max_momentary') or {}).get('lufs')
+    ds_frac = meas.get('digital_silence_frac')
+    ml = np.array([v is not None and v < DEAD_LUFS for v in
+                   (loud.get('momentary') or {}).get('lufs') or []])
+    d = np.diff(np.concatenate([[0], ml.astype(np.int8), [0]]))
+    gst, gen = np.where(d == 1)[0], np.where(d == -1)[0]
+    gi = int(np.argmax(gen - gst)) if len(gst) else -1
+    gap_s = (gen[gi] - gst[gi]) * 0.1 if gi >= 0 else 0.0
+    gap_at = gst[gi] * 0.1 if gi >= 0 else 0.0
+    dead = next((v for c, v in (
+        (tl.get('has_audio', True) is False, ('no audio stream',
+                                              'has_audio=false')),
+        (ds_frac is not None and ds_frac > 0.95,
+         (f'silence frac {ds_frac}', 'file is digital silence')),
+        ((lufs_tl is not None and lufs_tl < DEAD_LUFS) or
+         (lufs_tl is None and (max_mom is None or max_mom < DEAD_LUFS)),
+         (f'{lufs_tl} LUFS', f'below {DEAD_LUFS} floor, max mom {max_mom}')),
+        (gap_s >= DEAD_S, (f'dead-air gap {gap_s:.1f} s at ~{gap_at:.1f} s',
+                           f'>{DEAD_S} s below {DEAD_LUFS} LUFS'))) if c),
+        None)
+    R['R6_dead_audio'] = (rule('FAIL', *dead) if dead else rule(
+        'PASS', f'{lufs_tl} LUFS integrated',
+        f'max momentary {max_mom} LUFS, silence frac {ds_frac}, '
+        f'longest dead stretch {gap_s:.1f} s'))
+
+    # ---- loudness ----
+    tp = loud.get('true_peak_dbtp') or meas.get('true_peak_dbtp')
+    lufs = loud.get('integrated_lufs') or meas.get('lufs')
+    probs = []
+    if lufs is None or not LUFS_LO <= lufs <= LUFS_HI:
+        probs.append('no loudness reading' if lufs is None else
+                     f'lufs {lufs} outside {LUFS_LO}..{LUFS_HI}')
+    if tp is None or tp > TP_MAX:
+        probs.append('no true-peak reading' if tp is None else
+                     f'true peak {tp} dBTP > {TP_MAX}')
+    R['loudness'] = rule('FAIL' if probs else 'PASS',
+                         {'lufs': lufs, 'true_peak_dbtp': tp,
+                          'clipped_samples': meas.get('clipped_samples')},
+                         '; '.join(probs) if probs else f'{lufs} LUFS, {tp} dBTP')
+
+    # ---- R14 sound required + sfx/cut sync (needs --sfx-stem) ----
+    # A mixed track cannot separate sfx from voice: earshot counts voice
+    # syllables as sound events, so only the sfx stem's own onsets count.
+    if not args.sfx_stem:
+        for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
+            R[k] = rule('NOT CHECKED', None,
+                        'needs --sfx-stem; a mixed track cannot separate '
+                        'sfx from voice')
+    else:
+        try:
+            ons = energy_onsets(audio.load(args.sfx_stem, mono=True),
+                                audio.SR)
+        except Exception as e:
+            ons, res['sfx_stem_error'] = None, str(e)
+        if ons is None:
+            for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
+                R[k] = rule('NOT CHECKED', None,
+                            f'sfx stem unreadable: {res["sfx_stem_error"]}')
+        elif not ons:
+            R['R14_sound_and_cuts'] = rule('FAIL', '0 onsets',
+                                           'Sound is required')
+            R['sfx_onset_80ms'] = rule('NOT CHECKED', '0 onsets',
+                                       'sfx stem has no onsets')
+        else:
+            cuts = scene_cuts(path)
+            if not cuts:
+                for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
+                    R[k] = rule('NOT CHECKED', len(ons),
+                                'no picture cuts detected (scene > 0.3)')
+            else:
+                offs = sorted(min(abs(o - c) for o in ons) for c in cuts)
+                within = sum(x <= SYNC_S for x in offs)
+                share = within / len(cuts)
+                det = (f'{len(ons)} sfx onsets; {within}/{len(cuts)} cuts '
+                       f'within 80 ms, median offset '
+                       f'{offs[len(offs) // 2] * 1000:.0f} ms')
+                for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
+                    R[k] = rule('PASS' if share >= CUT_HIT_MIN else 'FAIL',
+                                round(share, 3), det)
+
+    # ---- sfx level vs voice (needs both stems) ----
+    if not (args.voice_stem and args.sfx_stem):
+        R['sfx_vs_voice'] = rule('NOT CHECKED', None,
+            'needs --voice-stem and --sfx-stem; a mixed track cannot '
+            'separate sfx from voice')
+    else:
+        try:
+            vl = stem_level_db(args.voice_stem)
+            sl = stem_level_db(args.sfx_stem)
+        except Exception as e:
+            vl = sl = None
+            res['stem_level_error'] = str(e)
+        if vl is None or sl is None:
+            R['sfx_vs_voice'] = rule('NOT CHECKED',
+                                     {'voice_db': vl, 'sfx_db': sl},
+                                     'no active audio measured on a stem')
+        else:
+            margin = vl - sl
+            R['sfx_vs_voice'] = rule(
+                'PASS' if margin >= SFX_VS_VOICE_DB else 'FAIL',
+                round(margin, 1),
+                f'voice {vl} dB vs sfx {sl} dB median active RMS -> sfx '
+                f'{margin:+.1f} dB vs voice (need >= {SFX_VS_VOICE_DB} '
+                f'under)')
+
+    # ---- R7 speech pace ----
+    words = ((transcript.get('words') if isinstance(transcript, dict)
+              else transcript) or []) if transcript else []
+    if words:
+        span = max(w['end'] for w in words) - min(w['start'] for w in words)
+        wps = len(words) / span if span > 0 else None
+        R['R7_speech_pace'] = rule(
+            'PASS' if wps is not None and wps <= WPS_MAX else 'FAIL',
+            round(wps, 2) if wps else None,
+            f'{len(words)} words over {span:.1f} s = {wps:.2f} WPS '
+            f'(limit {WPS_MAX}) [transcript: true WPS]')
+    else:
+        R['R7_speech_pace'] = rule('NOT CHECKED', None,
+            'needs --transcript word timings; the onset proxy is gone '
+            'because it never fails')
+
+    # ---- R8 voice consistency (per-line F0 by character) ----
+    line_paths = []
+    if args.lines:
+        line_paths = (sorted(glob.glob(os.path.join(glob.escape(args.lines),
+                                                    '*.wav')))
+                      if os.path.isdir(args.lines)
+                      else sorted(glob.glob(args.lines)))
+    vmap = None
+    if args.voice_map:
+        try:
+            vmap = json.load(open(args.voice_map))
+        except Exception as e:
+            res['voice_map_error'] = str(e)
+    if line_paths:
+        groups, errs = {}, []
+        for lp in line_paths:
+            name = os.path.splitext(os.path.basename(lp))[0]
+            try:
+                st = f0_stats(lp, audio)
+                if st:
+                    char = (vmap or {}).get(name) or name.split('_l')[0]
+                    groups.setdefault(char, []).append(st['median_hz'])
+                else:
+                    errs.append(f'{name}: too few voiced frames')
+            except Exception as e:
+                errs.append(f'{name}: {e}')
+        probs = [f'{c}: F0 spread {min(m):.0f}-{max(m):.0f} Hz (>x'
+                 f'{F0_SPREAD})' for c, m in groups.items() if m and
+                 max(m) / max(1e-9, min(m)) > F0_SPREAD]
+        if not groups:
+            R['R8_voice_consistency'] = rule('NOT CHECKED', None,
+                'no line measured' +
+                (f' ({len(errs)} errors: {"; ".join(errs)[:160]})'
+                 if errs else ''))
+        else:
+            detail = ('per-character F0 spread within limit '
+                      '[consistency proxy only]')
+            if errs:
+                detail += (f' ({len(errs)} line(s) unmeasured: '
+                           f'{"; ".join(errs)[:120]})')
+            R['R8_voice_consistency'] = rule(
+                'FAIL' if probs else 'PASS',
+                {c: {'n': len(m), 'f0_medians': m} for c, m in groups.items()},
+                '; '.join(probs) or detail)
+    else:
+        R['R8_voice_consistency'] = rule(
+            'NOT CHECKED', None,
+            'needs --lines + --voice-map for per-line F0 by character')
+
+    # ---- R10 caption sync (caption segments vs speech onsets) ----
+    segs = []
+    if transcript:
+        if isinstance(transcript, dict) and transcript.get('groups'):
+            segs = [g for g in transcript['groups']
+                    if g.get('start') is not None]
+        else:
+            ws = sorted((w for w in words if w.get('start') is not None),
+                        key=lambda w: w['start'])
+            segs = [{'start': ws[i]['start'],
+                     'end': ws[min(i + 2, len(ws) - 1)]['end']}
+                    for i in range(0, len(ws), 3)]
+    sp = [(s['start'], s['end']) for s in secs]
+    if not segs:
+        R['R10_caption_sync'] = rule('NOT CHECKED', None,
+                                     'needs --transcript word timings')
+    else:
+        try:
+            all_on = vad_onsets(path, audio)
+        except Exception:
+            all_on = []
+        v_on = [t for t in all_on if any(a - 0.05 <= t <= b + 0.05
+                                         for a, b in sp)] or all_on
+        if not v_on:
+            R['R10_caption_sync'] = rule('NOT CHECKED', None,
+                                         'no speech onsets detected (VAD)')
+        else:
+            diffs = sorted(min(abs(s['start'] - t) for t in v_on)
+                           for s in segs)
+            med, p90 = diffs[len(diffs) // 2], diffs[int(len(diffs) * 0.9)]
+            within = sum(1 for x in diffs if x <= 0.3) / len(diffs)
+            R['R10_caption_sync'] = rule(
+                'PASS' if med <= 0.3 and within >= 0.7 else 'FAIL',
+                {'median_s': round(med, 3), 'p90_s': round(p90, 3),
+                 'within_300ms': round(within, 3), 'n_segments': len(diffs)},
+                f'{len(diffs)} segs vs {len(v_on)} onsets (energy VAD in '
+                f'AST-speech): median {med:.2f} s, p90 {p90:.2f} s, '
+                f'{within:.0%} within 300 ms')
+
+    # ---- OWNER CHECK rows: earshot cannot judge these ----
+    for k, d in (('R8_voice_face_fit', 'face/character/ethnicity/age fit '
+                  'needs a person; F0 measures consistency, not correctness'),
+                 ('R11_mouth_vs_voice', 'no vision/mouth model; mouth-vs-voice '
+                  'onset needs a face landmarker pipeline'),
+                 ('owner_judgment', 'acting, joke quality, music taste and '
+                  'mix feel need a person to listen')):
+        R[k] = rule('OWNER CHECK', None, d)
+
+    fails = [k for k, v in R.items() if v['status'] == 'FAIL']
+    notc = [k for k, v in R.items() if v['status'] == 'NOT CHECKED']
+    res['verdict'] = 'FAIL' if fails else ('NOT CHECKED' if notc else 'PASS')
+    res['fails'], res['not_checked'] = fails, notc
+    return res
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('video')
+    ap.add_argument('--earshot', help='earshot checkout, venv, or its python')
+    ap.add_argument('--out', help='write full JSON report here')
+    ap.add_argument('--lines', help='dir or glob of per-line voice wavs (R8)')
+    ap.add_argument('--voice-map', help='JSON {line_name: character} (R8)')
+    ap.add_argument('--transcript',
+                    help='JSON with word timings (R7 true WPS, R10)')
+    ap.add_argument('--sfx-stem',
+                    help='wav of the sfx/laugh track alone (R14, sfx_vs_voice)')
+    ap.add_argument('--voice-stem',
+                    help='wav of the voice track alone (sfx_vs_voice)')
+    args = ap.parse_args()
+    for f in (args.video, args.sfx_stem, args.voice_stem):
+        if f and not (os.path.isfile(f) and os.access(f, os.R_OK)):
+            print(f'ad-audio-qa: cannot read {f}', file=sys.stderr)
+            sys.exit(2)
+    py = earshot_python(args.earshot or os.environ.get(ENV))
+    if (py and os.path.realpath(py) != os.path.realpath(sys.executable)
+            and not os.environ.get(REEXEC)):
+        os.environ[REEXEC] = '1'
+        os.execv(py, [py, os.path.abspath(__file__)] + sys.argv[1:])
+    api, audio = load_earshot()
+    res = check_file(os.path.abspath(args.video), args, api, audio)
+    txt = json.dumps(res, indent=1, default=str)
+    if args.out:
+        with open(args.out, 'w') as f:
+            f.write(txt + '\n')
+    print(f"{os.path.basename(args.video)}: {res['verdict']}")
+    for k, v in res['rules'].items():
+        val = v.get('value')
+        vs = val if isinstance(val, str) else json.dumps(val, default=str)
+        print(f"  {v['status']:12s} {k:22s} {str(vs)[:80]}")
+    if res['fails']:
+        print('FAILED:', ', '.join(res['fails']))
+    sys.exit(1 if res['fails'] else 0)
+
+
+if __name__ == '__main__':
+    main()
