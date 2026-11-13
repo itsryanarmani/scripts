@@ -24,7 +24,7 @@ node gen.mjs site.json --out ./out
   "url": "https://private-repo-ba8a.com",
   "repo": "https://github.com/itsryanarmani/private-repo-ba8a",
   "mcp_url": "https://private-repo-ba8a.com/mcp",
-  "registry_name": "io.github.pooriaarab/private-repo-ba8a",
+  "registry_name": "io.github.itsryanarmani/private-repo-ba8a",
   "contact_email": "hello@example.com",
   "pricing": "Free",
   "category_web": "Food & Drink",
