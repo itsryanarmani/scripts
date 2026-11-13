@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""ad-video-sync - dead-air, tail and pacing checks on a finished mp4.
+
+    ad-video-sync VIDEO.mp4 [--out report.json]
+
+Dead gap = a freeze (freezedetect n=-60dB:d=0.3) overlapping a silence
+(silencedetect -35dB:d=0.25). FAIL on any dead gap, or a tail after the
+last sound >= 0.3 s. Also reports scene cuts (score > 0.3), cut count
+and average shot length; --out writes JSON. Exit: 0, 1 fail, 2 usage.
+"""
+import array, json, re, subprocess, sys
+
+
+def stderr(args):
+    return subprocess.run(args, capture_output=True, text=True).stderr
+
+
+def ffprobe(path):
+    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                        "format=duration", "-of", "csv=p=0", path],
+                       capture_output=True, text=True)
+    return float(p.stdout.strip())
+
+
+def detect(path, kind, arg):
+    return stderr(["ffmpeg", "-hide_banner", "-nostats", "-i", path,
+                   kind, arg, "-f", "null", "-"])
+
+
+def ranges(err, end):
+    out, cur = [], None
+    for k, t in re.findall(r"(\w+_(?:start|end)): ([\d.]+)", err):
+        if k.endswith("_start"):
+            cur = float(t)
+        elif cur is not None:
+            out.append((cur, float(t)))
+            cur = None
+    if cur is not None:
+        out.append((cur, end))
+    return out
+
+
+def last_sound(path):
+    """End of the last 0.1 s bucket above -35 dBFS (8 kHz mono PCM)."""
+    p = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", "1",
+                        "-ar", "8000", "-f", "s16le", "-"], capture_output=True)
+    x = array.array("h")
+    x.frombytes(p.stdout[:len(p.stdout) // 2 * 2])
+    hop, thr, last = 800, 32768 * 10 ** (-35 / 20), -1
+    for i in range(0, len(x) - hop + 1, hop):
+        win = x[i:i + hop]
+        if sum(v * v for v in win) / hop > thr * thr:
+            last = i // hop + 1
+    return last / 10.0 if last >= 0 else 0.0
+
+
+def main():
+    a = sys.argv[1:]
+    if len(a) not in (1, 3) or (len(a) == 3 and a[1] != "--out"):
+        print("usage: ad-video-sync VIDEO.mp4 [--out report.json]", file=sys.stderr)
+        return 2
+    path, out = a[0], a[2] if len(a) == 3 else None
+    try:
+        end = ffprobe(path)
+    except Exception:
+        print("FAIL: cannot probe duration")
+        return 2
+    sil = ranges(detect(path, "-af", "silencedetect=noise=-35dB:d=0.25"), end)
+    frz = ranges(detect(path, "-vf", "freezedetect=n=-60dB:d=0.3"), end)
+    dead = [{"start": round(max(f[0], s[0]), 2), "end": round(min(f[1], s[1]), 2)}
+            for f in frz for s in sil if min(f[1], s[1]) - max(f[0], s[0]) > 0]
+    last = last_sound(path)
+    tail = round(end - last, 2)
+    err = detect(path, "-vf", "select='gt(scene,0.3)',showinfo")
+    cuts = [float(m.group(1)) for m in re.finditer(r"pts_time:([\d.]+)", err)]
+    asl = round(end / (len(cuts) + 1), 2)
+    fails = ([f"{len(dead)} dead gap(s)"] if dead else []) + \
+        ([f"tail {tail}s after last sound"] if tail >= 0.3 or last <= 0 else [])
+    print(f"dead_gaps={len(dead)} tail={tail}s cuts={len(cuts)} "
+          f"avg_shot={asl}s dur={round(end, 2)}s")
+    for g in dead[:5]:
+        print(f"  dead {g['start']}-{g['end']}s")
+    print("PASS" if not fails else "FAIL: " + "; ".join(fails))
+    if out:
+        json.dump({"file": path, "duration": round(end, 2), "dead_gaps": dead,
+                   "tail_after_sound": tail, "cut_times": cuts,
+                   "cut_count": len(cuts), "avg_shot_len": asl,
+                   "pass": not fails}, open(out, "w"), indent=2)
+    return 0 if not fails else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
