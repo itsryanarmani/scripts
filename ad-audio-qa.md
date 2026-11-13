@@ -4,7 +4,7 @@
 [earshot](https://github.com/Leonxlnx/earshot) (MIT) as an external runtime
 dependency: this repo holds no earshot code or models. Every rule prints
 PASS, FAIL, NOT CHECKED or OWNER CHECK with the measured value. Exit: 0 no
-FAIL, 1 any FAIL, 2 usage error or missing earshot.
+FAIL, 1 any FAIL, 2 usage error or missing earshot, 3 `--require-stems` with every sfx rule NOT CHECKED.
 
 ## Use
 
@@ -36,7 +36,7 @@ error. The tool never runs `earshot llm`: that command uploads audio.
 
 | Rule | Pass condition |
 | --- | --- |
-| `R6_dead_audio` | No dead stretch >= 1.5 s below -60 LUFS; no all-digital-silence file. The 400 ms momentary window can shorten a gap by ~0.4 s, so the ffmpeg detector is the gate. |
+| `R6_dead_audio` | No dead stretch >= 1.5 s below -60 LUFS; no all-digital-silence file. The 400 ms momentary window can shorten a gap by ~0.4 s, so run the ffmpeg `silencedetect` and `freezedetect` check from the skill rule as the gate; this tool is a coarse guard. |
 | `loudness` | Integrated -16 to -12 LUFS (target -14); true peak <= -1 dBTP. |
 | `R14_sound_and_cuts` | >= 80% of sfx-stem onsets land within 80 ms of a picture cut (ffmpeg scene > 0.3, or `--cuts`). A cue counts as on a cut when the start, the attack (first frame within 10 dB of its max) or the peak of any of its sounds is within 80 ms, so a riser into a cut, a swell from a cut, a held hit and a soft pre-hit before a boom all sync; a sound that starts within 0.25 s of a cue's first sound joins that cue (a second, unrelated hit 200 ms after an on-cut hit is absorbed), and a steady tick bed does not chain into one cue. Precision, not recall: sfx only on events, never one per cut, so a cut with no sfx is fine. No onsets = FAIL "Sound is required". |
 | `sfx_onset_80ms` | Same onset-on-cut share as R14, reported as its own row. |
