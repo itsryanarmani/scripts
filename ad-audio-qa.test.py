@@ -4,10 +4,10 @@
 asserts good passes measured rules and broken fails planted ones, then
 covers the failure-mode rows: nosfx, missing stems, no transcript, stem
 level agreement across mono/stereo/22 kHz/time shifts, R8 grouping,
-R14 onset precision, bad inputs and exit codes. Writes an evidence JSON.
+R14 onset precision, bad inputs and exit codes. Prints an evidence JSON line (exit code and rule statuses per run).
 SKIPs without ffmpeg, a speech source, or AD_AUDIO_QA_EARSHOT.
 """
-import json, os, re, shutil, subprocess, sys, tempfile
+import atexit, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 TOOL = Path(__file__).with_name('ad-audio-qa')
@@ -17,7 +17,7 @@ MID = [3.0, 5.0, 7.0, 9.0, 11.0, 13.0]
 SLOTS = [0.2, 2.5, 4.5, 6.5, 8.5, 10.5, 12.5]
 WORDS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven']
 GAP, LATE = (6.0, 8.0), 0.150
-EARSHOT = os.environ.get('AD_AUDIO_QA_EARSHOT') or os.environ.get('EARSHOT_DIR')
+EARSHOT = os.environ.get('AD_AUDIO_QA_EARSHOT')
 AUTO = ['R6_dead_audio', 'loudness', 'R14_sound_and_cuts', 'sfx_onset_80ms',
         'sfx_vs_voice', 'R7_speech_pace', 'R10_caption_sync']
 SFX_RULES = ['R14_sound_and_cuts', 'sfx_onset_80ms', 'sfx_vs_voice']
@@ -157,6 +157,7 @@ def main():
         print('SKIP ad-audio-qa e2e: set AD_AUDIO_QA_EARSHOT')
         return 0
     tmp = Path(tempfile.mkdtemp(prefix='ad-audio-qa-e2e-'))
+    atexit.register(shutil.rmtree, tmp, True)  # kept on failure or AD_AUDIO_QA_KEEP
     video = tmp / 'video.mp4'
     build_video(str(video), tmp)
     bed = tmp / 'bed.wav'
@@ -171,7 +172,6 @@ def main():
         results[kind] = run(vid, tmp, kind,
                             ('--transcript', tr, '--sfx-stem', sstem,
                              '--voice-stem', vstem))
-    ev = tmp / 'evidence.json'
     extra = {}
 
     def add(name, *a):
@@ -214,7 +214,7 @@ def main():
     add('r14_3cuts', str(gvid), '--sfx-stem', s3)
     add('r14_float', str(gvid), '--sfx-stem', sfloat)
     # R14: riser with a linear ramp ending on each cut PASSes; the onset
-    # is the event peak frame, not the ramp start
+    # syncs at its peak (the hit), not at the ramp start
     def riser(path, R):
         ff('-f', 'lavfi', '-i',
            f"aevalsrc='0.25*sin(6.2831853*220*t)*min(1\\,t/{R})'"
@@ -324,8 +324,7 @@ def main():
         results[name] = run(vid, tmp, name, args)
 
     allres = results
-    ev.write_text(json.dumps({'runs': allres}, indent=1, default=str))
-    print('evidence:', ev)
+    print('evidence:', json.dumps({k: {'exit': c, 'rules': {r: v.get('status') for r, v in (rp or {}).get('rules', {}).items()}} for k, (c, o, rp) in allres.items()}))
     for k, (code, out, rep) in allres.items():
         print(f'--- {k} (exit {code}) ---')
         print(out)
@@ -437,6 +436,9 @@ def main():
     chk('owner rows always OWNER CHECK',
         all(grules.get(k, {}).get('status') == 'OWNER CHECK' for k in
             ('R8_voice_face_fit', 'R11_mouth_vs_voice', 'owner_judgment')))
+    if not ok or os.environ.get('AD_AUDIO_QA_KEEP'):
+        atexit.unregister(shutil.rmtree)
+        print('kept scratch folder:', tmp)
     print(f'{"PASS" if ok else "FAIL"}: ad-audio-qa e2e')
     return 0 if ok else 1
 
