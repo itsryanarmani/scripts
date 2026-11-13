@@ -67,6 +67,7 @@ jobs:
           python3 fb-page.test.py
           python3 fb-page-polish-posts.test.py
           python3 -I ad-launch.test.py
+          python3 -I ad-audio-qa.test.py
           python3 boat-ci.test.py
           python3 build-repo-prefixes.test.py
           python3 worker-preview-provision.test.py
