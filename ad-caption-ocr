@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""ad-caption-ocr - OCR-check burned-in captions on a finished mp4 (macOS).
-
-    ad-caption-ocr VIDEO.mp4 CAPTIONS.json
+"""ad-caption-ocr VIDEO.mp4 CAPTIONS.json - Vision OCR check (macOS).
 
 CAPTIONS.json: a list, or {"groups"|"captions": [...]}, of
-{"start": s, "end": e, "text": "expected words"}. One frame per caption
-at its midpoint is sampled with ffmpeg, then macOS Vision OCR reads it.
-The Swift helper is compiled with `swiftc -O` (never `swift file.swift` —
-the interpreter hangs) and retried once on a Vision e5rt crash. Per-card
-CER = edit distance / expected length, upper case, spaces collapsed; FAIL
-above 0.10 on any card. Exit: 0 pass, 1 fail, 2 usage/environment.
+{"start","end","text"}. One frame per caption midpoint is sampled;
+macOS Vision OCR reads it. The Swift helper is compiled with
+`swiftc -O` (never `swift file.swift` — the interpreter hangs),
+retried once on a Vision e5rt crash. CER = edit distance / expected
+length, upper case, punctuation/emoji/spaces collapsed; FAIL above
+0.10. Exit: 0 pass, 1 fail, 2 usage/environment.
 """
-import json, os, subprocess, sys, tempfile
+import atexit, json, os, shutil, subprocess, sys, tempfile
 
 SWIFT = r'''
 import Foundation
@@ -23,6 +21,7 @@ func norm(_ s: String) -> String {
      .reduce(into: "") { $0.append($1) }.split(separator: " ").joined(separator: " ")
 }
 func lev(_ a: String, _ b: String) -> Int {
+    guard !a.isEmpty, !b.isEmpty else { return a.isEmpty ? b.count : a.count }
     let aa = Array(a), bb = Array(b)
     var prev = Array(0...bb.count)
     for i in 1...aa.count {
@@ -69,25 +68,31 @@ def main():
     if len(sys.argv) != 3 or not all(os.path.exists(a) for a in sys.argv[1:]):
         print("usage: ad-caption-ocr VIDEO.mp4 CAPTIONS.json", file=sys.stderr)
         return 2
-    d = json.load(open(sys.argv[2]))
-    if isinstance(d, dict):
-        d = d.get("groups") or d.get("captions") or []
-    caps = [(float(c["start"]), float(c["end"]),
-             c.get("text") or " ".join(c.get("words") or []))
-            for c in d if c.get("start") is not None and c.get("end") is not None
-            and (c.get("text") or c.get("words"))]
+    miss = [t for t in ("ffmpeg", "swiftc") if not shutil.which(t)]
+    if miss: print("missing " + ", ".join(miss), file=sys.stderr); return 2
+    try:
+        d = json.load(open(sys.argv[2]))
+        caps = ((d.get("groups") or d.get("captions")) if isinstance(d, dict)
+                else d) or []
+        caps = [(float(c["start"]), float(c["end"]), c.get("text") or
+                 " ".join(c.get("words") or [])) for c in caps
+                if isinstance(c, dict) and c.get("start") is not None
+                and c.get("end") is not None and (c.get("text") or c.get("words"))]
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        print(f"FAIL: bad captions JSON: {e}", file=sys.stderr)
+        return 2
     if not caps:
         print("FAIL: no caption entries found")
         return 1
     tmp = tempfile.mkdtemp(prefix="ad-caption-ocr-")
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
     manifest = []
     for i, (s, e, text) in enumerate(caps):
         png = os.path.join(tmp, f"f{i:03d}.png")
         t = (s + e) / 2
-        p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
-                            "-ss", f"{t:.3f}", "-i", sys.argv[1],
-                            "-frames:v", "1", "-y", png],
-                           capture_output=True)
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss",
+                            f"{t:.3f}", "-i", sys.argv[1], "-frames:v", "1",
+                            "-y", png], capture_output=True)
         if p.returncode != 0 or not os.path.exists(png):
             print(f"FAIL: no frame at {t:.2f}s for caption {i}")
             return 1
@@ -98,20 +103,16 @@ def main():
     open(src, "w").write(SWIFT)
     c = subprocess.run(["swiftc", "-O", src, "-o", exe], capture_output=True, text=True)
     if c.returncode != 0:
-        print("FAIL: swiftc failed: " + c.stderr[-300:])
-        return 2
-    res, err = None, ""
+        print("FAIL: swiftc failed: " + c.stderr[-300:]); return 2
+    res = None
     for _ in range(2):
         r = subprocess.run([exe, mpath, outj], capture_output=True, text=True)
-        err = r.stderr
         if r.returncode == 0 and os.path.exists(outj):
-            res = json.load(open(outj))
-            break
-        if "e5rt" not in err:
-            break
+            res = json.load(open(outj)); break
+        if r.returncode == 0 or "e5rt" not in r.stderr: break
     if res is None:
         print("FAIL: OCR helper failed" + (" (Vision e5rt, retried once)"
-              if "e5rt" in err else ": " + err[-300:]))
+              if "e5rt" in r.stderr else ": " + r.stderr[-300:]))
         return 1
     for f in res["frames"]:
         print(f"cer={f['cer']:.3f} expected={f['expected']!r} got={f['got']!r}")

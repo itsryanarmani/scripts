@@ -6,7 +6,7 @@
 PASS needs -16..-12 LUFS and TP <= -1.0 dBTP on the FINAL mp4 (AAC
 encoding moves the true peak). Exit: 0 pass, 1 fail, 2 usage.
 """
-import json, re, subprocess, sys
+import json, re, shutil, subprocess, sys
 
 
 def ff(*a):
@@ -29,17 +29,18 @@ def main():
     a = sys.argv[1:]
     tgt = a[a.index("--target") + 1] if "--target" in a else "-14"
     tps = a[a.index("--tp") + 1] if "--tp" in a else "-1.5"
-    skip = {"--target", "--tp"}
-    pos = [x for i, x in enumerate(a)
-           if not x.startswith("-") and (i == 0 or a[i - 1] not in skip)]
+    pos = [x for i, x in enumerate(a) if not x.startswith("-")
+           and (i == 0 or a[i - 1] not in ("--target", "--tp"))]
     if len(pos) != 2:
         print("usage: ad-video-master IN.mp4 OUT.mp4 [--target -14] [--tp -1.5]",
               file=sys.stderr)
         return 2
     src, dst = pos
+    if not shutil.which("ffmpeg"):
+        print("missing ffmpeg", file=sys.stderr); return 2
     before = measure(src)
-    if before is None:
-        print("FAIL: cannot measure input (no audio or bad file)")
+    if before is None or not (-70 < before[0] < 0):
+        print("FAIL: audio is silent or unmeasurable")
         return 1
     d = before[2]
     af = (f"loudnorm=I={tgt}:TP={tps}:LRA=11:measured_I={d['input_i']}:"
