@@ -9,10 +9,12 @@ Prints PASS / FAIL / NOT CHECKED / OWNER CHECK per rule with measured values.
 OWNER CHECK rows always need a person. Never runs `earshot llm` (it would
 upload the audio). Rules and thresholds: ad-audio-qa.md. --earshot (or
 AD_AUDIO_QA_EARSHOT) points at an earshot checkout (dir holding venv/), the
-venv itself, or its python binary; it runs any binary it names, the same
-trust as PATH. --sfx-stem is a wav of the sfx/laugh track alone, --voice-stem
-a wav of the voice alone; a mixed track cannot separate them. Exit: 0 no
-FAIL, 1 any FAIL, 2 usage.
+venv itself, or its python binary; it runs any binary it names. --sfx-stem
+is a wav of the sfx/laugh track alone, --voice-stem a wav of the voice
+alone; a mixed track cannot separate them. Stems are assumed to start at
+t=0 with the video; a stem off by more than 0.5 s prints a warning. Exit:
+0 no FAIL, 1 any FAIL, 2 usage, 3 --require-stems with every sfx rule NOT
+CHECKED.
 """
 import argparse, glob, json, os, re, subprocess, sys
 
@@ -110,22 +112,38 @@ def scene_cuts(path):
             re.finditer(r'pts_time:([\d.]+)', r.stderr)]
 
 
-def stem_level_db(path):
-    """Median active-frame RMS level in dB of an audio stem, measured by
-    ffmpeg astats reset every 100 ms; active frames sit >12 dB over the
-    stem's own 10th-percentile floor. None when nothing is active."""
-    r = subprocess.run(
-        ['ffmpeg', '-v', 'info', '-i', path, '-ac', '1', '-af',
-         'astats=metadata=1:reset=1:length=0.1,'
-         'ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
-         '-f', 'null', '-'], capture_output=True, text=True)
-    vals = sorted(float(x) for x in
-                  re.findall(r'RMS_level=(-?[\d.]+|-inf)', r.stdout)
-                  if x != '-inf')
-    if not vals:
+def stem_level_db(path, audio):
+    """Median per-event RMS level in dB of a stem. audio.load decodes all
+    inputs to 48 kHz (n, 2) through one chain; levels power-sum channels,
+    so mono, stereo and 22.05 kHz versions agree. Events are runs above a
+    fixed -60 dBFS floor merged under 0.3 s; each RMS covers its own
+    window, so shifts do not move the reading. None if nothing is active."""
+    import numpy as np
+    y = audio.load(path)
+    y = y if y.ndim == 2 else y[:, None]
+    sr, ch = audio.SR, y.shape[1]
+    win, hop = int(0.05 * sr), int(0.01 * sr)
+    if len(y) < win:
         return None
-    act = [v for v in vals if v > vals[len(vals) // 10] + 12.0]
-    return round(act[len(act) // 2], 1) if act else None
+    cs = np.concatenate([[0.0], np.cumsum((y * y).sum(axis=1))])
+    idx = np.arange(0, len(y) - win + 1, hop)
+    pw = (cs[idx + win] - cs[idx]) / (win * ch)
+    db = 10 * np.log10(pw + 1e-20)
+    act = db > -60.0
+    d = np.diff(np.concatenate([[0], act.astype(np.int8), [0]]))
+    st, en = np.where(d == 1)[0], np.where(d == -1)[0]
+    if not len(st):
+        return None
+    ev, lvl = [], []
+    for s, e in zip(st, en):
+        if ev and s - ev[-1][1] < 30:
+            ev[-1][1] = e
+        else:
+            ev.append([s, e])
+    for s, e in ev:
+        a, b = s * hop, min(len(y), (e - 1) * hop + win)
+        lvl.append(10 * np.log10((cs[b] - cs[a]) / ((b - a) * ch) + 1e-20))
+    return round(float(np.median(lvl)), 1)
 
 
 def rule(status, value, detail):
@@ -154,10 +172,28 @@ def check_file(path, args, api, audio):
         try:
             transcript = json.load(open(args.transcript))
         except Exception as e:
-            R['transcript_input'] = rule('NOT CHECKED', None,
-                                         f'bad transcript JSON: {e}')
+            msg = f'bad transcript JSON: {e}'
+            R['transcript_input'] = rule('NOT CHECKED', msg[:100], msg)
     secs = [s for s in tl.get('sections') or []
             if (s.get('ast') or {}).get('Speech', 0) >= 0.5]
+
+    # ---- stem length sanity (stems assumed to start at t=0) ----
+    vdur = meas.get('duration') if isinstance(meas, dict) else None
+    for nm, p in (('sfx stem', args.sfx_stem), ('voice stem',
+                                              args.voice_stem)):
+        if not (p and vdur):
+            continue
+        try:
+            sd = float(subprocess.run(
+                ['ffprobe', '-v', 'error', '-show_entries',
+                 'format=duration', '-of', 'csv=p=0', p],
+                capture_output=True, text=True).stdout)
+        except Exception:
+            continue
+        if abs(sd - vdur) > 0.5:
+            res.setdefault('warnings', []).append(
+                f'{nm} is {sd:.2f} s vs video {vdur:.2f} s; stems are '
+                'assumed aligned at t=0')
 
     # ---- R6 dead audio ----
     lufs_tl = loud.get('integrated_lufs')
@@ -184,7 +220,9 @@ def check_file(path, args, api, audio):
     R['R6_dead_audio'] = (rule('FAIL', *dead) if dead else rule(
         'PASS', f'{lufs_tl} LUFS integrated',
         f'max momentary {max_mom} LUFS, silence frac {ds_frac}, '
-        f'longest dead stretch {gap_s:.1f} s'))
+        f'longest dead stretch {gap_s:.1f} s; the 400 ms momentary '
+        f'window can shorten a gap by ~0.4 s, so the ffmpeg detector '
+        f'is the gate'))
 
     # ---- loudness ----
     tp = loud.get('true_peak_dbtp') or meas.get('true_peak_dbtp')
@@ -231,15 +269,18 @@ def check_file(path, args, api, audio):
                     R[k] = rule('NOT CHECKED', len(ons),
                                 'no picture cuts detected (scene > 0.3)')
             else:
-                offs = sorted(min(abs(o - c) for o in ons) for c in cuts)
-                within = sum(x <= SYNC_S for x in offs)
-                share = within / len(cuts)
-                det = (f'{len(ons)} sfx onsets; {within}/{len(cuts)} cuts '
-                       f'within 80 ms, median offset '
-                       f'{offs[len(offs) // 2] * 1000:.0f} ms')
+                # Gate on onset precision: sfx only on events, never one
+                # per cut; a cut with no sfx is fine. Report both shares.
+                near = lambda ts, refs: sum(
+                    min(abs(t - r) for r in refs) <= SYNC_S for t in ts)
+                oh, ch = near(ons, cuts), near(cuts, ons)
+                osc, csc = oh / len(ons), ch / len(cuts)
+                det = (f'{len(ons)} sfx onsets; {oh}/{len(ons)} onsets '
+                       f'within 80 ms of a cut ({osc:.0%}); {ch}/'
+                       f'{len(cuts)} cuts have an sfx onset ({csc:.0%})')
                 for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
-                    R[k] = rule('PASS' if share >= CUT_HIT_MIN else 'FAIL',
-                                round(share, 3), det)
+                    R[k] = rule('PASS' if osc >= CUT_HIT_MIN else 'FAIL',
+                                round(osc, 3), det)
 
     # ---- sfx level vs voice (needs both stems) ----
     if not (args.voice_stem and args.sfx_stem):
@@ -248,8 +289,8 @@ def check_file(path, args, api, audio):
             'separate sfx from voice')
     else:
         try:
-            vl = stem_level_db(args.voice_stem)
-            sl = stem_level_db(args.sfx_stem)
+            vl = stem_level_db(args.voice_stem, audio)
+            sl = stem_level_db(args.sfx_stem, audio)
         except Exception as e:
             vl = sl = None
             res['stem_level_error'] = str(e)
@@ -262,9 +303,9 @@ def check_file(path, args, api, audio):
             R['sfx_vs_voice'] = rule(
                 'PASS' if margin >= SFX_VS_VOICE_DB else 'FAIL',
                 round(margin, 1),
-                f'voice {vl} dB vs sfx {sl} dB median active RMS -> sfx '
-                f'{margin:+.1f} dB vs voice (need >= {SFX_VS_VOICE_DB} '
-                f'under)')
+                f'voice {vl} dB vs sfx {sl} dB per-event RMS -> sfx '
+                f'{margin:.1f} dB {"under" if margin >= 0 else "over"} '
+                f'voice (need >= {SFX_VS_VOICE_DB} under)')
 
     # ---- R7 speech pace ----
     words = ((transcript.get('words') if isinstance(transcript, dict)
@@ -295,6 +336,8 @@ def check_file(path, args, api, audio):
             vmap = json.load(open(args.voice_map))
         except Exception as e:
             res['voice_map_error'] = str(e)
+            msg = f'bad voice-map JSON: {e}'
+            R['voice_map_input'] = rule('NOT CHECKED', msg[:100], msg)
     if line_paths:
         groups, errs = {}, []
         for lp in line_paths:
@@ -311,11 +354,12 @@ def check_file(path, args, api, audio):
         probs = [f'{c}: F0 spread {min(m):.0f}-{max(m):.0f} Hz (>x'
                  f'{F0_SPREAD})' for c, m in groups.items() if m and
                  max(m) / max(1e-9, min(m)) > F0_SPREAD]
-        if not groups:
+        why = ('no line measured' if not groups else
+               'no character has 2+ lines; spread needs a repeat')
+        if not groups or not any(len(m) >= 2 for m in groups.values()):
             R['R8_voice_consistency'] = rule('NOT CHECKED', None,
-                'no line measured' +
-                (f' ({len(errs)} errors: {"; ".join(errs)[:160]})'
-                 if errs else ''))
+                why + (f' ({len(errs)} errors: {"; ".join(errs)[:160]})'
+                       if errs else ''))
         else:
             detail = ('per-character F0 spread within limit '
                       '[consistency proxy only]')
@@ -401,12 +445,30 @@ def main():
                     help='wav of the sfx/laugh track alone (R14, sfx_vs_voice)')
     ap.add_argument('--voice-stem',
                     help='wav of the voice track alone (sfx_vs_voice)')
+    ap.add_argument('--require-stems', action='store_true',
+                    help='exit 3 when every sfx rule is NOT CHECKED')
     args = ap.parse_args()
     for f in (args.video, args.sfx_stem, args.voice_stem):
         if f and not (os.path.isfile(f) and os.access(f, os.R_OK)):
             print(f'ad-audio-qa: cannot read {f}', file=sys.stderr)
             sys.exit(2)
-    py = earshot_python(args.earshot or os.environ.get(ENV))
+    try:
+        r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
+                            'format=duration', '-of', 'csv=p=0',
+                            args.video], capture_output=True, text=True)
+        err = r.stderr.strip()
+    except OSError as e:
+        r, err = None, str(e)
+    if r is None or r.returncode or not r.stdout.strip():
+        print(f'ad-audio-qa: cannot decode {args.video}: '
+              f'{err or "no readable duration"}', file=sys.stderr)
+        sys.exit(2)
+    loc = args.earshot or os.environ.get(ENV)
+    py = earshot_python(loc)
+    if loc and py is None:
+        print(f'ad-audio-qa: earshot path could not be resolved: {loc}',
+              file=sys.stderr)
+        sys.exit(2)
     if (py and os.path.realpath(py) != os.path.realpath(sys.executable)
             and not os.environ.get(REEXEC)):
         os.environ[REEXEC] = '1'
@@ -422,8 +484,14 @@ def main():
         val = v.get('value')
         vs = val if isinstance(val, str) else json.dumps(val, default=str)
         print(f"  {v['status']:12s} {k:22s} {str(vs)[:80]}")
+    for w in res.get('warnings', []):
+        print(f'  {"WARN":12s} {w}')
     if res['fails']:
         print('FAILED:', ', '.join(res['fails']))
+    if (args.require_stems and all(
+            res['rules'][k]['status'] == 'NOT CHECKED' for k in
+            ('R14_sound_and_cuts', 'sfx_onset_80ms', 'sfx_vs_voice'))):
+        sys.exit(3)
     sys.exit(1 if res['fails'] else 0)
 
 
