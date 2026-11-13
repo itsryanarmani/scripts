@@ -2,19 +2,16 @@
 """ad-audio-qa - measured audio rule checks for a finished video, via earshot.
 
     ad-audio-qa VIDEO [--earshot DIR] [--out FILE] [--lines DIR|GLOB]
-                      [--voice-map JSON] [--transcript JSON]
+                      [--voice-map JSON] [--transcript JSON] [--cuts T,...]
                       [--sfx-stem FILE] [--voice-stem FILE]
 
 Prints PASS / FAIL / NOT CHECKED / OWNER CHECK per rule with measured values.
 OWNER CHECK rows always need a person. Never runs `earshot llm` (it would
 upload the audio). Rules and thresholds: ad-audio-qa.md. --earshot (or
-AD_AUDIO_QA_EARSHOT) points at an earshot checkout (dir holding venv/), the
-venv itself, or its python binary; it runs any binary it names. --sfx-stem
-is a wav of the sfx/laugh track alone, --voice-stem a wav of the voice
-alone; a mixed track cannot separate them. Stems are assumed to start at
-t=0 with the video; a stem off by more than 0.5 s prints a warning. Exit:
-0 no FAIL, 1 any FAIL, 2 usage, 3 --require-stems with every sfx rule NOT
-CHECKED.
+AD_AUDIO_QA_EARSHOT) points at an earshot checkout, venv, or python; it
+runs any binary it names. Stems are assumed aligned at t=0; a >0.5 s
+mismatch warns. Exit: 0 no FAIL, 1 any FAIL, 2 usage, 3 --require-stems
+with every sfx rule NOT CHECKED.
 """
 import argparse, glob, json, os, re, subprocess, sys
 
@@ -69,38 +66,45 @@ def _frame_db(y, sr, hop_s, win_s):
     return 20 * np.log10(np.sqrt(np.mean(fr ** 2, axis=1)) + 1e-10), hop_s
 
 
-def _onsets_from_db(db, hop, floor_pct, floor_db, min_run, merge_s):
-    """Onset times where frame dB crosses pct-floor + floor_db."""
+def _runs(db, hop, floor_pct, floor_db, min_run, merge_s,
+          floor_abs=None):
+    """(start, end) runs where frame dB stays above pct-floor + floor_db
+    (and floor_abs when given); under-min_run runs dropped, close starts
+    merged."""
     import numpy as np
     if not len(db):
         return []
-    d = np.diff(np.concatenate([[0], (db > np.percentile(db, floor_pct)
-                                     + floor_db).astype(np.int8), [0]]))
+    thr = np.percentile(db, floor_pct) + floor_db
+    if floor_abs is not None:
+        thr = max(thr, floor_abs)
+    d = np.diff(np.concatenate([[0], (db > thr).astype(np.int8), [0]]))
     st, en = np.where(d == 1)[0], np.where(d == -1)[0]
     out = []
     for i, j in zip(st, en):
         t = i * hop
-        if (j - i) * hop >= min_run and (not out or t - out[-1] > merge_s):
-            out.append(round(t, 3))
+        if (j - i) * hop >= min_run and (not out or t - out[-1][0] > merge_s):
+            out.append((round(t, 3), round(j * hop, 3)))
     return out
 
 
 def vad_onsets(path, audio):
-    """Speech onsets: 200-4000 Hz energy VAD, 25 ms windows / 10 ms hop,
-    floor+12 dB threshold, runs >= 80 ms kept."""
+    """Speech onsets: 200-4000 Hz energy VAD, runs >= 80 ms kept."""
     from scipy.signal import butter, sosfiltfilt
     y = sosfiltfilt(butter(4, [200.0, 4000.0], btype='band', fs=audio.SR,
                            output='sos'), audio.load(path, mono=True))
     db, hop = _frame_db(y, audio.SR, 0.010, 0.025)
-    return _onsets_from_db(db, hop, 20, 12.0, 0.08, 0.0)
+    return [s for s, _ in _runs(db, hop, 20, 12.0, 0.08, 0.0)]
 
 
 def energy_onsets(y, sr):
-    """Model-free energy onsets on a stem: 20 ms windows / 5 ms hop, frame
-    RMS dB over the 10th-percentile floor + 15 dB, runs >= 20 ms, onsets
-    closer than 80 ms merged."""
+    """Model-free energy onsets on a stem: 20 ms windows / 5 ms hop, runs
+    above a -60 dBFS floor; each onset is the event's peak frame, so a
+    riser that builds into a cut syncs at the hit."""
+    import numpy as np
     db, hop = _frame_db(y, sr, 0.005, 0.020)
-    return _onsets_from_db(db, hop, 10, 15.0, 0.02, 0.08)
+    return [round((i0 + int(np.argmax(db[i0:i1]))) * hop, 3)
+            for s, e in _runs(db, hop, 10, 15.0, 0.02, 0.08, -60.0)
+            for i0, i1 in [(int(round(s / hop)), int(round(e / hop)))]]
 
 
 def scene_cuts(path):
@@ -114,10 +118,10 @@ def scene_cuts(path):
 
 def stem_level_db(path, audio):
     """Median per-event RMS level in dB of a stem. audio.load decodes all
-    inputs to 48 kHz (n, 2) through one chain; levels power-sum channels,
-    so mono, stereo and 22.05 kHz versions agree. Events are runs above a
-    fixed -60 dBFS floor merged under 0.3 s; each RMS covers its own
-    window, so shifts do not move the reading. None if nothing is active."""
+    inputs to 48 kHz; levels read the louder channel per frame, so a panned
+    stem matches a centred one. Events are runs above a fixed -60 dBFS
+    floor merged under 0.3 s; each RMS covers its own window, so shifts do
+    not move the reading. None if nothing is active."""
     import numpy as np
     y = audio.load(path)
     y = y if y.ndim == 2 else y[:, None]
@@ -125,9 +129,11 @@ def stem_level_db(path, audio):
     win, hop = int(0.05 * sr), int(0.01 * sr)
     if len(y) < win:
         return None
-    cs = np.concatenate([[0.0], np.cumsum((y * y).sum(axis=1))])
+    # louder channel per frame: a hard-panned stem matches a centred one
+    css = [np.concatenate([[0.0], np.cumsum(y[:, c] ** 2)])
+           for c in range(ch)]
     idx = np.arange(0, len(y) - win + 1, hop)
-    pw = (cs[idx + win] - cs[idx]) / (win * ch)
+    pw = np.max([c[idx + win] - c[idx] for c in css], axis=0) / win
     db = 10 * np.log10(pw + 1e-20)
     act = db > -60.0
     d = np.diff(np.concatenate([[0], act.astype(np.int8), [0]]))
@@ -142,7 +148,8 @@ def stem_level_db(path, audio):
             ev.append([s, e])
     for s, e in ev:
         a, b = s * hop, min(len(y), (e - 1) * hop + win)
-        lvl.append(10 * np.log10((cs[b] - cs[a]) / ((b - a) * ch) + 1e-20))
+        lvl.append(10 * np.log10(max(c[b] - c[a] for c in css) / (b - a)
+                                 + 1e-20))
     return round(float(np.median(lvl)), 1)
 
 
@@ -154,15 +161,13 @@ def check_file(path, args, api, audio):
     import numpy as np
     res = {'file': path, 'rules': {}}
     R = res['rules']
-    try:
-        meas = api.measure(path)
-    except Exception as e:
-        meas = {'error': str(e)}
-    res['measure'] = meas
-    try:
-        tl = api.timeline(path, video=path, detail='high')
-    except Exception as e:
-        tl = {'error': str(e)}
+    def _call(fn):
+        try:
+            return fn()
+        except Exception as e:
+            return {'error': str(e)}
+    meas = res['measure'] = _call(lambda: api.measure(path))
+    tl = _call(lambda: api.timeline(path, video=path, detail='high'))
     if 'error' in tl:
         res['timeline_error'] = tl['error']
         tl = {}
@@ -177,7 +182,6 @@ def check_file(path, args, api, audio):
     secs = [s for s in tl.get('sections') or []
             if (s.get('ast') or {}).get('Speech', 0) >= 0.5]
 
-    # ---- stem length sanity (stems assumed to start at t=0) ----
     vdur = meas.get('duration') if isinstance(meas, dict) else None
     for nm, p in (('sfx stem', args.sfx_stem), ('voice stem',
                                               args.voice_stem)):
@@ -195,7 +199,6 @@ def check_file(path, args, api, audio):
                 f'{nm} is {sd:.2f} s vs video {vdur:.2f} s; stems are '
                 'assumed aligned at t=0')
 
-    # ---- R6 dead audio ----
     lufs_tl = loud.get('integrated_lufs')
     max_mom = (loud.get('max_momentary') or {}).get('lufs')
     ds_frac = meas.get('digital_silence_frac')
@@ -224,7 +227,6 @@ def check_file(path, args, api, audio):
         f'window can shorten a gap by ~0.4 s, so the ffmpeg detector '
         f'is the gate'))
 
-    # ---- loudness ----
     tp = loud.get('true_peak_dbtp') or meas.get('true_peak_dbtp')
     lufs = loud.get('integrated_lufs') or meas.get('lufs')
     probs = []
@@ -239,14 +241,14 @@ def check_file(path, args, api, audio):
                           'clipped_samples': meas.get('clipped_samples')},
                          '; '.join(probs) if probs else f'{lufs} LUFS, {tp} dBTP')
 
-    # ---- R14 sound required + sfx/cut sync (needs --sfx-stem) ----
-    # A mixed track cannot separate sfx from voice: earshot counts voice
-    # syllables as sound events, so only the sfx stem's own onsets count.
-    if not args.sfx_stem:
+    # R14 sound required + sfx/cut sync (needs --sfx-stem); a mixed
+    # track cannot separate sfx from voice, so only the sfx stem counts.
+    def r14nc(val, det):
         for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
-            R[k] = rule('NOT CHECKED', None,
-                        'needs --sfx-stem; a mixed track cannot separate '
-                        'sfx from voice')
+            R[k] = rule('NOT CHECKED', val, det)
+    if not args.sfx_stem:
+        r14nc(None, 'needs --sfx-stem; a mixed track cannot separate '
+                     'sfx from voice')
     else:
         try:
             ons = energy_onsets(audio.load(args.sfx_stem, mono=True),
@@ -254,35 +256,31 @@ def check_file(path, args, api, audio):
         except Exception as e:
             ons, res['sfx_stem_error'] = None, str(e)
         if ons is None:
-            for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
-                R[k] = rule('NOT CHECKED', None,
-                            f'sfx stem unreadable: {res["sfx_stem_error"]}')
+            r14nc(res['sfx_stem_error'][:100],
+                  f'sfx stem unreadable: {res["sfx_stem_error"]}')
         elif not ons:
             R['R14_sound_and_cuts'] = rule('FAIL', '0 onsets',
                                            'Sound is required')
-            R['sfx_onset_80ms'] = rule('NOT CHECKED', '0 onsets',
-                                       'sfx stem has no onsets')
+            R['sfx_onset_80ms'] = rule('NOT CHECKED', '0 onsets', 'no onsets')
         else:
-            cuts = scene_cuts(path)
+            cuts = args.cuts or scene_cuts(path)
             if not cuts:
-                for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
-                    R[k] = rule('NOT CHECKED', len(ons),
-                                'no picture cuts detected (scene > 0.3)')
+                r14nc(len(ons), 'no picture cuts detected (scene > 0.3; '
+                                '--cuts overrides)')
             else:
-                # Gate on onset precision: sfx only on events, never one
-                # per cut; a cut with no sfx is fine. Report both shares.
+                # onset precision gates: sfx on events, never one per cut
                 near = lambda ts, refs: sum(
                     min(abs(t - r) for r in refs) <= SYNC_S for t in ts)
                 oh, ch = near(ons, cuts), near(cuts, ons)
                 osc, csc = oh / len(ons), ch / len(cuts)
                 det = (f'{len(ons)} sfx onsets; {oh}/{len(ons)} onsets '
                        f'within 80 ms of a cut ({osc:.0%}); {ch}/'
-                       f'{len(cuts)} cuts have an sfx onset ({csc:.0%})')
+                       f'{len(cuts)} cuts have an sfx onset ({csc:.0%}); '
+                       'cuts at ' + ','.join(f'{c:g}' for c in cuts))
                 for k in ('R14_sound_and_cuts', 'sfx_onset_80ms'):
                     R[k] = rule('PASS' if osc >= CUT_HIT_MIN else 'FAIL',
                                 round(osc, 3), det)
 
-    # ---- sfx level vs voice (needs both stems) ----
     if not (args.voice_stem and args.sfx_stem):
         R['sfx_vs_voice'] = rule('NOT CHECKED', None,
             'needs --voice-stem and --sfx-stem; a mixed track cannot '
@@ -307,9 +305,7 @@ def check_file(path, args, api, audio):
                 f'{margin:.1f} dB {"under" if margin >= 0 else "over"} '
                 f'voice (need >= {SFX_VS_VOICE_DB} under)')
 
-    # ---- R7 speech pace ----
-    words = ((transcript.get('words') if isinstance(transcript, dict)
-              else transcript) or []) if transcript else []
+    words = ((transcript.get('words') if isinstance(transcript, dict) else transcript) or []) if transcript else []
     if words:
         span = max(w['end'] for w in words) - min(w['start'] for w in words)
         wps = len(words) / span if span > 0 else None
@@ -323,13 +319,11 @@ def check_file(path, args, api, audio):
             'needs --transcript word timings; the onset proxy is gone '
             'because it never fails')
 
-    # ---- R8 voice consistency (per-line F0 by character) ----
     line_paths = []
     if args.lines:
-        line_paths = (sorted(glob.glob(os.path.join(glob.escape(args.lines),
-                                                    '*.wav')))
-                      if os.path.isdir(args.lines)
-                      else sorted(glob.glob(args.lines)))
+        g = (os.path.join(glob.escape(args.lines), '*.wav')
+             if os.path.isdir(args.lines) else args.lines)
+        line_paths = sorted(glob.glob(g))
     vmap = None
     if args.voice_map:
         try:
@@ -351,31 +345,38 @@ def check_file(path, args, api, audio):
                     errs.append(f'{name}: too few voiced frames')
             except Exception as e:
                 errs.append(f'{name}: {e}')
-        probs = [f'{c}: F0 spread {min(m):.0f}-{max(m):.0f} Hz (>x'
-                 f'{F0_SPREAD})' for c, m in groups.items() if m and
-                 max(m) / max(1e-9, min(m)) > F0_SPREAD]
-        why = ('no line measured' if not groups else
-               'no character has 2+ lines; spread needs a repeat')
-        if not groups or not any(len(m) >= 2 for m in groups.values()):
+        rat = {c: round(max(m) / max(1e-9, min(m)), 2)
+               for c, m in groups.items() if len(m) >= 2}
+        if not rat:
             R['R8_voice_consistency'] = rule('NOT CHECKED', None,
-                why + (f' ({len(errs)} errors: {"; ".join(errs)[:160]})'
-                       if errs else ''))
-        else:
-            detail = ('per-character F0 spread within limit '
-                      '[consistency proxy only]')
-            if errs:
-                detail += (f' ({len(errs)} line(s) unmeasured: '
-                           f'{"; ".join(errs)[:120]})')
+                ('no line measured' if not groups else
+                 'no character has 2+ lines; spread needs a repeat') +
+                (f' ({len(errs)} errors: {"; ".join(errs)[:160]})'
+                 if errs else ''))
+        elif args.voice_map and vmap is None:
             R['R8_voice_consistency'] = rule(
-                'FAIL' if probs else 'PASS',
-                {c: {'n': len(m), 'f0_medians': m} for c, m in groups.items()},
-                '; '.join(probs) or detail)
+                'NOT CHECKED', None,
+                'voice map given but did not load; see voice_map_input')
+        else:
+            bad = [c for c, r in rat.items() if r > F0_SPREAD]
+            warn = [c for c, r in rat.items() if 1.25 < r <= F0_SPREAD]
+            det = '; '.join(f'{c} ratio {rat[c]} medians {m}'
+                            for c, m in groups.items() if c in rat)
+            if errs:
+                det += f'; {len(errs)} line(s) unmeasured'
+            if bad or warn:
+                det = 'possible voice swap: listen to these lines; ' + det
+            probs = [f'{c}: ratio {rat[c]} > x{F0_SPREAD}' for c in bad]
+            R['R8_voice_consistency'] = rule(
+                'FAIL' if bad else 'OWNER CHECK' if warn else 'PASS',
+                {c: {'ratio': rat.get(c), 'f0_medians': m}
+                 for c, m in groups.items()},
+                ('; '.join(probs) + '; ' if probs else '') + det)
     else:
         R['R8_voice_consistency'] = rule(
             'NOT CHECKED', None,
             'needs --lines + --voice-map for per-line F0 by character')
 
-    # ---- R10 caption sync (caption segments vs speech onsets) ----
     segs = []
     if transcript:
         if isinstance(transcript, dict) and transcript.get('groups'):
@@ -384,9 +385,8 @@ def check_file(path, args, api, audio):
         else:
             ws = sorted((w for w in words if w.get('start') is not None),
                         key=lambda w: w['start'])
-            segs = [{'start': ws[i]['start'],
-                     'end': ws[min(i + 2, len(ws) - 1)]['end']}
-                    for i in range(0, len(ws), 3)]
+            segs = [{'start': ws[i]['start'], 'end': ws[min(
+                i + 2, len(ws) - 1)]['end']} for i in range(0, len(ws), 3)]
     sp = [(s['start'], s['end']) for s in secs]
     if not segs:
         R['R10_caption_sync'] = rule('NOT CHECKED', None,
@@ -414,13 +414,9 @@ def check_file(path, args, api, audio):
                 f'AST-speech): median {med:.2f} s, p90 {p90:.2f} s, '
                 f'{within:.0%} within 300 ms')
 
-    # ---- OWNER CHECK rows: earshot cannot judge these ----
-    for k, d in (('R8_voice_face_fit', 'face/character/ethnicity/age fit '
-                  'needs a person; F0 measures consistency, not correctness'),
-                 ('R11_mouth_vs_voice', 'no vision/mouth model; mouth-vs-voice '
-                  'onset needs a face landmarker pipeline'),
-                 ('owner_judgment', 'acting, joke quality, music taste and '
-                  'mix feel need a person to listen')):
+    for k, d in (('R8_voice_face_fit', 'face/character/ethnicity/age fit needs a person; F0 measures consistency, not correctness'),
+                 ('R11_mouth_vs_voice', 'no vision/mouth model; mouth-vs-voice onset needs a face landmarker pipeline'),
+                 ('owner_judgment', 'acting, joke quality, music taste and mix feel need a person to listen')):
         R[k] = rule('OWNER CHECK', None, d)
 
     fails = [k for k, v in R.items() if v['status'] == 'FAIL']
@@ -439,12 +435,12 @@ def main():
     ap.add_argument('--out', help='write full JSON report here')
     ap.add_argument('--lines', help='dir or glob of per-line voice wavs (R8)')
     ap.add_argument('--voice-map', help='JSON {line_name: character} (R8)')
-    ap.add_argument('--transcript',
-                    help='JSON with word timings (R7 true WPS, R10)')
-    ap.add_argument('--sfx-stem',
-                    help='wav of the sfx/laugh track alone (R14, sfx_vs_voice)')
-    ap.add_argument('--voice-stem',
-                    help='wav of the voice track alone (sfx_vs_voice)')
+    ap.add_argument('--transcript', help='JSON with word timings (R7, R10)')
+    ap.add_argument('--sfx-stem', help='wav of sfx/laugh track alone (R14, sfx_vs_voice)')
+    ap.add_argument('--voice-stem', help='wav of voice track alone (sfx_vs_voice)')
+    ap.add_argument('--cuts', type=lambda s: sorted(
+        float(x) for x in s.split(',')),
+        help='cut times in s, comma-separated; overrides detection')
     ap.add_argument('--require-stems', action='store_true',
                     help='exit 3 when every sfx rule is NOT CHECKED')
     args = ap.parse_args()
