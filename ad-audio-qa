@@ -97,14 +97,18 @@ def vad_onsets(path, audio):
 
 
 def energy_onsets(y, sr):
-    """Model-free energy onsets on a stem: 20 ms windows / 5 ms hop, runs
-    above a -60 dBFS floor; each onset is the event's peak frame, so a
-    riser that builds into a cut syncs at the hit."""
+    """Stem energy events as (attack, peak): first frame within 10 dB of the
+    event max, and its loudest frame. Floor -60 dBFS; merged under 0.25 s."""
     import numpy as np
     db, hop = _frame_db(y, sr, 0.005, 0.020)
-    return [round((i0 + int(np.argmax(db[i0:i1]))) * hop, 3)
-            for s, e in _runs(db, hop, 10, 15.0, 0.02, 0.08, -60.0)
-            for i0, i1 in [(int(round(s / hop)), int(round(e / hop)))]]
+    out = []
+    for s, e in _runs(db, hop, 10, 15.0, 0.02, 0.25, -60.0):
+        i0, i1 = int(round(s / hop)), int(round(e / hop))
+        seg = db[i0:i1]
+        pk = int(np.argmax(seg))
+        at = int(np.argmax(seg >= seg[pk] - 10))
+        out.append((round((i0 + at) * hop, 3), round((i0 + pk) * hop, 3)))
+    return out
 
 
 def scene_cuts(path):
@@ -269,9 +273,9 @@ def check_file(path, args, api, audio):
                                 '--cuts overrides)')
             else:
                 # onset precision gates: sfx on events, never one per cut
-                near = lambda ts, refs: sum(
-                    min(abs(t - r) for r in refs) <= SYNC_S for t in ts)
-                oh, ch = near(ons, cuts), near(cuts, ons)
+                hit = lambda t, ref: abs(t - ref) <= SYNC_S
+                oh = sum(any(hit(t, c) for t in ev for c in cuts) for ev in ons)
+                ch = sum(any(hit(t, c) for ev in ons for t in ev) for c in cuts)
                 osc, csc = oh / len(ons), ch / len(cuts)
                 det = (f'{len(ons)} sfx onsets; {oh}/{len(ons)} onsets '
                        f'within 80 ms of a cut ({osc:.0%}); {ch}/'
