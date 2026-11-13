@@ -23,7 +23,7 @@ error. The tool never runs `earshot llm`: that command uploads audio.
 
 | Flag | Meaning |
 | --- | --- |
-| `--sfx-stem FILE` | Wav of the sfx/laugh track alone. Needed for R14 cut sync and `sfx_vs_voice`. |
+| `--sfx-stem FILE` | Wav of the sfx alone (leave the laugh track out). Needed for R14 cut sync and `sfx_vs_voice`. |
 | `--voice-stem FILE` | Wav of the voice track alone. Needed with `--sfx-stem` for `sfx_vs_voice`. |
 | `--lines DIR\|GLOB` | Per-line voice wavs for the R8 consistency check. |
 | `--voice-map JSON` | `{line_name: character}` grouping for R8. |
