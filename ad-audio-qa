@@ -19,7 +19,7 @@ ENV = 'AD_AUDIO_QA_EARSHOT'
 REEXEC = 'AD_AUDIO_QA_REEXEC'
 LUFS_LO, LUFS_HI, TP_MAX = -16.0, -12.0, -1.0
 DEAD_LUFS, DEAD_S, WPS_MAX = -60.0, 1.5, 3.4
-CUT_HIT_MIN, SFX_VS_VOICE_DB, F0_SPREAD = 0.8, 6.0, 1.6
+CUT_HIT_MIN, SFX_VS_VOICE_DB, F0_SPREAD = 0.8, 6.0, 1.25
 SYNC_S, SCENE_THR = 0.080, 0.3
 
 def earshot_python(loc):
@@ -358,20 +358,18 @@ def check_file(path, args, api, audio):
                 'NOT CHECKED', None,
                 'voice map given but did not load; see voice_map_input')
         else:
-            bad = [c for c, r in rat.items() if r > F0_SPREAD]
-            warn = [c for c, r in rat.items() if 1.25 < r <= F0_SPREAD]
+            warn = [c for c, r in rat.items() if r > F0_SPREAD]
             det = '; '.join(f'{c} ratio {rat[c]} medians {m}'
                             for c, m in groups.items() if c in rat)
             if errs:
                 det += f'; {len(errs)} line(s) unmeasured'
-            if bad or warn:
-                det = 'possible voice swap: listen to these lines; ' + det
-            probs = [f'{c}: ratio {rat[c]} > x{F0_SPREAD}' for c in bad]
+            if warn:  # never FAIL: calibration found pitch flags accepted voices
+                det = ('pitch spread is a weak proxy, listen to these lines: '
+                       + ', '.join(warn) + '; ' + det)
             R['R8_voice_consistency'] = rule(
-                'FAIL' if bad else 'OWNER CHECK' if warn else 'PASS',
+                'OWNER CHECK' if warn else 'PASS',
                 {c: {'ratio': rat.get(c), 'f0_medians': m}
-                 for c, m in groups.items()},
-                ('; '.join(probs) + '; ' if probs else '') + det)
+                 for c, m in groups.items()}, det)
     else:
         R['R8_voice_consistency'] = rule(
             'NOT CHECKED', None,
