@@ -22,7 +22,6 @@ DEAD_LUFS, DEAD_S, WPS_MAX = -60.0, 1.5, 3.4
 CUT_HIT_MIN, SFX_VS_VOICE_DB, F0_SPREAD = 0.8, 6.0, 1.6
 SYNC_S, SCENE_THR = 0.080, 0.3
 
-
 def earshot_python(loc):
     """Resolve --earshot to a python with earshot importable, or None."""
     if not loc:
@@ -36,7 +35,6 @@ def earshot_python(loc):
                 return os.path.abspath(c)
     return None
 
-
 def load_earshot():
     try:
         from earshot import api, audio
@@ -46,14 +44,12 @@ def load_earshot():
               'set AD_AUDIO_QA_EARSHOT (see ad-audio-qa.md)', file=sys.stderr)
         sys.exit(2)
 
-
 def f0_stats(path, audio):
     import librosa, numpy as np
     f0, _, _ = librosa.pyin(audio.load(path, mono=True), fmin=60, fmax=500,
                             sr=audio.SR, frame_length=2048)
     f0 = f0[~np.isnan(f0)]
     return {'median_hz': round(float(np.median(f0)), 1)} if len(f0) >= 5 else None
-
 
 def _frame_db(y, sr, hop_s, win_s):
     """Frame RMS dB of signal y: win_s windows, hop_s hop. Returns (db, hop)."""
@@ -64,7 +60,6 @@ def _frame_db(y, sr, hop_s, win_s):
     n = (len(y) - win) // hop + 1
     fr = np.lib.stride_tricks.sliding_window_view(y, win)[::hop][:n]
     return 20 * np.log10(np.sqrt(np.mean(fr ** 2, axis=1)) + 1e-10), hop_s
-
 
 def _runs(db, hop, floor_pct, floor_db, min_run, merge_s,
           floor_abs=None):
@@ -86,7 +81,6 @@ def _runs(db, hop, floor_pct, floor_db, min_run, merge_s,
             out.append((round(t, 3), round(j * hop, 3)))
     return out
 
-
 def vad_onsets(path, audio):
     """Speech onsets: 200-4000 Hz energy VAD, runs >= 80 ms kept."""
     from scipy.signal import butter, sosfiltfilt
@@ -95,21 +89,23 @@ def vad_onsets(path, audio):
     db, hop = _frame_db(y, audio.SR, 0.010, 0.025)
     return [s for s, _ in _runs(db, hop, 20, 12.0, 0.08, 0.0)]
 
-
 def energy_onsets(y, sr):
-    """Stem energy events as (attack, peak): first frame within 10 dB of the
-    event max, and its loudest frame. Floor -60 dBFS; merged under 0.25 s."""
+    """Stem cues, each a list of times: every sound's start, attack (first
+    frame within 10 dB of its max) and flat-topped-aware peak. Sounds under
+    0.25 s apart form one cue. Floor -60 dBFS."""
     import numpy as np
     db, hop = _frame_db(y, sr, 0.005, 0.020)
-    out = []
-    for s, e in _runs(db, hop, 10, 15.0, 0.02, 0.25, -60.0):
+    cues, last = [], -9.0
+    for s, e in _runs(db, hop, 10, 15.0, 0.02, 0.0, -60.0):
         i0, i1 = int(round(s / hop)), int(round(e / hop))
         seg = db[i0:i1]
         pk = int(np.argmax(seg))
         at = int(np.argmax(seg >= seg[pk] - 10))
-        out.append((round((i0 + at) * hop, 3), round((i0 + pk) * hop, 3)))
-    return out
-
+        pk = pk if seg[pk] - seg[at] >= 3 else at
+        t = [round(s, 3), round((i0 + at) * hop, 3), round((i0 + pk) * hop, 3)]
+        cues[-1].extend(t) if cues and s - last < 0.25 else cues.append(t)
+        last = e
+    return cues
 
 def scene_cuts(path):
     """Picture cut times via ffmpeg scene detection (score > 0.3)."""
@@ -118,7 +114,6 @@ def scene_cuts(path):
                         '-f', 'null', '-'], capture_output=True, text=True)
     return [float(m.group(1)) for m in
             re.finditer(r'pts_time:([\d.]+)', r.stderr)]
-
 
 def stem_level_db(path, audio):
     """Median per-event RMS level in dB of a stem. audio.load decodes all
@@ -156,10 +151,8 @@ def stem_level_db(path, audio):
                                  + 1e-20))
     return round(float(np.median(lvl)), 1)
 
-
 def rule(status, value, detail):
     return {'status': status, 'value': value, 'detail': detail}
-
 
 def check_file(path, args, api, audio):
     import numpy as np
@@ -429,7 +422,6 @@ def check_file(path, args, api, audio):
     res['fails'], res['not_checked'] = fails, notc
     return res
 
-
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -493,7 +485,6 @@ def main():
             ('R14_sound_and_cuts', 'sfx_onset_80ms', 'sfx_vs_voice'))):
         sys.exit(3)
     sys.exit(1 if res['fails'] else 0)
-
 
 if __name__ == '__main__':
     main()
