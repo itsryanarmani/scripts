@@ -20,10 +20,11 @@ import struct
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.parse
 
 ALGOS = {"SHA1": hashlib.sha1, "SHA256": hashlib.sha256, "SHA512": hashlib.sha512}
-NAME_RE = re.compile(r"[A-Z0-9_]+")
+NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
 def die(code, message):
@@ -57,7 +58,7 @@ def check_settings(algo, digits, period):
 
 def check_name(name, what):
     if not NAME_RE.fullmatch(name):
-        die(2, f"{what} may hold only capital letters, digits and underscores")
+        die(2, f"{what} starts with a capital letter or underscore and holds only capital letters, digits and underscores")
 
 
 def in_git_work_tree(folder):
@@ -68,6 +69,12 @@ def in_git_work_tree(folder):
         if parent == folder:
             return False
         folder = parent
+
+
+def one_plain_line(text):
+    # Refuse every character that splits a line in some reader: line breaks, form feed,
+    # next line, U+2028 and U+2029, and the rest of the control characters.
+    return bool(text) and not any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in text)
 
 
 def read_env(path):
@@ -93,8 +100,11 @@ def write_env(path, drop, add):
             fcntl.flock(lock, fcntl.LOCK_EX)  # parallel saves take turns
             kept = []
             if os.path.exists(real):
-                with open(real, encoding="utf-8") as handle:
-                    kept = [line for line in handle.read().splitlines() if not drop.match(line)]
+                with open(real, encoding="utf-8", newline="") as handle:
+                    lines = [line.rstrip("\r") for line in handle.read().split("\n")]
+                if lines and lines[-1] == "":
+                    lines.pop()
+                kept = [line for line in lines if not drop.match(line)]
             fd, tmp = tempfile.mkstemp(dir=folder, prefix=".totp-")  # mode 600
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write("\n".join(kept + add) + "\n")
@@ -116,7 +126,10 @@ def write_env(path, drop, add):
 
 def save(path, prefix):
     check_name(prefix, "PREFIX")
-    uri = urllib.parse.urlparse(sys.stdin.read().strip())
+    try:
+        uri = urllib.parse.urlparse(sys.stdin.read().strip())
+    except ValueError:
+        die(2, "stdin is not an otpauth://totp/ URI")
     if uri.scheme != "otpauth" or uri.netloc.lower() != "totp":
         die(2, "stdin is not an otpauth://totp/ URI")
     query = urllib.parse.parse_qs(uri.query)
@@ -146,8 +159,8 @@ def put(path, key):
     value = sys.stdin.read()
     if value.endswith("\n"):
         value = value[:-1]
-    if not value or "\n" in value or "\r" in value or "\0" in value:
-        die(2, "the value must be one non-empty line")
+    if not one_plain_line(value):
+        die(2, "the value must be one non-empty line with no control or line-separator character")
     write_env(path, re.compile(rf"{key}="), [f"{key}={value}"])
     print(f"saved {key}")
 

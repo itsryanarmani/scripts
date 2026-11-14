@@ -26,6 +26,9 @@ expect() { # label want_rc want_text
 }
 save_uri() { printf '%s' "$1" | TOTP_NOW=0 "$TOTP" save "$2" "$3" 2>&1; }
 
+if git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "FAIL - TMPDIR is inside a git work tree, so every save is refused; set TMPDIR outside it"; exit 1
+fi
 env="$d/accounts.env"
 
 # Row 11: RFC 6238 vectors.
@@ -163,6 +166,33 @@ if [ "$(id -u)" != 0 ]; then
 else
   echo "skip - rows 16 and 20 permission cases need a non-root user"
 fi
+
+# Row 1: a URI that cannot be parsed is a refusal, not a traceback.
+run bash -c "printf '%s' 'otpauth://[totp/x?secret=$S1' | '$TOTP' save '$d/bad.env' B"; expect "row 1 unparsable URI refused" 2
+printf '%s' "$out" | grep -q Traceback && bad "row 1 printed a traceback" || ok "row 1 no traceback"
+
+# Row 19: control and line-separator characters in a put value are refused.
+for name in "form feed:\\f" "unit separator:\\x1f" "next line:\\xc2\\x85" "line separator U+2028:\\xe2\\x80\\xa8" "tab:\\t"; do
+  run bash -c "printf 'AB${name#*:}CD' | '$TOTP' put '$d/ctl.env' CTL"; expect "row 19 refuses $name" 2
+done
+run bash -c "printf 'x' | '$TOTP' put '$d/ctl.env' 1START"; expect "row 19 key may not start with a digit" 2
+
+# Row 22: an existing line with a separator character survives a later write.
+printf 'ODD=AB\xe2\x80\xa8CD\nFF=1\x0c2\n' > "$d/odd.env"; chmod 600 "$d/odd.env"
+bash -c "printf 'v' | '$TOTP' put '$d/odd.env' NEXT" >/dev/null 2>&1
+[ "$(grep -c '' "$d/odd.env")" = 3 ] && grep -q "^ODD=AB.*CD$" "$d/odd.env" && grep -qE "^FF=1.2$" "$d/odd.env" && ok "row 22 odd lines stay whole" || bad "row 22 odd lines were split: $(cat -v "$d/odd.env" | tr '\n' '|')"
+
+# Row 18: also through a symlink into a repo, and with a .git file.
+ln -s "$d/repo/sub" "$d/linkdir"
+run bash -c "printf '%s' 'otpauth://totp/x?secret=$S1' | '$TOTP' save '$d/linkdir/s.env' G"; expect "row 18 symlinked folder into a repo refused" 6
+mkdir -p "$d/wt"; printf 'gitdir: /nonexistent\n' > "$d/wt/.git"
+run bash -c "printf '%s' 'otpauth://totp/x?secret=$S1' | '$TOTP' save '$d/wt/s.env' G"; expect "row 18 a .git file counts as a work tree" 6
+
+# Row 14: parallel puts keep every key too.
+pp="$d/pp.env"
+for i in $(seq 1 30); do ( printf 'v%s' "$i" | "$TOTP" put "$pp" "K$i" >/dev/null 2>&1 ) & done
+wait
+[ "$(grep -c '^K[0-9]*=' "$pp")" = 30 ] && ok "row 14 thirty parallel puts keep thirty keys" || bad "parallel puts lost keys: $(grep -c '^K[0-9]*=' "$pp") of 30"
 
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

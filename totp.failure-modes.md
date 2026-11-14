@@ -19,7 +19,7 @@ Each row below has a case in `totp.test.sh`, unless the last column says
 
 | # | Failure | What `totp` does | Exit | Tested |
 |---|---------|------------------|------|--------|
-| 1 | The URI is a counter (`otpauth://hotp/`) or not `otpauth://` at all | Refuses. A counter code cannot be derived from a clock. | 2 | yes |
+| 1 | The URI is a counter (`otpauth://hotp/`), not `otpauth://` at all, or cannot be parsed | Refuses. A counter code cannot be derived from a clock. | 2 | yes |
 | 2 | The URI has no `secret` | Refuses. | 2 | yes |
 | 3 | The secret is not valid base32 | Refuses on `save` and on `code`. | 2 | yes |
 | 4 | The algorithm is not SHA1, SHA256 or SHA512 | Refuses. | 2 | yes |
@@ -36,13 +36,16 @@ Each row below has a case in `totp.test.sh`, unless the last column says
 | 15 | The env file is a symlink | `save` writes through the link. The link stays a link and the target holds the new keys. | 0 | yes |
 | 16 | The directory cannot be written | Refuses and leaves no temp file behind. | 5 | yes |
 | 17 | The env file exists with a loose mode when `save` runs | `save` sets mode 600 on the result. | 0 | yes |
-| 18 | The env file is inside a git work tree (any parent folder holds `.git`) | `save` and `put` refuse. A secret in a repository is one `git add` from a public commit. | 6 | yes |
-| 19 | `put` gets a bad key, an empty value or a value of more than one line | Refuses and never echoes the value. | 2 | yes |
+| 18 | The env file is inside a git work tree (any parent folder holds `.git`, a folder or a file), also through a symlink | `save` and `put` refuse. A secret in a repository is one `git add` from a public commit. A work tree whose git folder lives elsewhere (`--git-dir`) is not detected. | 6 | yes |
+| 19 | `put` gets a bad key, an empty value, or a value with a line break or any control or line-separator character (form feed, U+2028 and so on) | Refuses and never echoes the value. A key starts with a capital letter or underscore. | 2 | yes |
 | 20 | A read fails for another reason: unreadable, not UTF-8, or a directory | Refuses with a short message and no traceback. | 5 | yes |
 | 21 | The machine loses power or the process is killed during a write | The data is flushed before the rename, so an old file stays whole. A kill can leave a mode 600 `.totp-*` file in the same folder. Delete it. | 0 | not tested |
+| 22 | An existing line holds a character such as a form feed or U+2028 | The file is split on newline only, so the line stays whole. | 0 | yes |
 
 `TOTP_NOW` sets the time in seconds. It exists for the tests. Do not set it in
 real use.
+
+Values are stored as given. Do not `source` the file in a shell.
 
 The secret is the whole account: anyone who holds it can sign in. Keep the env
 file out of Git and out of chat. Keep the service's recovery code in the same
