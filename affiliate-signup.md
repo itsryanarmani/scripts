@@ -14,12 +14,18 @@ CJ and Impact. Add a network here only after someone has logged in to it.
 - Pick one live site as the signup URL. Check that it returns 200.
 - Use a mailbox you can read from a command line. Every network sends a
   verification email.
-- Generate one password per network. Store it in a mode 600 env file that Git
-  ignores. Never print it, never put it in chat, never put it in a command that
-  logs. To hand a password to a person, copy it to the clipboard and clear the
-  clipboard after two minutes.
-- Do banking and tax pages by hand. Ask the owner for those numbers when the
-  network asks. Do not guess them.
+- Generate one password per network. Store it in a mode 600 file outside any
+  Git repository, for example `~/.secrets/affiliate.env`. A file inside a
+  repository is one `git add -A` from a public commit, and this repository does
+  not ignore `*.env` files with other names. Never print a password, never put
+  it in chat, never put it in a command that logs. To hand a password to a
+  person, point to the file. A clipboard copy also reaches clipboard history
+  and, on macOS, the owner's other devices, so clearing it does not remove
+  every copy.
+- Stop at any banking, tax or ID page and hand it to the owner. Enter those
+  values only when the owner tells you to, and only when they reach you through
+  a secret input that never shows in chat or in a log. Never guess them and
+  never take them from a chat message.
 - Ask the owner before you accept a legal agreement for them. Record the
   answer. An agreement binds the owner, so an approval for one network does not
   cover the next.
@@ -53,15 +59,21 @@ second click while the first is pending only adds noise.
 ### The false "URL needs to be publicly accessible" error
 
 Step 3 can answer "The URL needs to be publicly accessible" for a site that
-returns 200 to every client you try. Cloudflare's own request log showed no
-request from Awin during the attempts, so the site was never blocked. The
-likely cause is reCAPTCHA v3 scoring the automated browser. A person clicking
-Next passed the same form on the same URL. Do not change firewall rules for
-this error until the log shows a blocked request from the network.
+returns 200 to every client you try. In one recorded run, Cloudflare's request
+log showed no request from Awin during the attempts, so the site was never
+blocked, and a person's click passed the same form on the same URL. A score
+check on the automated browser, reCAPTCHA v3, is the likely cause there. It is
+a likely cause, not a rule.
 
-To prove the point, query the zone's request log by network number and drop your
-own network and Cloudflare's own traffic (AS13335). A real validator then shows
-up as a row, or it does not.
+Before you change anything, check three things:
+
+1. The URL format. Try the scheme, the `www` form and a trailing slash.
+2. The zone's security events as well as its request log. A blocked request can
+   show in one and not the other, and full request logs can need a paid plan.
+3. Whether a request from the network arrived at all. Query the log by network
+   number and drop your own network and Cloudflare's own traffic (AS13335).
+
+Do not change firewall rules until a real request from the network was blocked.
 
 ### After approval
 
@@ -70,12 +82,14 @@ email address, one to say the application is approved. Activate first, then sign
 in. The dashboard asks you to turn on two-step verification.
 
 1. Choose set up. Awin emails "Just making sure it's you". Open the link in it.
-2. The page shows a QR code and no text secret. Screenshot the QR code and
-   decode it. On macOS, the Vision framework reads it with a few lines of Swift
-   (`VNDetectBarcodesRequest` with the `.qr` symbology). Write the result to a
-   private file, not to the terminal.
-3. Run `./totp save accounts.env AWIN < uri.txt`, then delete `uri.txt`.
-4. Enter `./totp code accounts.env AWIN` in the one-time code box.
+2. The page shows a QR code and no text secret. Screenshot the QR code, but do
+   not open or view the image: it holds the secret. Decode it. On macOS, the
+   Vision framework reads it with a few lines of Swift (`VNDetectBarcodesRequest`
+   with the `.qr` symbology).
+3. Pipe the decoder output straight into the helper, so the URI never lands in
+   a file: `decode-qr shot.png | ./totp save ~/.secrets/affiliate.env AWIN`.
+   Then delete `shot.png`.
+4. Enter `./totp code ~/.secrets/affiliate.env AWIN` in the one-time code box.
 5. Awin then shows a recovery code. Save it in the same env file under its
    own key before you tick "I have safely recorded this code".
 
@@ -126,7 +140,8 @@ password the owner saved.
 2. A button that looks active can be disabled. Read the `disabled` property.
 3. A network can already know the email. Search the mailbox first.
 4. Two-step verification with a QR code and no text secret needs a decode step.
-   Keep the secret and the recovery code in the env file, mode 600.
+   Keep the secret and the recovery code in a mode 600 file outside any
+   repository.
 5. A person's click passes a score check that a script can fail.
 6. Verification emails arrive within seconds. Search the mailbox by sender and
    the last ten minutes. Open links without printing them, because most are

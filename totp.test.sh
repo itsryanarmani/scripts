@@ -95,5 +95,38 @@ done
 # Positive control: the same search must find a secret that is printed.
 printf '%s' "echoed $S1 here" | grep -qF "$S1" && ok "row 10 control: the search finds a printed secret" || bad "leak search cannot see a secret"
 
+# Row 13: a non-ASCII digit is a refusal, not a crash.
+run bash -c "printf '%s' 'otpauth://totp/x?secret=$S1&digits=%C2%B2' | '$TOTP' save '$d/u.env' U"; expect "row 13 unicode digits refused" 2
+run bash -c "printf '%s' 'otpauth://totp/x?secret=$S1&period=%C2%B2' | '$TOTP' save '$d/u.env' U"; expect "row 13 unicode period refused" 2
+
+# Row 14: parallel saves for different prefixes all survive.
+par="$d/par.env"
+for i in $(seq 1 30); do
+  ( printf '%s' "otpauth://totp/x?secret=$S1" | "$TOTP" save "$par" "P$i" >/dev/null 2>&1 ) &
+done
+wait
+[ "$(grep -c '_TOTP_SECRET=' "$par")" = 30 ] && ok "row 14 thirty parallel saves keep thirty secrets" || bad "parallel saves lost keys: $(grep -c '_TOTP_SECRET=' "$par") of 30"
+
+# Row 15: a symlinked env file stays a link.
+mkdir -p "$d/real"; : > "$d/real/target.env"; chmod 600 "$d/real/target.env"
+ln -s "$d/real/target.env" "$d/link.env"
+save_uri "otpauth://totp/x?secret=$S1" "$d/link.env" L1 >/dev/null
+[ -L "$d/link.env" ] && ok "row 15 symlink is still a symlink" || bad "symlink was replaced by a file"
+grep -q '^L1_TOTP_SECRET=' "$d/real/target.env" && ok "row 15 target holds the new keys" || bad "target did not get the keys"
+
+# Row 16: an unwritable directory is a refusal and leaves nothing behind.
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$d/ro"; chmod 500 "$d/ro"
+  run bash -c "printf '%s' 'otpauth://totp/x?secret=$S1' | '$TOTP' save '$d/ro/x.env' W"; expect "row 16 unwritable directory refused" 5
+  chmod 700 "$d/ro"
+  [ -z "$(ls -A "$d/ro")" ] && ok "row 16 no temp file left behind" || bad "left behind: $(ls -A "$d/ro")"
+fi
+
+# Row 17: save fixes a loose mode on an existing file.
+printf 'KEEP=1\n' > "$d/loose.env"; chmod 644 "$d/loose.env"
+save_uri "otpauth://totp/x?secret=$S1" "$d/loose.env" M >/dev/null
+mode=$(stat -c '%a' "$d/loose.env" 2>/dev/null || stat -f '%Lp' "$d/loose.env")
+[ "$mode" = "600" ] && ok "row 17 loose mode becomes 600" || bad "mode is $mode"
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

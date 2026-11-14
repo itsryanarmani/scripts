@@ -9,12 +9,14 @@ terminal. TOTP_NOW (seconds) sets the clock for the tests only.
 """
 import base64
 import binascii
+import fcntl
 import hashlib
 import hmac
 import os
 import re
 import struct
 import sys
+import tempfile
 import time
 import urllib.parse
 
@@ -37,12 +39,17 @@ def decode_secret(secret):
         die(2, "the secret is not valid base32")
 
 
+def is_ascii_number(text):
+    # str.isdigit() accepts characters such as a superscript two, and int() then fails.
+    return text.isascii() and text.isdigit()
+
+
 def check_settings(algo, digits, period):
     if algo not in ALGOS:
         die(2, f"algorithm {algo!r} is not SHA1, SHA256 or SHA512")
-    if not (digits.isdigit() and 6 <= int(digits) <= 8):
+    if not (is_ascii_number(digits) and 6 <= int(digits) <= 8):
         die(2, "digits must be 6 to 8")
-    if not (period.isdigit() and int(period) > 0):
+    if not (is_ascii_number(period) and int(period) > 0):
         die(2, "period must be a positive number of seconds")
 
 
@@ -77,22 +84,39 @@ def save(path, prefix):
     check_settings(algo, digits, period)
 
     own = re.compile(rf"{prefix}_TOTP_(SECRET|ALGO|DIGITS|PERIOD)=")
-    kept = []
-    if os.path.exists(path):
-        with open(path) as handle:
-            kept = [line for line in handle.read().splitlines() if not own.match(line)]
-    kept += [
-        f"{prefix}_TOTP_SECRET={secret}",
-        f"{prefix}_TOTP_ALGO={algo}",
-        f"{prefix}_TOTP_DIGITS={digits}",
-        f"{prefix}_TOTP_PERIOD={period}",
-    ]
-    tmp = f"{path}.tmp{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        handle.write("\n".join(kept) + "\n")
-    os.replace(tmp, path)
-    os.chmod(path, 0o600)
+    # Write through a symlink, and let parallel saves take turns on the directory.
+    real = os.path.realpath(path)
+    folder = os.path.dirname(real) or "."
+    tmp = None
+    try:
+        lock = os.open(folder, os.O_RDONLY)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            kept = []
+            if os.path.exists(real):
+                with open(real) as handle:
+                    kept = [line for line in handle.read().splitlines() if not own.match(line)]
+            kept += [
+                f"{prefix}_TOTP_SECRET={secret}",
+                f"{prefix}_TOTP_ALGO={algo}",
+                f"{prefix}_TOTP_DIGITS={digits}",
+                f"{prefix}_TOTP_PERIOD={period}",
+            ]
+            fd, tmp = tempfile.mkstemp(dir=folder, prefix=".totp-")  # mode 600
+            with os.fdopen(fd, "w") as handle:
+                handle.write("\n".join(kept) + "\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, real)
+            tmp = None
+        finally:
+            os.close(lock)
+    except OSError as error:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        die(5, f"cannot write {path}: {error.strerror}")
     print(f"saved {prefix}: {digits} digits, {period}s, {algo}")
 
 
