@@ -23,7 +23,7 @@ Each row below has a case in `totp.test.sh`, unless the last column says
 | 2 | The URI has no `secret` | Refuses. | 2 | yes |
 | 3 | The secret is not valid base32 | Refuses on `save` and on `code`. | 2 | yes |
 | 4 | The algorithm is not SHA1, SHA256 or SHA512 | Refuses. | 2 | yes |
-| 5 | Digits are not 6 to 8, or the period is not a positive number | Refuses. | 2 | yes |
+| 5 | Digits are not 6 to 8, or the period is not a positive whole number of at most 9 digits | Refuses. A very long number cannot crash it. | 2 | yes |
 | 6 | `PREFIX` has other characters than capitals, digits and underscores | Refuses. A free-form prefix could match or rewrite another key. | 2 | yes |
 | 7 | The env file can be read by group or others | `code` refuses. `save` sets mode 600 on every write. | 3 | yes |
 | 8 | The env file is missing, or has no key for `PREFIX` | Refuses and names the file or the missing key, never a value. | 4 | yes |
@@ -31,7 +31,7 @@ Each row below has a case in `totp.test.sh`, unless the last column says
 | 10 | A secret or stored value leaks to the terminal or into an error | Normal output holds only the prefix, digits, period and algorithm. Errors may hold a path or a key name, never a value. A test searches the save, code, put and refusal output for the value. | 0 | yes |
 | 11 | The output code is wrong against a known answer | Checked against the RFC 6238 vectors for SHA1, SHA256 and SHA512 at fixed times. | 0 | yes |
 | 12 | The host clock is more than about 30 seconds off | The service rejects the code. `totp` cannot see this. Run `date -u` and compare with a network clock before blaming the secret. | 0 | not tested |
-| 13 | Digits or period hold a non-ASCII digit such as `²` | Refuses with the same message as any bad number. It must not crash. | 2 | yes |
+| 13 | Digits hold a non-ASCII digit such as `²` | Refuses with the same message as any bad number. It must not crash. | 2 | yes |
 | 14 | Many `save` calls run at the same time | A directory lock makes them take turns. No prefix loses its keys. | 0 | yes |
 | 15 | The env file is a symlink | `save` writes through the link. The link stays a link and the target holds the new keys. | 0 | yes |
 | 16 | The directory cannot be written | Refuses and leaves no temp file behind. | 5 | yes |
@@ -39,14 +39,13 @@ Each row below has a case in `totp.test.sh`, unless the last column says
 | 18 | The env file is inside a git work tree (any parent folder holds `.git`, a folder or a file), also through a symlink | `save` and `put` refuse. A secret in a repository is one `git add` from a public commit. A work tree whose git folder lives elsewhere (`--git-dir`) is not detected. | 6 | yes |
 | 19 | `put` gets a bad key, an empty value, or a value with a line break or any control or line-separator character (form feed, U+2028 and so on) | Refuses and never echoes the value. A key starts with a capital letter or underscore. | 2 | yes |
 | 20 | A read fails for another reason: unreadable, not UTF-8, or a directory | Refuses with a short message and no traceback. | 5 | yes |
-| 21 | The machine loses power or the process is killed during a write | The data is flushed before the rename, so an old file stays whole. A kill can leave a mode 600 `.totp-*` file in the same folder. Delete it. | 0 | not tested |
-| 22 | An existing line holds a character such as a form feed or U+2028 | The file is split on newline only, so the line stays whole. | 0 | yes |
+| 21 | The machine loses power, or the process is stopped during a write | The data is flushed before the rename, so an old file stays whole. An interrupt (Ctrl-C) removes the temp file. A hard kill cannot, and can leave a mode 600 `.totp-*` file in the same folder. Delete it. | 0 | not tested |
+| 22 | An existing line holds a lone carriage return, a form feed or U+2028 | `code`, `save` and `put` all split the file on newline only, so each sees the same lines and the line stays whole. | 0 | yes |
+| 23 | The env file starts with a UTF-8 byte order mark | Ignored on read. The next write removes it. | 0 | yes |
+| 24 | `.git` is a dangling symlink | Counts as a work tree. `save` and `put` refuse. | 6 | yes |
+| 25 | `TOTP_NOW` is not a whole number, or is negative | Refuses. | 2 | yes |
+| 26 | `save` or `put` gets bytes on stdin that are not UTF-8 | Refuses and writes nothing. | 2 | yes |
 
-`TOTP_NOW` sets the time in seconds. It exists for the tests. Do not set it in
-real use.
-
-Values are stored as given. Do not `source` the file in a shell.
-
-The secret is the whole account: anyone who holds it can sign in. Keep the env
-file out of Git and out of chat. Keep the service's recovery code in the same
-file under its own key.
+`TOTP_NOW` sets the time in seconds. It is for the tests. Values are stored as
+given, so do not `source` the file in a shell. The secret is the whole account:
+keep the file out of Git and out of chat.

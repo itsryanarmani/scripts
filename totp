@@ -5,9 +5,7 @@
   totp code ENVFILE PREFIX   print the current code
   totp put  ENVFILE KEY      read one value on stdin, store it as KEY
 
-The failure modes are in totp.failure-modes.md. A secret never reaches the
-terminal, and ENVFILE may not sit inside a git work tree. TOTP_NOW (seconds)
-sets the clock for the tests only.
+Failure modes: totp.failure-modes.md. TOTP_NOW (seconds) is for the tests only.
 """
 import base64
 import binascii
@@ -44,7 +42,7 @@ def decode_secret(secret):
 
 def is_ascii_number(text):
     # str.isdigit() accepts characters such as a superscript two, and int() then fails.
-    return text.isascii() and text.isdigit()
+    return text.isascii() and text.isdigit() and len(text) <= 9
 
 
 def check_settings(algo, digits, period):
@@ -63,7 +61,7 @@ def check_name(name, what):
 
 def in_git_work_tree(folder):
     while True:
-        if os.path.exists(os.path.join(folder, ".git")):
+        if os.path.lexists(os.path.join(folder, ".git")):  # a dangling link counts
             return True
         parent = os.path.dirname(folder)
         if parent == folder:
@@ -77,13 +75,27 @@ def one_plain_line(text):
     return bool(text) and not any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in text)
 
 
+def read_lines(path):
+    # One definition of a line for every reader and for the writer: split on newline
+    # only, drop a trailing CR and a leading byte order mark.
+    with open(path, encoding="utf-8-sig", newline="") as handle:
+        lines = [line.rstrip("\r") for line in handle.read().split("\n")]
+    return lines[:-1] if lines and lines[-1] == "" else lines
+
+
+def read_stdin():
+    try:
+        return sys.stdin.buffer.read().decode("utf-8")
+    except UnicodeError:
+        die(2, "stdin is not valid UTF-8")
+
+
 def read_env(path):
     values = {}
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            if "=" in line and not line.lstrip().startswith("#"):
-                key, value = line.rstrip("\r\n").split("=", 1)
-                values[key] = value
+    for line in read_lines(path):
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, value = line.split("=", 1)
+            values[key] = value
     return values
 
 
@@ -100,11 +112,7 @@ def write_env(path, drop, add):
             fcntl.flock(lock, fcntl.LOCK_EX)  # parallel saves take turns
             kept = []
             if os.path.exists(real):
-                with open(real, encoding="utf-8", newline="") as handle:
-                    lines = [line.rstrip("\r") for line in handle.read().split("\n")]
-                if lines and lines[-1] == "":
-                    lines.pop()
-                kept = [line for line in lines if not drop.match(line)]
+                kept = [line for line in read_lines(real) if not drop.match(line)]
             fd, tmp = tempfile.mkstemp(dir=folder, prefix=".totp-")  # mode 600
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write("\n".join(kept + add) + "\n")
@@ -115,19 +123,21 @@ def write_env(path, drop, add):
             tmp = None
         finally:
             os.close(lock)
-    except (OSError, UnicodeError) as error:
+    except BaseException as error:  # an interrupt must not leave the temp file behind
         if tmp:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
+        if not isinstance(error, (OSError, UnicodeError)):
+            raise
         die(5, f"cannot write {path}: {getattr(error, 'strerror', None) or type(error).__name__}")
 
 
 def save(path, prefix):
     check_name(prefix, "PREFIX")
     try:
-        uri = urllib.parse.urlparse(sys.stdin.read().strip())
+        uri = urllib.parse.urlparse(read_stdin().strip())
     except ValueError:
         die(2, "stdin is not an otpauth://totp/ URI")
     if uri.scheme != "otpauth" or uri.netloc.lower() != "totp":
@@ -156,7 +166,7 @@ def save(path, prefix):
 
 def put(path, key):
     check_name(key, "KEY")
-    value = sys.stdin.read()
+    value = read_stdin()
     if value.endswith("\n"):
         value = value[:-1]
     if not one_plain_line(value):
@@ -183,7 +193,10 @@ def code(path, prefix):
     period = env.get(f"{prefix}_TOTP_PERIOD", "30")
     check_settings(algo, digits, period)
     key_bytes = decode_secret(env[key])
-    now = int(os.environ.get("TOTP_NOW") or time.time())
+    clock = os.environ.get("TOTP_NOW") or str(int(time.time()))
+    if not (clock.isascii() and clock.isdigit()):
+        die(2, "TOTP_NOW must be a whole number of seconds")
+    now = int(clock)
     digest = hmac.new(key_bytes, struct.pack(">Q", now // int(period)), ALGOS[algo]).digest()
     offset = digest[-1] & 15
     number = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % 10 ** int(digits)
