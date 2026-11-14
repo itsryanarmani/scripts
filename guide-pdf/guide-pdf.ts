@@ -51,7 +51,6 @@ type Block =
   | { kind: "list"; ordered: boolean; items: string[] }
   | { kind: "quote"; text: string }
   | { kind: "code"; text: string }
-  | { kind: "table"; header: string[]; rows: string[][] };
 
 type TocEntry = { title: string; page: number };
 
@@ -61,14 +60,7 @@ const FONTS = { regular: "Helvetica", bold: "Helvetica-Bold", italic: "Helvetica
 
 type RenderCtx = { doc: PDFKit.PDFDocument; theme: GuidePdfTheme; width: number; ensureSpace: (h: number) => void };
 
-function splitTableRow(line: string): string[] {
-  const inner = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return inner.split("|").map((c) => c.trim());
-}
 
-function isTableSeparator(line: string): boolean {
-  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
-}
 
 export function markdownBlocks(markdown: string): Block[] {
   const lines = markdown.replace(/<!--[\s\S]*?-->/g, "").split(/\r?\n/);
@@ -110,18 +102,6 @@ export function markdownBlocks(markdown: string): Block[] {
     if (fence) {
       flush();
       code = { fence: fence[1]!, lines: [] };
-      continue;
-    }
-    if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1] ?? "")) {
-      flush();
-      const header = splitTableRow(line);
-      i += 1;
-      const rows: string[][] = [];
-      while (i + 1 < lines.length && /^\s*\|/.test(lines[i + 1] ?? "")) {
-        i += 1;
-        rows.push(splitTableRow(lines[i] ?? ""));
-      }
-      blocks.push({ kind: "table", header, rows });
       continue;
     }
     const heading = /^(#{1,3})\s+(.*)$/.exec(line);
@@ -167,7 +147,6 @@ export function markdownBlocks(markdown: string): Block[] {
   flush();
   return blocks.filter((b) => {
     if (b.kind === "list") return b.items.length > 0;
-    if (b.kind === "table") return b.header.length > 0;
     return "text" in b ? b.text.trim() !== "" : true;
   });
 }
@@ -261,67 +240,8 @@ function renderTocPage(doc: PDFKit.PDFDocument, entries: TocEntry[], theme: Guid
   }
 }
 
-function tableRowHeight(
-  doc: PDFKit.PDFDocument,
-  cells: string[],
-  colW: number,
-  font: keyof typeof FONTS,
-  size: number,
-): number {
-  let max = 0;
-  doc.font(FONTS[font]).fontSize(size);
-  for (const cell of cells) {
-    const h = doc.heightOfString(cell || " ", { width: colW - 12, lineGap: 1 });
-    max = Math.max(max, h);
-  }
-  return Math.max(20, max + 14);
-}
 
-function drawTableBorders(doc: PDFKit.PDFDocument, x: number, y: number, width: number, rowHeights: number[], cols: number, colW: number, rule: string) {
-  let yy = y;
-  for (const rh of rowHeights) {
-    doc.rect(x, yy, width, rh).strokeColor(rule).stroke();
-    for (let c = 1; c < cols; c += 1) doc.moveTo(x + c * colW, yy).lineTo(x + c * colW, yy + rh).strokeColor(rule).stroke();
-    yy += rh;
-  }
-}
 
-function renderTable(ctx: RenderCtx, block: Extract<Block, { kind: "table" }>) {
-  const { doc, theme, width, ensureSpace } = ctx;
-  const cols = Math.max(block.header.length, 1);
-  const colW = width / cols;
-  const bodySize = cols >= 6 ? 7.5 : cols >= 4 ? 8.5 : 10;
-  const headerSize = bodySize + 0.5;
-  ensureSpace(60);
-  const x = doc.page.margins.left;
-  let y = doc.y;
-  const top = y;
-  const headerH = tableRowHeight(doc, block.header, colW, "bold", headerSize);
-  doc.save();
-  doc.rect(x, y, width, headerH).fill(theme.accent);
-  doc.fillColor(theme.coverForeground).font(FONTS.bold).fontSize(headerSize);
-  block.header.forEach((cell, i) => {
-    doc.text(cell, x + i * colW + 6, y + 7, { width: colW - 12, lineGap: 1 });
-  });
-  const rowHeights = [headerH];
-  y += headerH;
-  block.rows.forEach((row, ri) => {
-    const padded = [...row];
-    while (padded.length < cols) padded.push("");
-    const rh = tableRowHeight(doc, padded, colW, "regular", bodySize);
-    rowHeights.push(rh);
-    const fill = ri % 2 === 0 ? theme.panelFill : "#ffffff";
-    doc.rect(x, y, width, rh).fill(fill);
-    doc.fillColor(theme.ink).font(FONTS.regular).fontSize(bodySize);
-    padded.forEach((cell, i) => {
-      doc.text(cell || " ", x + i * colW + 6, y + 7, { width: colW - 12, lineGap: 1 });
-    });
-    y += rh;
-  });
-  doc.restore();
-  drawTableBorders(doc, x, top, width, rowHeights, cols, colW, theme.rule);
-  doc.y = y + 10;
-}
 
 function renderBlocks(ctx: RenderCtx, guide: Guide, blocks: Block[], tocEntries: TocEntry[]) {
   const { doc, theme, width, ensureSpace } = ctx;
@@ -388,8 +308,6 @@ function renderBlocks(ctx: RenderCtx, guide: Guide, blocks: Block[], tocEntries:
       writeRuns(doc, inlineRuns(block.text), theme, { base: "italic", indent: 8 });
       doc.y = y + 56;
       doc.moveDown(0.4);
-    } else if (block.kind === "table") {
-      renderTable(ctx, block);
     } else {
       ensureSpace(16);
       doc.font(FONTS.mono).fontSize(9.5).fillColor(theme.ink).text(block.text, { width });
