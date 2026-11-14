@@ -3,9 +3,11 @@
 
   totp save ENVFILE PREFIX   read an otpauth:// URI on stdin, store it
   totp code ENVFILE PREFIX   print the current code
+  totp put  ENVFILE KEY      read one value on stdin, store it as KEY
 
-The failure modes are in totp.failure-modes.md. The secret never reaches the
-terminal. TOTP_NOW (seconds) sets the clock for the tests only.
+The failure modes are in totp.failure-modes.md. A secret never reaches the
+terminal, and ENVFILE may not sit inside a git work tree. TOTP_NOW (seconds)
+sets the clock for the tests only.
 """
 import base64
 import binascii
@@ -21,7 +23,7 @@ import time
 import urllib.parse
 
 ALGOS = {"SHA1": hashlib.sha1, "SHA256": hashlib.sha256, "SHA512": hashlib.sha512}
-PREFIX_RE = re.compile(r"[A-Z0-9_]+")
+NAME_RE = re.compile(r"[A-Z0-9_]+")
 
 
 def die(code, message):
@@ -53,25 +55,69 @@ def check_settings(algo, digits, period):
         die(2, "period must be a positive number of seconds")
 
 
-def check_prefix(prefix):
-    if not PREFIX_RE.fullmatch(prefix):
-        die(2, "PREFIX may hold only capital letters, digits and underscores")
+def check_name(name, what):
+    if not NAME_RE.fullmatch(name):
+        die(2, f"{what} may hold only capital letters, digits and underscores")
+
+
+def in_git_work_tree(folder):
+    while True:
+        if os.path.exists(os.path.join(folder, ".git")):
+            return True
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return False
+        folder = parent
 
 
 def read_env(path):
     values = {}
-    with open(path) as handle:
+    with open(path, encoding="utf-8") as handle:
         for line in handle:
             if "=" in line and not line.lstrip().startswith("#"):
-                key, value = line.rstrip("\n").split("=", 1)
+                key, value = line.rstrip("\r\n").split("=", 1)
                 values[key] = value
     return values
 
 
+def write_env(path, drop, add):
+    """Drop lines that match `drop`, append the lines in `add`, keep the rest."""
+    real = os.path.realpath(path)  # write through a symlink
+    folder = os.path.dirname(real) or "."
+    if in_git_work_tree(folder):
+        die(6, f"{path} is inside a git work tree; use a folder outside any repository")
+    tmp = None
+    try:
+        lock = os.open(folder, os.O_RDONLY)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # parallel saves take turns
+            kept = []
+            if os.path.exists(real):
+                with open(real, encoding="utf-8") as handle:
+                    kept = [line for line in handle.read().splitlines() if not drop.match(line)]
+            fd, tmp = tempfile.mkstemp(dir=folder, prefix=".totp-")  # mode 600
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(kept + add) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, real)
+            tmp = None
+        finally:
+            os.close(lock)
+    except (OSError, UnicodeError) as error:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        die(5, f"cannot write {path}: {getattr(error, 'strerror', None) or type(error).__name__}")
+
+
 def save(path, prefix):
-    check_prefix(prefix)
+    check_name(prefix, "PREFIX")
     uri = urllib.parse.urlparse(sys.stdin.read().strip())
-    if uri.scheme != "otpauth" or uri.netloc != "totp":
+    if uri.scheme != "otpauth" or uri.netloc.lower() != "totp":
         die(2, "stdin is not an otpauth://totp/ URI")
     query = urllib.parse.parse_qs(uri.query)
     if not query.get("secret"):
@@ -82,51 +128,40 @@ def save(path, prefix):
     period = query.get("period", ["30"])[0]
     decode_secret(secret)
     check_settings(algo, digits, period)
-
-    own = re.compile(rf"{prefix}_TOTP_(SECRET|ALGO|DIGITS|PERIOD)=")
-    # Write through a symlink, and let parallel saves take turns on the directory.
-    real = os.path.realpath(path)
-    folder = os.path.dirname(real) or "."
-    tmp = None
-    try:
-        lock = os.open(folder, os.O_RDONLY)
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            kept = []
-            if os.path.exists(real):
-                with open(real) as handle:
-                    kept = [line for line in handle.read().splitlines() if not own.match(line)]
-            kept += [
-                f"{prefix}_TOTP_SECRET={secret}",
-                f"{prefix}_TOTP_ALGO={algo}",
-                f"{prefix}_TOTP_DIGITS={digits}",
-                f"{prefix}_TOTP_PERIOD={period}",
-            ]
-            fd, tmp = tempfile.mkstemp(dir=folder, prefix=".totp-")  # mode 600
-            with os.fdopen(fd, "w") as handle:
-                handle.write("\n".join(kept) + "\n")
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, real)
-            tmp = None
-        finally:
-            os.close(lock)
-    except OSError as error:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        die(5, f"cannot write {path}: {error.strerror}")
+    write_env(
+        path,
+        re.compile(rf"{prefix}_TOTP_(SECRET|ALGO|DIGITS|PERIOD)="),
+        [
+            f"{prefix}_TOTP_SECRET={secret}",
+            f"{prefix}_TOTP_ALGO={algo}",
+            f"{prefix}_TOTP_DIGITS={digits}",
+            f"{prefix}_TOTP_PERIOD={period}",
+        ],
+    )
     print(f"saved {prefix}: {digits} digits, {period}s, {algo}")
 
 
+def put(path, key):
+    check_name(key, "KEY")
+    value = sys.stdin.read()
+    if value.endswith("\n"):
+        value = value[:-1]
+    if not value or "\n" in value or "\r" in value or "\0" in value:
+        die(2, "the value must be one non-empty line")
+    write_env(path, re.compile(rf"{key}="), [f"{key}={value}"])
+    print(f"saved {key}")
+
+
 def code(path, prefix):
-    check_prefix(prefix)
+    check_name(prefix, "PREFIX")
     if not os.path.exists(path):
         die(4, f"{path} does not exist")
     if os.stat(path).st_mode & 0o077:
         die(3, f"{path} can be read by group or others; run chmod 600")
-    env = read_env(path)
+    try:
+        env = read_env(path)
+    except (OSError, UnicodeError) as error:
+        die(5, f"cannot read {path}: {getattr(error, 'strerror', None) or type(error).__name__}")
     key = f"{prefix}_TOTP_SECRET"
     if key not in env:
         die(4, f"{path} has no {key}")
@@ -143,9 +178,10 @@ def code(path, prefix):
 
 
 def main():
-    if len(sys.argv) != 4 or sys.argv[1] not in ("save", "code"):
-        die(1, "usage: totp save|code ENVFILE PREFIX")
-    {"save": save, "code": code}[sys.argv[1]](sys.argv[2], sys.argv[3])
+    commands = {"save": save, "code": code, "put": put}
+    if len(sys.argv) != 4 or sys.argv[1] not in commands:
+        die(1, "usage: totp save|code|put ENVFILE PREFIX_OR_KEY")
+    commands[sys.argv[1]](sys.argv[2], sys.argv[3])
 
 
 main()

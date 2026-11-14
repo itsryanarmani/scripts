@@ -7,6 +7,7 @@ two-step verification and the agent must sign in again later.
 ```text
 totp save ENVFILE PREFIX   read an otpauth:// URI on stdin, store it
 totp code ENVFILE PREFIX   print the current code
+totp put  ENVFILE KEY      read one value on stdin, store it as KEY (a recovery code)
 ```
 
 `PREFIX` names the account, for example `AWIN`. It uses capital letters,
@@ -27,14 +28,18 @@ Each row below has a case in `totp.test.sh`, unless the last column says
 | 7 | The env file can be read by group or others | `code` refuses. `save` sets mode 600 on every write. | 3 | yes |
 | 8 | The env file is missing, or has no key for `PREFIX` | Refuses and names the file or the missing key, never a value. | 4 | yes |
 | 9 | `save` runs twice for one prefix | Replaces the four keys. It does not add a second set. | 0 | yes |
-| 10 | The secret leaks to the terminal or into an error | Output holds only the prefix, digits, period and algorithm. A test searches all output for the secret. | 0 | yes |
+| 10 | A secret or stored value leaks to the terminal or into an error | Normal output holds only the prefix, digits, period and algorithm. Errors may hold a path or a key name, never a value. A test searches the save, code, put and refusal output for the value. | 0 | yes |
 | 11 | The output code is wrong against a known answer | Checked against the RFC 6238 vectors for SHA1, SHA256 and SHA512 at fixed times. | 0 | yes |
 | 12 | The host clock is more than about 30 seconds off | The service rejects the code. `totp` cannot see this. Run `date -u` and compare with a network clock before blaming the secret. | 0 | not tested |
 | 13 | Digits or period hold a non-ASCII digit such as `²` | Refuses with the same message as any bad number. It must not crash. | 2 | yes |
 | 14 | Many `save` calls run at the same time | A directory lock makes them take turns. No prefix loses its keys. | 0 | yes |
 | 15 | The env file is a symlink | `save` writes through the link. The link stays a link and the target holds the new keys. | 0 | yes |
-| 16 | The directory cannot be written | Refuses and leaves no temp file behind. A stale temp name cannot block the next save. | 5 | yes |
+| 16 | The directory cannot be written | Refuses and leaves no temp file behind. | 5 | yes |
 | 17 | The env file exists with a loose mode when `save` runs | `save` sets mode 600 on the result. | 0 | yes |
+| 18 | The env file is inside a git work tree (any parent folder holds `.git`) | `save` and `put` refuse. A secret in a repository is one `git add` from a public commit. | 6 | yes |
+| 19 | `put` gets a bad key, an empty value or a value of more than one line | Refuses and never echoes the value. | 2 | yes |
+| 20 | A read fails for another reason: unreadable, not UTF-8, or a directory | Refuses with a short message and no traceback. | 5 | yes |
+| 21 | The machine loses power or the process is killed during a write | The data is flushed before the rename, so an old file stays whole. A kill can leave a mode 600 `.totp-*` file in the same folder. Delete it. | 0 | not tested |
 
 `TOTP_NOW` sets the time in seconds. It exists for the tests. Do not set it in
 real use.

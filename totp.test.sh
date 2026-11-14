@@ -128,5 +128,41 @@ save_uri "otpauth://totp/x?secret=$S1" "$d/loose.env" M >/dev/null
 mode=$(stat -c '%a' "$d/loose.env" 2>/dev/null || stat -f '%Lp' "$d/loose.env")
 [ "$mode" = "600" ] && ok "row 17 loose mode becomes 600" || bad "mode is $mode"
 
+# Row 18: no secret file inside a git work tree.
+mkdir -p "$d/repo/sub"; git init -q "$d/repo"
+run bash -c "printf '%s' 'otpauth://totp/x?secret=$S1' | '$TOTP' save '$d/repo/a.env' G"; expect "row 18 save refused in a repo" 6
+run bash -c "printf '%s' 'otpauth://totp/x?secret=$S1' | '$TOTP' save '$d/repo/sub/a.env' G"; expect "row 18 save refused in a repo subfolder" 6
+run bash -c "printf '%s' 'recovery-value' | '$TOTP' put '$d/repo/a.env' REC_CODE"; expect "row 18 put refused in a repo" 6
+[ ! -e "$d/repo/a.env" ] && ok "row 18 nothing written in the repo" || bad "a file was written in the repo"
+
+# Row 19: put stores one value without echoing it.
+pe="$d/put.env"; secret_val="R3COVERY-c0de-9f2a"
+run bash -c "printf '%s\n' '$secret_val' | '$TOTP' put '$pe' REC_CODE"; expect "row 19 put stores a value" 0
+grep -qxF "REC_CODE=$secret_val" "$pe" && ok "row 19 value stored on one line" || bad "value not stored"
+printf '%s' "$out" | grep -qF "$secret_val" && bad "put echoed the value" || ok "row 19 put does not echo the value"
+bash -c "printf '%s' 'second' | '$TOTP' put '$pe' REC_CODE" >/dev/null 2>&1
+[ "$(grep -c '^REC_CODE=' "$pe")" = 1 ] && grep -qx 'REC_CODE=second' "$pe" && ok "row 19 second put replaces" || bad "put did not replace"
+run bash -c "printf '%s' 'v' | '$TOTP' put '$pe' lower_key"; expect "row 19 bad key refused" 2
+run bash -c "printf '' | '$TOTP' put '$pe' REC_CODE"; expect "row 19 empty value refused" 2
+run bash -c "printf 'line1\nline2\n' | '$TOTP' put '$pe' REC_CODE"; expect "row 19 two-line value refused" 2
+mode=$(stat -c '%a' "$pe" 2>/dev/null || stat -f '%Lp' "$pe")
+[ "$mode" = "600" ] && ok "row 19 put leaves mode 600" || bad "put mode is $mode"
+run bash -c "printf '%s' 'otpauth://totp/x?secret=$S1&digits=8' | '$TOTP' save '$pe' PE"; run env TOTP_NOW=59 "$TOTP" code "$pe" PE
+expect "row 19 put keeps the other keys working" 0 "94287082"
+
+# Row 20: other read failures are a refusal with no traceback.
+nu="$d/nonutf8.env"; printf 'A_TOTP_SECRET=\xff\xfe\n' > "$nu"; chmod 600 "$nu"
+run "$TOTP" code "$nu" A; expect "row 20 non-UTF-8 file refused" 5
+printf '%s' "$out" | grep -q "Traceback" && bad "row 20 printed a traceback" || ok "row 20 no traceback"
+mkdir -p "$d/adir"; chmod 700 "$d/adir"
+run "$TOTP" code "$d/adir" A; expect "row 20 a directory refused" 5
+if [ "$(id -u)" != 0 ]; then
+  printf 'A_TOTP_SECRET=%s\n' "$S1" > "$d/unread.env"; chmod 000 "$d/unread.env"
+  run "$TOTP" code "$d/unread.env" A; expect "row 20 unreadable file refused" 5
+  chmod 600 "$d/unread.env"
+else
+  echo "skip - rows 16 and 20 permission cases need a non-root user"
+fi
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
