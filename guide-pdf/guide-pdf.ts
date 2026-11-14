@@ -18,6 +18,8 @@ export type Guide = {
 };
 import PDFDocument from "pdfkit";
 
+import { consumeMarkdownTable, renderTable, type TableBlock } from "./guide-pdf-tables";
+
 export type GuidePdfTheme = {
   coverBackground: string;
   coverForeground: string;
@@ -51,6 +53,7 @@ type Block =
   | { kind: "list"; ordered: boolean; items: string[] }
   | { kind: "quote"; text: string }
   | { kind: "code"; text: string }
+  | TableBlock
 
 type TocEntry = { title: string; page: number };
 
@@ -104,6 +107,13 @@ export function markdownBlocks(markdown: string): Block[] {
       code = { fence: fence[1]!, lines: [] };
       continue;
     }
+    const table = consumeMarkdownTable(lines, i);
+    if (table) {
+      flush();
+      blocks.push(table.block);
+      i = table.nextIndex;
+      continue;
+    }
     const heading = /^(#{1,3})\s+(.*)$/.exec(line);
     if (heading) {
       flush();
@@ -147,8 +157,17 @@ export function markdownBlocks(markdown: string): Block[] {
   flush();
   return blocks.filter((b) => {
     if (b.kind === "list") return b.items.length > 0;
+    if (b.kind === "table") return b.header.length > 0;
     return "text" in b ? b.text.trim() !== "" : true;
   });
+}
+
+function countryName(code: string, locale: string): string {
+  try {
+    return new Intl.DisplayNames([locale], { type: "region" }).of(code.toUpperCase()) ?? code;
+  } catch {
+    return code;
+  }
 }
 
 function inlineRuns(text: string): Run[] {
@@ -308,6 +327,8 @@ function renderBlocks(ctx: RenderCtx, guide: Guide, blocks: Block[], tocEntries:
       writeRuns(doc, inlineRuns(block.text), theme, { base: "italic", indent: 8 });
       doc.y = y + 56;
       doc.moveDown(0.4);
+    } else if (block.kind === "table") {
+      renderTable({ doc, theme, ensureSpace }, block);
     } else {
       ensureSpace(16);
       doc.font(FONTS.mono).fontSize(9.5).fillColor(theme.ink).text(block.text, { width });
