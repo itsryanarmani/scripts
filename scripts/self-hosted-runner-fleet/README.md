@@ -199,5 +199,128 @@ Two host faults worth recognising, because both look like a per-repo problem:
   `ObjectDisposedException` on the TLS stream. Prefer IPv4 by appending
   `precedence ::ffff:0:0/96  100` to `/etc/gai.conf`, then restart the services.
 
+## Keep the disk from filling: periodic cleanup
+
+A fleet of per-repository runners fills a disk in months. Nothing cleans it. On one host,
+44 runner folders held 221 GB, and a third of that was old job checkouts, package caches
+and folders of runners that no longer existed.
+
+Run `runner-host-maint.sh` on the host, as root:
+
+```sh
+./runner-host-maint.sh status                 # disk, busy jobs, runner folders with no service
+./runner-host-maint.sh clean --dry-run        # list the work, delete nothing
+./runner-host-maint.sh clean                  # do it
+./runner-host-maint.sh install-timer          # run "clean" every day at 04:15
+```
+
+`clean` touches a runner only when its service is active and it has no job. It stops that
+runner's service, clears its `_work` folder (keeping `_tool` and `_actions`), and starts the
+service again. A busy runner is skipped and cleaned on the next run. A service you stopped
+on purpose stays stopped. When no job runs anywhere, it also clears the service account's
+package caches. It then trims the journal and the apt cache and runs `fstrim`. `--docker`
+also removes unused Docker images and stopped containers older than 24 hours. That is off by
+default, because Docker is shared by the whole host.
+
+A runner folder is a folder with a `.runner` or `config.sh` file. One with no service is
+listed as an orphan. `--prune-orphans` deletes it. `clean` refuses to run when it finds
+runner folders and no runner services at all, so a broken `systemctl` cannot make every
+runner look dead.
+
+`install-timer` installs a copy of the script and writes `RUNNER_ROOT` and
+`RUNNER_SERVICE_USER` into the unit. Run it again after you update the script. If a runner
+does not start again after its cleanup, the script logs `RESTART FAILED`, counts it in
+`restart_failed`, and exits with code 4, so the timer unit shows as failed.
+
+Check what an orphan is before you prune. The usual causes are a repository that was
+deleted or archived, a runner that was registered twice by mistake, and a **renamed GitHub
+account**: the registration under the old name is gone for good, and its service keeps
+failing. Re-register under the new name and remove the old service.
+
+### Windows: shrink the virtual disk too
+
+Deleting files inside WSL2 does not shrink `ext4.vhdx`, so the OS drive stays full. Compact
+it with `wsl-compact.ps1`. It needs administrator rights.
+
+```powershell
+.\wsl-compact.ps1 -Distro Ubuntu -KeepaliveTask "CI WSL Keepalive" -WaitMinutes 150 -DryRun
+```
+
+It waits for an idle fleet, runs `wsl --shutdown`, compacts the file with `diskpart`, and
+starts WSL again through the keepalive task. After the shutdown it always detaches the disk
+and restarts WSL, even when compaction fails. A failed compaction exits with code 1. With
+jobs still running after `-WaitMinutes`, or when it cannot read the job count, it exits with
+code 2 and changes nothing.
+
+Register it as a weekly scheduled task with highest privileges, run as the account that owns
+the WSL distribution. It reads that account's registry, so SYSTEM does not work. Always pass
+`-KeepaliveTask` with the name of the task that holds WSL open (see the Windows section
+above). Without it the script starts a hidden `sleep infinity` that ends at logoff, and WSL
+can stop later. After the restart the script checks that the distro answers, and it exits
+with code 1 when it does not.
+
+Two cautions. `wsl --shutdown` stops **every** distribution and every process in them, such
+as agent sessions and other services. The job check counts only runner jobs in one distro.
+And a job that starts between the idle check and the shutdown dies. Re-run that job.
+
+Do **not** turn on `sparseVhd` or run `wsl --manage <distro> --set-sparse true` on a disk
+you care about. Recent WSL builds call it unsafe and ask for `--allow-unsafe`, because it can
+corrupt the disk.
+
+### Other things that free or save space on a Windows host
+
+- `powercfg /h off` deletes `hiberfil.sys`. On a 128 GB host it was 51 GB. A CI host does
+  not need hibernate.
+- Scan with care. A recursive size scan of a large OS drive takes more than ten minutes
+  over SSH. Measure only the folders you suspect.
+- A `Local Settings` or `Application Data` folder in a user profile is a junction. Its size
+  is counted twice by a naive scan.
+
+## Memory and CPU on a spare machine
+
+Most of the capacity of a CI host sits idle. These settings cost nothing:
+
+- In `%USERPROFILE%\.wslconfig`, set `[experimental]` / `autoMemoryReclaim=gradual`. WSL then
+  gives idle cache back to Windows instead of holding it. Cap `memory=` below total RAM so
+  Windows keeps some. The file needs `wsl.exe --shutdown` to apply.
+- Mount `/tmp` as a tmpfs (`tmpfs /tmp tmpfs defaults,size=24G,mode=1777 0 0` in
+  `/etc/fstab`). Temp-heavy installs and builds get faster. It uses RAM only while files
+  exist.
+- Stop `SysMain` and Windows Search on a machine nobody uses interactively.
+- Cap in-job parallelism, as in the section above. More threads than cores slows every job.
+
+## Put an idle GPU to work: a local model server
+
+A GPU that CI cannot use can still serve a small local model for cheap, bulk agent work.
+
+1. **Pick a model that fits.** `llmfit` (github.com/AlexsJones/llmfit) reads the hardware and
+   ranks models by fit and speed. Install the pinned release binary and check its checksum.
+   Do not pipe an install script to a shell. Use the `musl` build on an older Ubuntu, because
+   the `gnu` build needs a newer glibc.
+2. **Do not take the top score on trust.** The top of the list is often an unvetted community
+   fine-tune. Pick a model from a maker you know, then measure.
+3. **Mind the VRAM.** 8 GB holds a 9B model at 4-bit with a small context. A bigger model
+   spills into system RAM and gets slow.
+4. **Serve it with Ollama** from a release tarball, checked against the digest GitHub
+   publishes for the asset. Run it as a systemd service.
+5. **Bind it to a private address only.** Ollama has no login. Set `OLLAMA_HOST` to the
+   machine's private network address, never `0.0.0.0`.
+6. **Measure honestly.** The first call after a start loads the model and can run ten times
+   slower than steady state. One short call measured 3 tokens per second. A 300-token run
+   measured 27. Time a longer request after a warm-up.
+7. **Route to it.** An OpenAI-compatible proxy can list the model under an alias. When the
+   host is off, only that one model fails.
+
+## Before you restart anything
+
+`wsl --shutdown` and a service restart kill running jobs. Look first:
+
+```sh
+pgrep -fc 'Runner\.Worker'      # 0 means no job is running
+```
+
+On a busy fleet this is rarely 0. Plan restarts for a quiet hour, or wait in a loop that
+re-checks. Do not assume the fleet is idle because it was idle a minute ago.
+
 The full job-placement and cost playbook, including per-minute prices across runner
 options, is the `high-volume-ci-optimization` skill in the skills repository.
