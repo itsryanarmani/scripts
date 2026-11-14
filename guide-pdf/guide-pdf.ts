@@ -6,7 +6,16 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { countryName, type Guide } from "@directory/core";
+export type Guide = {
+  slug: string;
+  title: string;
+  description: string;
+  country: string | null;
+  updated: string;
+  body: string;
+  sources: { label: string; url: string }[];
+  faq: { q: string; a: string }[];
+};
 import PDFDocument from "pdfkit";
 
 export type GuidePdfTheme = {
@@ -427,34 +436,6 @@ export function renderGuidePdf(
 
     renderBlocks(ctx, guide, blocks, tocEntries);
 
-    if (guide.faq.length > 0) {
-      ensureSpace(30);
-      doc.moveDown(0.9);
-      doc.font(FONTS.bold).fontSize(16).fillColor(theme.accent).text("Frequently asked questions", { width });
-      doc.moveDown(0.3);
-      for (const f of guide.faq) {
-        ensureSpace(30);
-        doc.fontSize(11);
-        writeRuns(doc, [{ text: f.q, bold: true }], theme);
-        doc.moveDown(0.15);
-        writeRuns(doc, inlineRuns(f.a), theme);
-        doc.moveDown(0.4);
-      }
-    }
-
-    if (guide.sources.length > 0) {
-      ensureSpace(30);
-      doc.moveDown(0.9);
-      doc.font(FONTS.bold).fontSize(16).fillColor(theme.accent).text("Sources", { width });
-      doc.moveDown(0.3);
-      for (const s of guide.sources) {
-        ensureSpace(14);
-        doc.fontSize(10);
-        writeRuns(doc, [{ text: s.label, link: s.url }, { text: ` — ${s.url}` }], theme);
-        doc.moveDown(0.15);
-      }
-    }
-
     if (guide.country) {
       doc.moveDown(0.5);
       doc
@@ -483,14 +464,3 @@ export function renderGuidePdf(
   });
 }
 
-export async function writeGuidePdfs(
-  guides: Guide[],
-  config: Config,
-  dir: string,
-  theme: GuidePdfTheme = DEFAULT_GUIDE_PDF_THEME,
-): Promise<string[]> {
-  mkdirSync(dir, { recursive: true });
-  const out: string[] = [];
-  for (const guide of guides) out.push(await renderGuidePdf(guide, config, join(dir, `${guide.slug}.pdf`), theme));
-  return out;
-}
