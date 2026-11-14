@@ -6,18 +6,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type Guide = {
-  slug: string;
-  title: string;
-  description: string;
-  country: string | null;
-  related: string | null;
-  updated: string;
-  body: string;
-  sources: Array<{ label: string; url: string }>;
-  faq: Array<{ q: string; a: string }>;
-  words: number;
-};
+import { countryName, type Guide } from "@directory/core";
 import PDFDocument from "pdfkit";
 
 export type GuidePdfTheme = {
@@ -263,32 +252,66 @@ function renderTocPage(doc: PDFKit.PDFDocument, entries: TocEntry[], theme: Guid
   }
 }
 
+function tableRowHeight(
+  doc: PDFKit.PDFDocument,
+  cells: string[],
+  colW: number,
+  font: keyof typeof FONTS,
+  size: number,
+): number {
+  let max = 0;
+  doc.font(FONTS[font]).fontSize(size);
+  for (const cell of cells) {
+    const h = doc.heightOfString(cell || " ", { width: colW - 12, lineGap: 1 });
+    max = Math.max(max, h);
+  }
+  return Math.max(20, max + 14);
+}
+
+function drawTableBorders(doc: PDFKit.PDFDocument, x: number, y: number, width: number, rowHeights: number[], cols: number, colW: number, rule: string) {
+  let yy = y;
+  for (const rh of rowHeights) {
+    doc.rect(x, yy, width, rh).strokeColor(rule).stroke();
+    for (let c = 1; c < cols; c += 1) doc.moveTo(x + c * colW, yy).lineTo(x + c * colW, yy + rh).strokeColor(rule).stroke();
+    yy += rh;
+  }
+}
+
 function renderTable(ctx: RenderCtx, block: Extract<Block, { kind: "table" }>) {
   const { doc, theme, width, ensureSpace } = ctx;
-  const cols = block.header.length;
+  const cols = Math.max(block.header.length, 1);
   const colW = width / cols;
-  const rowH = 22;
-  ensureSpace(rowH * (block.rows.length + 2));
+  const bodySize = cols >= 6 ? 7.5 : cols >= 4 ? 8.5 : 10;
+  const headerSize = bodySize + 0.5;
+  ensureSpace(60);
   const x = doc.page.margins.left;
   let y = doc.y;
+  const top = y;
+  const headerH = tableRowHeight(doc, block.header, colW, "bold", headerSize);
   doc.save();
-  doc.rect(x, y, width, rowH).fill(theme.accent);
-  doc.fillColor(theme.coverForeground).font(FONTS.bold).fontSize(10);
+  doc.rect(x, y, width, headerH).fill(theme.accent);
+  doc.fillColor(theme.coverForeground).font(FONTS.bold).fontSize(headerSize);
   block.header.forEach((cell, i) => {
-    doc.text(cell, x + i * colW + 6, y + 6, { width: colW - 12, lineBreak: false });
+    doc.text(cell, x + i * colW + 6, y + 7, { width: colW - 12, lineGap: 1 });
   });
-  y += rowH;
+  const rowHeights = [headerH];
+  y += headerH;
   block.rows.forEach((row, ri) => {
+    const padded = [...row];
+    while (padded.length < cols) padded.push("");
+    const rh = tableRowHeight(doc, padded, colW, "regular", bodySize);
+    rowHeights.push(rh);
     const fill = ri % 2 === 0 ? theme.panelFill : "#ffffff";
-    doc.rect(x, y, width, rowH).fill(fill);
-    doc.fillColor(theme.ink).font(FONTS.regular).fontSize(9.5);
-    row.forEach((cell, i) => {
-      doc.text(cell, x + i * colW + 6, y + 6, { width: colW - 12, lineBreak: false });
+    doc.rect(x, y, width, rh).fill(fill);
+    doc.fillColor(theme.ink).font(FONTS.regular).fontSize(bodySize);
+    padded.forEach((cell, i) => {
+      doc.text(cell || " ", x + i * colW + 6, y + 7, { width: colW - 12, lineGap: 1 });
     });
-    y += rowH;
+    y += rh;
   });
   doc.restore();
-  doc.y = y + 8;
+  drawTableBorders(doc, x, top, width, rowHeights, cols, colW, theme.rule);
+  doc.y = y + 10;
 }
 
 function renderBlocks(ctx: RenderCtx, guide: Guide, blocks: Block[], tocEntries: TocEntry[]) {
@@ -306,7 +329,14 @@ function renderBlocks(ctx: RenderCtx, guide: Guide, blocks: Block[], tocEntries:
         doc.restore();
         doc.x = doc.page.margins.left + 14;
       }
-      doc.font(FONTS.bold).fontSize(block.level <= 2 ? 16 : 12.5).fillColor(theme.ink).text(block.text, {
+      if (block.level === 3) {
+        const y0 = doc.y;
+        doc.save();
+        doc.rect(doc.page.margins.left, y0, width, 22).fill(theme.panelFill);
+        doc.restore();
+        doc.y = y0 + 5;
+      }
+      doc.font(FONTS.bold).fontSize(block.level <= 2 ? 16 : 12.5).fillColor(block.level === 2 ? theme.accent : theme.ink).text(block.text, {
         width: block.level === 2 ? width - 14 : width,
       });
       doc.x = doc.page.margins.left;
@@ -321,8 +351,19 @@ function renderBlocks(ctx: RenderCtx, guide: Guide, blocks: Block[], tocEntries:
       block.items.forEach((item, i) => {
         ensureSpace(16);
         doc.fontSize(11);
-        const marker = block.ordered ? `${i + 1}. ` : "•  ";
-        writeRuns(doc, [{ text: marker, bold: true }, ...inlineRuns(item)], theme);
+        if (block.ordered) {
+          const cy = doc.y + 4;
+          const cx = doc.page.margins.left + 8;
+          doc.save();
+          doc.circle(cx, cy, 8).fill(theme.accent);
+          doc.fillColor(theme.coverForeground).font(FONTS.bold).fontSize(9).text(String(i + 1), cx - 4, cy - 5, { width: 8, align: "center" });
+          doc.restore();
+          doc.x = doc.page.margins.left + 22;
+          writeRuns(doc, inlineRuns(item), theme);
+          doc.x = doc.page.margins.left;
+        } else {
+          writeRuns(doc, [{ text: "•  ", bold: true }, ...inlineRuns(item)], theme);
+        }
         doc.moveDown(0.15);
       });
       doc.moveDown(0.4);
@@ -420,7 +461,7 @@ export function renderGuidePdf(
         .font(FONTS.regular)
         .fontSize(10)
         .fillColor(theme.muted)
-        .text(`This guide is about ${guide.country}.`);
+        .text(`This guide is about ${countryName(guide.country, config.defaultLocale)}.`);
     }
 
     renderTocPage(doc, tocEntries, theme, width, tocPageIndex);
