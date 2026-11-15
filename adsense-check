@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """adsense-check: verify the two AdSense ownership proofs on a site. See adsense-check.md."""
-import argparse, json, os, re, sys, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 from html.parser import HTMLParser
 
 UA = "adsense-check/1.0 (+ownership check)"
 TIMEOUT = 15
+DEADLINE = 30  # whole run, both fetches and every redirect hop
 MAX_REDIRECTS = 3
 MAX_BYTES = 2 * 1024 * 1024
 CERT_ID = "f08c47fec0942fa0"
-PUB_RE = re.compile(r"^(?:ca-pub-|pub-)(\d{16})$")
-MULTI_TLD = {"ac.uk", "co.uk", "gov.uk", "com.au", "net.au", "org.au", "co.nz",
-             "com.br", "com.mx", "co.jp", "co.in", "com.sg", "com.hk"}
+PUB_RE = re.compile(r"^(?:ca-pub-|pub-)([0-9]{16})$")  # ASCII digits only
 REDIRECT_CODES = (301, 302, 303, 307, 308)
 
 
@@ -22,68 +21,71 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
-def registrable(host):
-    """eTLD+1 approximation, enough for the www/apex rule."""
-    host = (host or "").lower()
-    if ":" in host:
-        host = host.split(":")[0]
-    if not host or re.fullmatch(r"[\d.]+", host):
-        return host
-    if host.startswith("www."):
-        host = host[4:]
-    labels = host.split(".")
-    if len(labels) <= 2:
-        return host
-    if ".".join(labels[-2:]) in MULTI_TLD:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
+def res(hops, status=None, headers=None, body=b"", error=None):
+    return {"status": status, "headers": headers, "body": body, "hops": hops, "error": error}
 
 
-def fetch(url, site_reg):
-    """GET url, follow at most MAX_REDIRECTS hops that stay on site_reg.
-    Returns dict(status, headers, body, hops, error)."""
+def fetch(url, allowed, deadline):
+    """GET url, follow at most MAX_REDIRECTS hops inside `allowed`."""
     hops = []
     for _ in range(MAX_REDIRECTS + 1):
+        if time.monotonic() > deadline:
+            return res(hops, error="deadline exceeded")
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         try:
             with OPENER.open(req, timeout=TIMEOUT) as r:
                 hops.append({"url": url, "status": r.status})
-                return {"status": r.status, "headers": r.headers,
-                        "body": r.read(MAX_BYTES + 1)[:MAX_BYTES], "hops": hops, "error": None}
+                return res(hops, status=r.status, headers=r.headers,
+                           body=r.read(MAX_BYTES + 1)[:MAX_BYTES])
         except urllib.error.HTTPError as e:
             hops.append({"url": url, "status": e.code})
-            if e.code in REDIRECT_CODES:
-                loc = e.headers.get("Location") if e.headers else None
-                nxt = urllib.parse.urljoin(url, loc) if loc else None
-                host = urllib.parse.urlparse(nxt).hostname if nxt else ""
-                if not nxt or registrable(host) != site_reg:
-                    return {"status": e.code, "headers": e.headers, "body": b"",
-                            "hops": hops, "error": f"redirect left the site domain: {nxt}"}
-                if len(hops) > MAX_REDIRECTS:
-                    return {"status": e.code, "headers": e.headers, "body": b"",
-                            "hops": hops, "error": "too many redirects"}
-                url = nxt
-                continue
-            return {"status": e.code, "headers": e.headers, "body": b"",
-                    "hops": hops, "error": None}
+            if e.code not in REDIRECT_CODES:
+                return res(hops, status=e.code, headers=e.headers)
+            nxt = urllib.parse.urljoin(url, e.headers.get("Location", "")) if e.headers else ""
+            p = urllib.parse.urlparse(nxt)
+            if p.scheme not in ("http", "https") or not p.hostname:
+                return res(hops, status=e.code, headers=e.headers,
+                           error=f"redirect to unsupported URL: {nxt}")
+            if p.hostname.lower() not in allowed:
+                return res(hops, status=e.code, headers=e.headers,
+                           error=f"redirect left the site domain: {nxt}")
+            url = nxt
         except Exception as e:
             hops.append({"url": url, "status": type(e).__name__})
-            return {"status": None, "headers": None, "body": b"",
-                    "hops": hops, "error": f"{type(e).__name__}: {e}"}
-    return {"status": None, "headers": None, "body": b"", "hops": hops,
-            "error": "too many redirects"}
+            return res(hops, error=f"{type(e).__name__}: {e}")
+    return res(hops, error="too many redirects")
 
 
 class MetaParser(HTMLParser):
+    """Collect google-adsense-account meta tags. Tags inside <noscript>,
+    comments and <script> do not count; tags after <body> starts are 'outside head'."""
+
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.tags = []
+        self.head, self.outside = [], []
+        self._noscript = 0
+        self._in_body = False
+
+    def _meta(self, attrs):
+        if not self._noscript:
+            (self.outside if self._in_body else self.head).append(dict(attrs))
 
     def handle_starttag(self, tag, attrs):
-        if tag.lower() == "meta":
-            self.tags.append(dict(attrs))
+        t = tag.lower()
+        if t == "noscript":
+            self._noscript += 1
+        elif t == "body":
+            self._in_body = True
+        elif t == "meta":
+            self._meta(attrs)
 
-    handle_startendtag = handle_starttag
+    def handle_startendtag(self, tag, attrs):
+        if tag.lower() == "meta":
+            self._meta(attrs)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "noscript" and self._noscript:
+            self._noscript -= 1
 
 
 def meta_ids(html):
@@ -92,18 +94,9 @@ def meta_ids(html):
         p.feed(html)
     except Exception:
         pass
-    return [t.get("content", "") for t in p.tags
-            if t.get("name", "").lower() == "google-adsense-account"]
-
-
-def normalize_pub(raw):
-    m = PUB_RE.match((raw or "").strip())
-    return "ca-pub-" + m.group(1) if m else None
-
-
-def same_pub(value, pub):
-    n = normalize_pub(value)
-    return n is not None and n == pub
+    pick = lambda tags: [t.get("content", "") for t in tags
+                         if t.get("name", "").lower() == "google-adsense-account"]
+    return pick(p.head), pick(p.outside)
 
 
 def ads_txt_problems(status, ctype, body, digits):
@@ -112,13 +105,13 @@ def ads_txt_problems(status, ctype, body, digits):
         problems.append(f"status {status}, want 200")
     if not (ctype or "").lower().startswith("text/plain"):
         problems.append(f"content-type {ctype or 'missing'}, want text/plain")
-    text = body.decode("utf-8", "replace")
+    text = body.decode("utf-8-sig", "replace")
     if "<html" in text.lower():
         problems.append("body contains HTML (a soft 404 page returns 200)")
     want = f"google.com, pub-{digits}, DIRECT, {CERT_ID}"
     found = False
     for line in text.splitlines():
-        parts = [p.strip() for p in line.split(",")]
+        parts = [p.strip() for p in line.split("#", 1)[0].split(",")]
         if len(parts) == 4 and parts[0].lower() == "google.com" \
                 and parts[1] == f"pub-{digits}" and parts[2].upper() == "DIRECT" \
                 and parts[3] == CERT_ID:
@@ -137,23 +130,23 @@ def main():
     ap.add_argument("--json", action="store_true", help="print one JSON object")
     args = ap.parse_args()
 
-    pub = normalize_pub(args.publisher_id)
-    if not pub:
+    m = PUB_RE.match((args.publisher_id or "").strip())
+    if not m:
         print(f"adsense-check: bad publisher id {args.publisher_id!r}; "
               "want ca-pub-<16 digits> or pub-<16 digits>", file=sys.stderr)
         return 2
-    digits = pub[len("ca-pub-"):]
+    pub = "ca-pub-" + m.group(1)
+    digits = m.group(1)
 
-    domain = args.domain.strip().lower()
-    for pre in ("https://", "http://"):
-        if domain.startswith(pre):
-            domain = domain[len(pre):]
+    domain = re.sub(r"^https?://", "", args.domain.strip().lower())
     domain = domain.split("/")[0].split(":")[0]
-    base = os.environ.get("ADSENSE_CHECK_BASE_URL", "").rstrip("/")
-    site_host = urllib.parse.urlparse(base).hostname if base else domain
-    site_reg = registrable(site_host)
+    base = os.environ.get("ADSENSE_CHECK_TEST_BASE_URL", "").rstrip("/")
+    site_host = (urllib.parse.urlparse(base).hostname or "").lower() if base else domain
+    apex = site_host[4:] if site_host.startswith("www.") else site_host
+    allowed = {site_host, apex, "www." + apex}  # host pair only; no suffix guessing
     urls = {"ads.txt": f"{base}/ads.txt" if base else f"https://{domain}/ads.txt",
             "home": f"{base}/" if base else f"https://{domain}/"}
+    deadline = time.monotonic() + DEADLINE
 
     checks, results, ok = [], {}, True
 
@@ -167,7 +160,7 @@ def main():
 
     bodies = {}
     for key, url in urls.items():
-        r = fetch(url, site_reg)
+        r = fetch(url, allowed, deadline)
         bodies[key] = r
         results[key] = {"url": url, "status": r["status"], "hops": r["hops"],
                         **({"error": r["error"]} if r["error"] else {})}
@@ -177,37 +170,38 @@ def main():
 
     # ads.txt: status, content type, publisher line, no HTML.
     at = bodies["ads.txt"]
-    if at["error"]:
-        record("ads.txt", "fail", at["error"])
-    elif at["status"] != 200:
-        record("ads.txt", "fail", f"status {at['status']}, want 200")
+    if at["error"] or at["status"] != 200:
+        record("ads.txt", "fail", at["error"] or f"status {at['status']}, want 200")
     else:
         ctype = at["headers"].get("Content-Type", "") if at["headers"] else ""
         probs = ads_txt_problems(at["status"], ctype, at["body"], digits)
         record("ads.txt", "fail" if probs else "pass",
-               "; ".join(probs) if probs else f"status 200, text/plain, google.com DIRECT line for pub-{digits}")
+               "; ".join(probs) if probs else
+               f"status 200, text/plain, google.com DIRECT line for pub-{digits}")
 
-    # meta tag on the home page: exactly one, value equals the publisher id.
+    # meta tag on the home page: exactly one in <head>, value equals the publisher id.
     hm = bodies["home"]
-    if hm["error"]:
-        record("meta tag", "fail", hm["error"])
-    elif hm["status"] != 200:
-        record("meta tag", "fail", f"home page status {hm['status']}, want 200")
+    if hm["error"] or hm["status"] != 200:
+        record("meta tag", "fail", hm["error"] or f"home page status {hm['status']}, want 200")
     else:
-        html = hm["body"].decode("utf-8", "replace")
-        ids = meta_ids(html)
-        if len(ids) == 0:
-            record("meta tag", "fail", "no google-adsense-account meta tag on the home page")
-        elif len(ids) > 1:
-            record("meta tag", "fail", f"{len(ids)} google-adsense-account meta tags, want exactly 1")
-        elif not same_pub(ids[0], pub):
+        page = hm["body"].decode("utf-8-sig", "replace")
+        head_ids, outside_ids = meta_ids(page)
+        if outside_ids:
+            record("meta tag position", "info", "meta tag found outside head")
+        ids = head_ids
+        if not ids:
             record("meta tag", "fail",
-                   f"meta tag has {ids[0]!r}, want {pub} (copy-paste error?)")
+                   "meta tag found outside head" if outside_ids
+                   else "no google-adsense-account meta tag on the home page")
+        elif len(ids) > 1:
+            record("meta tag", "fail", f"{len(ids)} google-adsense-account meta tags in head, want 1")
+        elif not re.match(r"^ca-pub-[0-9]{16}$", ids[0].strip()) or ids[0].strip() != pub:
+            record("meta tag", "fail",
+                   f"meta tag has {ids[0].strip()!r}, want {pub} (copy-paste error?)")
         else:
-            record("meta tag", "pass", f"exactly one tag, value {pub}")
-        has_script = "adsbygoogle.js" in html
+            record("meta tag", "pass", f"exactly one tag in head, value {pub}")
         record("ad script", "info",
-               "adsbygoogle.js present in home page HTML" if has_script
+               "adsbygoogle.js present" if "adsbygoogle.js" in page
                else "adsbygoogle.js not present in home page HTML")
 
     if args.json:
