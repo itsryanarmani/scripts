@@ -182,7 +182,9 @@ check("12 a dayparted ad set is refused (exit 2)", code == 2 and not STATE["post
 code, out = run(["--execute"], seed=lambda: STATE["sets"]["1"].update({"budget_remaining": "0", "daily_budget": "0"}))
 check("16 an ad set with no budget of its own is refused, not copied with budget 0", code == 2 and not STATE["posts"] and "campaign" in out, out)
 code, out = run(["--execute", "--activate"], drop_on="adsets")
-check("17 a dropped connection exits 3 with a message and no traceback", code == 3 and "Traceback" not in out and "no usable reply" in out, out)
+check("17 a dropped connection exits 3 with a message and no traceback", code == 3 and "Traceback" not in out and "no usable reply" in out and "OUTCOME UNKNOWN" in out and "created so far" in out, out)
+code, out = run(["--execute"], other_error=True)
+check("17 an ordinary error is not called unknown", code == 3 and "OUTCOME UNKNOWN" not in out, out)
 
 code, out = run(["--execute"], odd_msg=True)
 check("13 an unrelated 'more than N' message does not lower the budget or retry", code == 3 and len([p for p, _ in STATE["posts"] if p.endswith("/adsets")]) == 1, out)

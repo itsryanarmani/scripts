@@ -51,11 +51,14 @@ class Stop(Exception):
     """A write failed. The message lists what exists."""
 class Skip(Exception):
     """One ad set needs more budget than --max-extra-cents allows. Nothing was created for it."""
+def unknown(status, method):
+    """A write with no reply may still have happened. Say so, so nobody trusts the list or reruns blind."""
+    return " OUTCOME UNKNOWN: Meta may have applied this write before the connection dropped. Check Ads Manager before a rerun." if status == 0 and method != "GET" else ""
 def need(graph, method, path, params, made):
     status, body = graph.call(method, path, params)
     if "error" in body:
         e = body["error"]
-        raise Stop(f"{method} {path} failed (code {e.get('code')}): {e.get('message')}. Already created: {', '.join(made) or 'nothing'}")
+        raise Stop(f"{method} {path} failed (code {e.get('code')}): {e.get('message')}. Already created: {', '.join(made) or 'nothing'}.{unknown(status, method)}")
     return body
 def plan_budget(old):
     """The copy gets the daily budget, or the lifetime budget that remains."""
@@ -96,7 +99,7 @@ def copy_one(graph, acct, old, args, made):
         status, res = graph.call("POST", f"act_{acct}/adsets", {**body, key: str(raised)})
     if "error" in res:
         e = res["error"]
-        raise Stop(f"POST adsets failed (code {e.get('code')}): {e.get('message')}. Already created: {', '.join(made) or 'nothing'}")
+        raise Stop(f"POST adsets failed (code {e.get('code')}): {e.get('message')}. Already created: {', '.join(made) or 'nothing'}.{unknown(status, 'POST')}")
     new_id = res["id"]
     made.append(f"adset {new_id}")
     new_ads = []

@@ -26,7 +26,7 @@ python3 -I ad-event-switch.test.py                                        # E2E 
 | `--max-extra-cents` | Most extra budget one copy may need to meet Meta's minimum. Default 200. |
 | `--env-file`, `META_MARKETING_TOKEN` | The token. Keep the file outside the repository. |
 
-Exit: 0 clean, 2 refused (bad input, or at least one ad set refused because its minimum budget is over the cap or it has no ACTIVE ad or a setting the tool cannot copy; the others are still copied), 3 a call failed (the output lists what exists).
+Exit: 0 clean, 2 refused (bad input, or at least one ad set refused because its minimum budget is over the cap or it has no ACTIVE ad or a setting the tool cannot copy; the others are still copied), 3 a call failed (the output lists what exists). If a write got no reply at all, the output says `OUTCOME UNKNOWN`: Meta may have applied it, so check Ads Manager before a rerun.
 
 ## What a copy keeps
 
