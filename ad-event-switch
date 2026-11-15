@@ -6,7 +6,8 @@ import urllib.error, urllib.parse, urllib.request
 RATE_LIMIT = (17, 2446079)  # ads-management "user request limit reached"; nothing else is retried
 WAITS = (60, 120, 240)
 FIELDS = ("id,name,effective_status,campaign_id,lifetime_budget,budget_remaining,daily_budget,end_time,billing_event,"
-          "optimization_goal,bid_strategy,targeting,promoted_object,destination_type,attribution_spec,pacing_type")
+          "optimization_goal,bid_strategy,bid_amount,adset_schedule,frequency_control_specs,targeting,promoted_object,destination_type,"
+          "attribution_spec,pacing_type")
 SECRETS = []
 def scrub(s):
     s = re.sub(r"(access_token=)[^&\s\"']+", r"\1<redacted>", str(s))
@@ -43,6 +44,8 @@ class Graph:
             raw = e.read()
             err = json.loads(raw).get("error", {}) if raw.strip().startswith(b"{") else {}
             return e.code, {"error": {"code": err.get("code"), "subcode": err.get("error_subcode"), "message": scrub(err.get("error_user_msg") or err.get("message", ""))}}
+        except (urllib.error.URLError, TimeoutError, ValueError) as e:  # network failure or a non-JSON reply
+            return 0, {"error": {"code": None, "subcode": None, "message": scrub(f"no usable reply: {e}")}}
 class Stop(Exception):
     """A write failed. The message lists what exists."""
 class Skip(Exception):
@@ -58,17 +61,30 @@ def plan_budget(old):
     if int(old.get("daily_budget") or 0) > 0:
         return "daily_budget", str(old["daily_budget"])
     return "lifetime_budget", str(old["budget_remaining"])
+def unsupported(old):
+    """Why this tool cannot copy the ad set faithfully, or None. The copy would differ, so the tool leaves it alone."""
+    if old.get("bid_strategy", "LOWEST_COST_WITHOUT_CAP") != "LOWEST_COST_WITHOUT_CAP" or old.get("bid_amount"):
+        return "it has a bid cap or cost cap"
+    if old.get("adset_schedule") or old.get("frequency_control_specs"):
+        return "it has dayparting or a frequency cap"
+    return None
 def copy_one(graph, acct, old, args, made):
     name = f"{old['name']} [{args.to_event}]"
     key, amount = plan_budget(old)
+    # Read the ads first. An ad set with no ACTIVE ad must not become an empty copy that replaces it.
+    ads = [a for a in need(graph, "GET", f"{old['id']}/ads", {"fields": "id,name,effective_status,creative{id}", "limit": "50"}, made)["data"]
+           if a["effective_status"] == "ACTIVE"]
+    if not ads:
+        raise Skip(f"{old['name']}: no ACTIVE ad to copy. Nothing created for it.")
     po = {**old["promoted_object"], "custom_event_type": args.to_event}
-    body = {"name": name, "campaign_id": old["campaign_id"], "status": "PAUSED", key: amount, "end_time": old["end_time"],
-            "billing_event": old["billing_event"], "optimization_goal": old["optimization_goal"], "bid_strategy": old["bid_strategy"],
-            "targeting": old["targeting"], "promoted_object": po, "destination_type": old["destination_type"],
-            "attribution_spec": old["attribution_spec"], "pacing_type": old["pacing_type"], "is_dynamic_creative": "false"}
+    body = {"name": name, "campaign_id": old["campaign_id"], "status": "PAUSED", key: amount, "end_time": old.get("end_time"),
+            "billing_event": old["billing_event"], "optimization_goal": old["optimization_goal"], "bid_strategy": old.get("bid_strategy"),
+            "targeting": old["targeting"], "promoted_object": po, "destination_type": old.get("destination_type"),
+            "attribution_spec": old.get("attribution_spec"), "pacing_type": old.get("pacing_type"), "is_dynamic_creative": "false"}
+    body = {k: v for k, v in body.items() if v is not None}  # Graph leaves out fields that have no value
     status, res = graph.call("POST", f"act_{acct}/adsets", body)
     floor = re.search(r"more than [A-Z$]*?(\d+(?:\.\d+)?)", (res.get("error") or {}).get("message", ""))
-    if "error" in res and floor:  # Meta states the least it accepts
+    if "error" in res and floor and math.ceil((float(floor.group(1)) + 0.01) * 100) > int(amount):  # Meta states the least it accepts
         raised = math.ceil((float(floor.group(1)) + 0.01) * 100)
         extra = raised - int(amount)
         if extra > args.max_extra_cents:
@@ -80,8 +96,6 @@ def copy_one(graph, acct, old, args, made):
         raise Stop(f"POST adsets failed (code {e.get('code')}): {e.get('message')}. Already created: {', '.join(made) or 'nothing'}")
     new_id = res["id"]
     made.append(f"adset {new_id}")
-    ads = [a for a in need(graph, "GET", f"{old['id']}/ads", {"fields": "id,name,effective_status,creative{id}", "limit": "50"}, made)["data"]
-           if a["effective_status"] == "ACTIVE"]
     new_ads = []
     for ad in ads:
         r = need(graph, "POST", f"act_{acct}/ads", {"name": ad["name"], "adset_id": new_id, "creative": {"creative_id": ad["creative"]["id"]}, "status": "PAUSED"}, made)
@@ -91,7 +105,11 @@ def copy_one(graph, acct, old, args, made):
         for i in new_ads:
             need(graph, "POST", i, {"status": "ACTIVE"}, made)
         need(graph, "POST", new_id, {"status": "ACTIVE"}, made)
-        need(graph, "POST", old["id"], {"status": "PAUSED"}, made)
+        try:
+            need(graph, "POST", old["id"], {"status": "PAUSED"}, made)
+        except Stop as e:
+            raise Stop(f"BOTH ARE LIVE: copy {new_id} is ACTIVE and the original {old['id']} still runs, so spend can double. "
+                       f"Pause {old['id']} now. Cause: {e}")
     return new_id, len(new_ads)
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -111,13 +129,21 @@ def main():
         say("refused: --activate needs --execute"); return 2
     SECRETS.append(token)
     graph = Graph(token, args.api_version)
-    status, listing = graph.call("GET", f"act_{acct}/adsets", {"fields": FIELDS, "limit": "200"})
-    if "error" in listing:
-        say("listing failed:", listing["error"].get("message")); return 3
-    sets = listing["data"]
+    sets, after = [], None
+    while True:  # follow the cursor, never paging.next: that URL carries the token
+        params = {"fields": FIELDS, "limit": "100", **({"after": after} if after else {})}
+        status, listing = graph.call("GET", f"act_{acct}/adsets", params)
+        if "error" in listing:
+            say("listing failed:", listing["error"].get("message")); return 3
+        sets += listing["data"]
+        after = ((listing.get("paging") or {}).get("cursors") or {}).get("after") if (listing.get("paging") or {}).get("next") else None
+        if not after:
+            break
     have = {s["name"] for s in sets}
     todo = [s for s in sets if s.get("effective_status") == "ACTIVE" and (s.get("promoted_object") or {}).get("custom_event_type") == args.from_event
             and (not args.adset or s["id"] in args.adset)]
+    for s in [s for s in todo if unsupported(s)]:
+        say(f" skip {s['id']} {s['name']}: {unsupported(s)}, which the copy would not keep"); todo.remove(s)
     say(f"{len(todo)} active ad set(s) optimize for {args.from_event}; target {args.to_event}" + ("" if args.execute else " (dry run)"))
     made, skipped, refused = [], 0, 0
     try:
@@ -137,7 +163,7 @@ def main():
         say("stopped:", e)
         say("created so far:", ", ".join(made) or "nothing")
         return 3
-    say(f"done: {len(made)} object(s) created, {skipped} skipped, {refused} refused for budget")
+    say(f"done: {len(made)} object(s) created, {skipped} skipped, {refused} refused")
     return 2 if refused else 0
 if __name__ == "__main__":
     sys.exit(main())

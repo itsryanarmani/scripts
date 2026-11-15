@@ -11,6 +11,12 @@ Ways a switch can fail, written before the tool. Each one is a case below:
  7. The token shows in output or in a URL.
  8. An ad create fails midway: the original is paused, or the created objects are not listed.
  9. A paused ad set, or an ad set with another event, is copied.
+10. The original cannot be paused: both ad sets run and the output does not say so.
+11. An ad set with no ACTIVE ad becomes an empty copy that replaces it.
+12. An ad set with a bid cap or dayparting is copied without them.
+13. An error text with "more than N" that is not a budget changes the budget.
+14. A long account is read only to its first page, or paging.next (with the token) is used.
+15. A daily budget, or a missing end time, crashes the tool.
 Set AD_EVENT_SWITCH_TRANSCRIPT=<file> to keep the transcript as the artifact.
 """
 import json, os, subprocess, sys, tempfile, threading
@@ -46,9 +52,14 @@ class Fake(BaseHTTPRequestHandler):
         STATE["paths"].append(self.path), STATE["headers"].append(self.headers.get("Authorization"))
         parts = u.path.strip("/").split("/")[1:]
         if parts[-1] == "adsets":
-            return self.send(200, {"data": list(STATE["sets"].values())})
+            rows = list(STATE["sets"].values())
+            if STATE["mode"].get("paged"):  # one row a page, like a long account; next carries the token as real Graph does
+                got = parse_qs(u.query).get("after")
+                return self.send(200, {"data": rows[1:] if got else rows[:1],
+                                       "paging": {} if got else {"cursors": {"after": "c1"}, "next": f"http://x/?access_token={TOKEN}"}})
+            return self.send(200, {"data": rows})
         if parts[-1] == "ads":
-            return self.send(200, {"data": STATE["ads"].get(parts[0], [])})
+            return self.send(200, {"data": STATE["ads"].get(parts[0], STATE["ads"]["1"])})
         return self.send(200, STATE["sets"].get(parts[0], {}))
     def do_POST(self):
         u = urlparse(self.path)
@@ -60,6 +71,8 @@ class Fake(BaseHTTPRequestHandler):
             return self.err(17, 2446079, "User request limit reached")
         if mode.get("other_error") and parts[-1] == "adsets":
             return self.err(100, 1, "Invalid parameter " + TOKEN)
+        if parts[-1] == "adsets" and mode.get("odd_msg"):
+            return self.err(100, 1, user_msg="You can attach more than 3 ads only after review.")
         if parts[-1] == "adsets":
             floor = STATE["min_budget"]
             if floor and int(body["lifetime_budget"]) < floor:
@@ -67,7 +80,7 @@ class Fake(BaseHTTPRequestHandler):
             STATE["n"] += 1
             nid = str(STATE["n"])
             STATE["sets"][nid] = {**adset(nid, body["name"], status=body["status"], event=json.loads(body["promoted_object"])["custom_event_type"]),
-                                  "budget_remaining": body["lifetime_budget"], "lifetime_budget": body["lifetime_budget"]}
+                                  "budget_remaining": body.get("lifetime_budget", "0"), "lifetime_budget": body.get("lifetime_budget", "0")}
             return self.send(200, {"id": nid})
         if parts[-1] == "ads":
             if mode.get("fail_ad") and any(p[0].endswith("/ads") for p in STATE["posts"][:-1]):
@@ -75,6 +88,8 @@ class Fake(BaseHTTPRequestHandler):
             STATE["n"] += 1
             return self.send(200, {"id": "ad" + str(STATE["n"])})
         if len(parts) == 1 and "status" in body:
+            if mode.get("pause_fails") and parts[0] == "1" and body["status"] == "PAUSED":
+                return self.err(100, 3, "cannot pause")
             if parts[0] in STATE["sets"]:
                 STATE["sets"][parts[0]]["status"] = STATE["sets"][parts[0]]["effective_status"] = body["status"]
             return self.send(200, {"success": True})
@@ -144,7 +159,35 @@ code, out = run(["--execute"], other_error=True)
 check("6/7 another error is not retried, and its token text is scrubbed", code == 3 and out.count("rate limited") == 0 and TOKEN not in out and len([p for p, _ in STATE["posts"] if p.endswith("/adsets")]) == 1, out)
 
 code, out = run(["--execute", "--activate"], fail_ad=True)
-check("8 a failed ad create exits 3, lists what exists and leaves the original running", code == 3 and "created" in out and STATE["sets"]["1"]["status"] == "ACTIVE" and "ACTIVE" not in statuses(), out)
+check("8 a failed ad create exits 3, lists what exists and leaves the original running", code == 3 and "adset 501" in out and STATE["sets"]["1"]["status"] == "ACTIVE" and "ACTIVE" not in statuses(), out)
+
+code, out = run(["--execute", "--activate"], pause_fails=True)
+check("10 a failed pause says both ad sets are live and names the original", code == 3 and "BOTH ARE LIVE" in out and "original 1" in out and STATE["sets"]["501"]["status"] == "ACTIVE", out)
+
+def pending():
+    for a in STATE["ads"]["1"]:
+        a["effective_status"] = "PENDING_REVIEW"
+code, out = run(["--execute", "--activate"], seed=pending)
+check("11 an ad set with no ACTIVE ad creates nothing and the original keeps running", code == 2 and len(STATE["sets"]) == 3 and STATE["sets"]["1"]["status"] == "ACTIVE" and "no ACTIVE ad" in out, out)
+
+code, out = run(["--execute", "--activate"], seed=lambda: STATE["sets"]["1"].update({"bid_strategy": "COST_CAP", "bid_amount": "500"}))
+check("12 an ad set with a cost cap is skipped, not copied without it", code == 0 and not STATE["posts"] and "cost cap" in out, out)
+code, out = run(["--execute", "--activate"], seed=lambda: STATE["sets"]["1"].update({"adset_schedule": [{"start_minute": 0}]}))
+check("12 a dayparted ad set is skipped", not STATE["posts"] and "dayparting" in out, out)
+
+code, out = run(["--execute"], odd_msg=True)
+check("13 an unrelated 'more than N' message does not lower the budget or retry", code == 3 and len([p for p, _ in STATE["posts"] if p.endswith("/adsets")]) == 1, out)
+
+code, out = run(["--execute"], paged=True, seed=lambda: STATE["sets"].update({"4": adset("4", "D funded")}))
+check("14 a second page of ad sets is read, and the token in paging.next is never used", code == 0 and any(s["name"] == "D funded [INITIATED_CHECKOUT]" for s in STATE["sets"].values()) and TOKEN not in "".join(STATE["paths"]) and TOKEN not in out, out)
+
+def daily():
+    STATE["sets"]["1"].update({"daily_budget": "700", "lifetime_budget": "0", "budget_remaining": "0"})
+    for k in ("end_time", "attribution_spec"):
+        STATE["sets"]["1"].pop(k)
+code, out = run(["--execute"], seed=daily)
+sent = [b for p, b in STATE["posts"] if p.endswith("/adsets")]
+check("15 a daily-budget ad set with no end time is copied with a daily budget", code == 0 and sent and sent[0].get("daily_budget") == "700" and "end_time" not in sent[0], out)
 
 if os.environ.get("AD_EVENT_SWITCH_TRANSCRIPT"):
     Path(os.environ["AD_EVENT_SWITCH_TRANSCRIPT"]).write_text("\n".join(TRANSCRIPT).replace(TOKEN, "<token>"))

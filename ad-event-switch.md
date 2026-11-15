@@ -26,25 +26,37 @@ python3 -I ad-event-switch.test.py                                        # E2E 
 | `--max-extra-cents` | Most extra budget one copy may need to meet Meta's minimum. Default 200. |
 | `--env-file`, `META_MARKETING_TOKEN` | The token. Keep the file outside the repository. |
 
-Exit: 0 clean, 2 refused (bad input, or at least one ad set skipped because its minimum budget is over the cap; the others are still copied), 3 a call failed (the output lists what exists).
+Exit: 0 clean, 2 refused (bad input, or at least one ad set refused because its minimum budget is over the cap or it has no ACTIVE ad; the others are still copied), 3 a call failed (the output lists what exists).
 
 ## What a copy keeps
 
-Same campaign, targeting, schedule, bid settings and attribution window. Same ads: each ad keeps its
+Same campaign, targeting, end time, billing event, attribution window and lowest-cost bid strategy. Same ads: each ad keeps its
 `creative_id`, so the ad keeps its post and the likes and comments on it. The pixel stays; only the
 event changes. A copy is named `<old name> [<EVENT>]`, and a rerun skips an ad set that already has one.
+
+The tool skips an ad set that has a bid cap, a cost cap, dayparting or a frequency cap, because the copy would lose them.
+It also refuses an ad set with no ACTIVE ad, so it never replaces a running ad set with an empty one.
+
+## Order of steps
+
+Run `--activate` in the same run as `--execute`. A copy from an earlier `--execute` run counts as existing, so a later
+`--execute --activate` skips it. Activate such a copy by hand in Ads Manager.
+With `--activate`, the tool activates the ads and the copy, then pauses the original. If that last pause fails, the
+output says `BOTH ARE LIVE` and names the original. Pause it at once, or spend can double.
 
 ## Budget
 
 A copy gets the budget that remains on the original, not the original total. Meta sets a minimum
 lifetime budget and states it in the error ("must be more than CA$7.59"). When the remainder is lower,
-the tool retries with that minimum. Total spend then rises by the difference. It skips an ad set whose rise is over
+the tool retries with that minimum. For a lifetime budget, total spend rises once by the difference. For a daily budget,
+the rise repeats each day, so read `--max-extra-cents` as a per-day cap there. It skips an ad set whose rise is over
 `--max-extra-cents`, creates nothing for it, goes on to the next, and prints the amount for any rise it makes.
 
 ## Limits
 
-- The tool reads the first 200 ad sets of the account. Use `--adset` for an account with more.
+- The tool reads every ad set of the account, a page at a time. It follows the cursor, not `paging.next`, because that URL carries the token.
 - It copies ad sets with a lifetime budget or a daily budget. A campaign-level budget is not copied.
+- It copies the first 50 ads of an ad set.
 - The ad account has its own call limit (`code 17`, `subcode 2446079`). The tool waits 60, 120 and 240 seconds, then stops.
 - A new ad set shows `IN_PROCESS` while its ads are in review. That is normal.
 - Check first that the site really sends the new event. Switching to an event that never fires gives empty Results again. See the `ads-meta` skill.
