@@ -13,7 +13,7 @@ exit 2 before any request. Exit codes: 0 pass, 1 a check failed, 2 usage.
 GETs only, UA `adsense-check/1.0 (+ownership check)`, 15 s socket timeout,
 30 s deadline via `SIGALRM`/`setitimer` watchdog (Unix; covers DNS, TLS,
 headers, chunk sizes, body, redirect chain, slow parse — elsewhere the
-8 KB-chunk check), ≤3 redirects on http/https within the site host or its
+body-read chunk check), ≤3 redirects on http/https within the site host or its
 `www.`/apex pair, no cookies, bodies never printed. `ADSENSE_CHECK_TEST_*`
 env vars are test-only and warn on stderr.
 

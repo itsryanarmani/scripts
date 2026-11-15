@@ -106,9 +106,8 @@ def meta_ids(html):
     try: slow = float(os.environ.get("ADSENSE_CHECK_TEST_SLOW_PARSE") or 0)
     except ValueError: slow = 0
     try:
-        for i in range(0, len(html), 8192):
-            p.feed(html[i:i + 8192])
-            if 0 < slow < 60: time.sleep(slow)
+        if 0 < slow < 60: time.sleep(slow)
+        p.feed(html)
     except DeadlineExceeded: raise
     except Exception: pass
     pick = lambda tags: [t.get("content", "") for t in tags
