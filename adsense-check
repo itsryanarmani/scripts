@@ -93,6 +93,7 @@ class MetaParser(HTMLParser):
         if t == "noscript": self._noscript += 1
         elif t == "body": self._in_body = True
         elif t == "meta": self._meta(attrs)
+        elif t not in ("html", "head", "base", "link", "title", "style", "script", "template"): self._in_body = True
 
     def handle_endtag(self, tag):
         t = tag.lower()
@@ -136,14 +137,11 @@ def main():
     ap.add_argument("publisher_id", help="ca-pub-<16 digits> or pub-<16 digits>")
     ap.add_argument("--json", action="store_true", help="print one JSON object")
     args = ap.parse_args()
-    for v in ("ADSENSE_CHECK_TEST_BASE_URL", "ADSENSE_CHECK_TEST_DEADLINE", "ADSENSE_CHECK_TEST_NO_WATCHDOG"):
+    for v in ("ADSENSE_CHECK_TEST_BASE_URL", "ADSENSE_CHECK_TEST_DEADLINE", "ADSENSE_CHECK_TEST_NO_WATCHDOG", "ADSENSE_CHECK_TEST_SLOW_PARSE"):
         if os.environ.get(v): print(f"adsense-check: test override active: {v}", file=sys.stderr)
 
     m = re.match(r"^(?:ca-pub-|pub-)([0-9]{16})$", (args.publisher_id or "").strip())
-    if not m:
-        print(f"adsense-check: bad publisher id {args.publisher_id!r}; "
-              "want ca-pub-<16 digits> or pub-<16 digits>", file=sys.stderr)
-        return 2
+    if not m: print(f"adsense-check: bad publisher id {args.publisher_id!r}; want ca-pub-<16 digits> or pub-<16 digits>", file=sys.stderr); return 2
     pub = "ca-pub-" + m.group(1)
     digits = m.group(1)
 
@@ -152,9 +150,10 @@ def main():
     site_host = (urllib.parse.urlparse(base).hostname or "").lower() if base else domain
     apex = site_host[4:] if site_host.startswith("www.") else site_host
     allowed = {site_host, apex, "www." + apex}  # host pair only; no suffix guessing
-    urls = {"ads.txt": f"{base}/ads.txt" if base else f"https://{domain}/ads.txt",
-            "home": f"{base}/" if base else f"https://{domain}/"}
-    budget = float(os.environ.get("ADSENSE_CHECK_TEST_DEADLINE") or DEADLINE)
+    urls = {"ads.txt": f"{base}/ads.txt" if base else f"https://{domain}/ads.txt", "home": f"{base}/" if base else f"https://{domain}/"}
+    try: budget = float(os.environ.get("ADSENSE_CHECK_TEST_DEADLINE") or DEADLINE)
+    except ValueError: budget = DEADLINE
+    if budget <= 0: budget = DEADLINE
     deadline = time.monotonic() + budget
 
     checks, results, ok = [], {}, True
@@ -170,7 +169,7 @@ def main():
     watchdog = hasattr(signal, "setitimer") and not os.environ.get("ADSENSE_CHECK_TEST_NO_WATCHDOG")
     if watchdog:
         def _al(s, f): raise DeadlineExceeded(budget)
-        signal.signal(signal.SIGALRM, _al); signal.setitimer(signal.ITIMER_REAL, budget)
+        prev = signal.signal(signal.SIGALRM, _al); signal.setitimer(signal.ITIMER_REAL, budget)
     try:
         bodies = {}
         for key, url in urls.items():
@@ -199,6 +198,8 @@ def main():
             record("meta tag", "fail", hm["error"] or f"home page status {hm['status']}, want 200")
         else:
             page = hm["body"].decode("utf-8-sig", "replace")
+            try: time.sleep(float(os.environ.get("ADSENSE_CHECK_TEST_SLOW_PARSE") or 0))
+            except ValueError: pass
             head_ids, outside_ids = meta_ids(page)
             if outside_ids:
                 record("meta tag position", "info", "meta tag found outside head")
@@ -216,14 +217,15 @@ def main():
             record("ad script", "info", "adsbygoogle.js present" if "adsbygoogle.js" in page
                    else "adsbygoogle.js not present in home page HTML")
 
-        if args.json:
-            print(json.dumps({"ok": ok, "publisher_id": pub, "domain": domain, "checks": checks, "fetches": results}, indent=2))
-        else:
-            print(f"adsense-check: {'ok' if ok else 'failed'}")
     except DeadlineExceeded:
         record("run", "fail", "deadline exceeded")
     finally:
-        if watchdog: signal.setitimer(signal.ITIMER_REAL, 0)
+        if watchdog:
+            signal.setitimer(signal.ITIMER_REAL, 0); signal.signal(signal.SIGALRM, prev)
+    if args.json:
+        print(json.dumps({"ok": ok, "publisher_id": pub, "domain": domain, "checks": checks, "fetches": results}, indent=2))
+    else:
+        print(f"adsense-check: {'ok' if ok else 'failed'}")
     return 0 if ok else 1
 
 

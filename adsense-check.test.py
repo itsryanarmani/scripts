@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """E2E for adsense-check. Local http.server fixture; no real network.
 
-ads.txt 404, wrong content type, HTML soft-404, wrong/uppercase cert id
-FAIL; BOM and trailing comment PASS. Meta tag missing, duplicated, wrong/
-bare-pub-/two ids, <noscript>/<body> FAIL. Off-domain, sibling and ftp:
-redirects FAIL even when the target is valid; www-to-apex PASSes. Bad ids
-exit 2 unfetched. Only GETs to the two URLs. --json has status/hops, no
-bodies. Trickling body, headers and chunk sizes hit the deadline.
+ads.txt and meta-tag failure modes FAIL; valid variants PASS. Redirects
+off the host pair, sibling subdomains and ftp: FAIL; www-to-apex PASSes.
+Bad ids exit 2 unfetched. Only GETs. --json has status/hops, no bodies.
+Trickling body/headers/chunk sizes and a slow parse hit the deadline with
+final output still printed.
 """
 import json, os, re, socket, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,8 +52,7 @@ class Fake(BaseHTTPRequestHandler):
         status, headers, body = spec
         self.send_response(status)
         for k, v in headers.items(): self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body.encode())
+        self.end_headers(); self.wfile.write(body.encode())
 
     def _reject(self): self._record(); self.send_error(501)
     do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _reject
@@ -81,9 +79,8 @@ def site(ads=None, page=None):
 
 def env_for(base, deadline=None, nowd=False):
     env = {k: v for k, v in os.environ.items() if not k.startswith("ADSENSE_CHECK_")}
-    env["ADSENSE_CHECK_TEST_BASE_URL"] = base
-    env["ADSENSE_CHECK_TEST_DEADLINE"] = str(deadline or 30)
-    if nowd: env["ADSENSE_CHECK_TEST_NO_WATCHDOG"] = "1"
+    env["ADSENSE_CHECK_TEST_BASE_URL"], env["ADSENSE_CHECK_TEST_DEADLINE"] = base, str(deadline or 30)
+    env["ADSENSE_CHECK_TEST_NO_WATCHDOG"] = "1" if nowd else ""
     return env
 
 
@@ -130,9 +127,7 @@ def main():
     other = "ca-pub-" + "1" * 16  # synthetic id, clearly not a real publisher
 
     def redir(routes):
-        def f():
-            site()  # wildcard fallback serves every other host a valid site
-            ROUTES.update({k: ("redirect", v) for k, v in routes.items()})
+        def f(): site(); ROUTES.update({k: ("redirect", v) for k, v in routes.items()})  # wildcards serve other hosts valid sites
         return f
 
     page = lambda p: (lambda: site(page=home(p)))
@@ -147,18 +142,15 @@ def main():
         ("bom and comment pass", base, lambda: site(ads=plain("\ufeff" + ADS_OK.rstrip("\n") + " # main\n")), OKW),
         ("meta tag missing fails", base, page("<html><head></head><body>x</body></html>"), ["FAIL meta tag"]),
         ("meta tag twice fails", base, page(HOME_OK.replace("</head>", META + "</head>")), ["FAIL meta tag"]),
-        ("meta tag two ids fails", base,
-         page(f'<html><head>{META}<meta name="google-adsense-account" content="{other}"></head><body>x</body></html>'),
-         ["FAIL meta tag", re.escape(other), re.escape(PUB)]),
+        ("meta tag two ids fails", base, page(f'<html><head>{META}<meta name="google-adsense-account" content="{other}"></head><body>x</body></html>'), ["FAIL meta tag", re.escape(other), re.escape(PUB)]),
         ("meta tag wrong id fails", base, page(HOME_OK.replace(PUB, other)), ["FAIL meta tag", re.escape(other), re.escape(PUB)]),
         ("meta tag in noscript fails", base, page(f"<html><head><noscript>{META}</noscript></head><body>x</body></html>"), ["FAIL meta tag"]),
         ("meta tag in body fails", base, page(f"<html><head></head><body>{META}</body></html>"), ["FAIL meta tag", "outside head"]),
         ("meta tag bare pub- fails", base, page(HOME_OK.replace(PUB, "pub-" + DIG)), ["FAIL meta tag"]),
-        ("meta tag after head text fails", base,
-         page(f"<html><head></head>stray text{META}</html>"), ["FAIL meta tag", "outside head"]),
+        ("meta tag after head text fails", base, page(f"<html><head></head>stray text{META}</html>"), ["FAIL meta tag", "outside head"]),
+        ("meta tag after body content fails", base, page(f"<p>hi</p>{META}"), ["FAIL meta tag", "outside head"]),
         ("redirect off-domain fails", lbase,
-         redir({("localhost", "/ads.txt"): f"http://127.0.0.1:{port}/ads.txt",
-                ("localhost", "/"): f"http://127.0.0.1:{port}/"}),
+         redir({("localhost", "/ads.txt"): f"http://127.0.0.1:{port}/ads.txt", ("localhost", "/"): f"http://127.0.0.1:{port}/"}),
          ["FAIL", "left the site domain"], lambda: only_two_gets() + no_host("127.0.0.1")()),
         ("ftp redirect fails", lbase, redir({("localhost", "/ads.txt"): "ftp://localhost/x"}), ["FAIL ads.txt", "unsupported URL"]),
         ("trickle body hits deadline", base, lambda: site(ads=("trickle",)), ["deadline exceeded"], FAST, 1.0, True),
@@ -186,14 +178,12 @@ def main():
     # --json parses, carries status codes and hops, leaks no body text.
     site(ads=plain(ADS_OK + f"# {SENT}\n"), page=home(HOME_OK.replace("</body>", f"<!-- {SENT} --></body>")))
     r, doc = json_run(base)
-    bad = [f"exit {r.returncode} != 0"] if r.returncode != 0 else []
-    bad += [] if doc.get("ok") is True else ["json ok is not true"]
+    bad = ([f"exit {r.returncode} != 0"] if r.returncode != 0 else []) + ([] if doc.get("ok") is True else ["json ok is not true"])
     for k in ("ads.txt", "home"):
         f = doc.get("fetches", {}).get(k, {})
         if f.get("status") != 200 or (f.get("hops") or [{}])[-1].get("status") != 200: bad.append(f"fetches.{k} lacks status/hops")
     bad += ["response body leaked"] if SENT in r.stdout + r.stderr else []
-    print(("  ok   " if not bad else "  FAIL ") + "json output clean" + ("" if not bad else f": {bad}"))
-    fails += bad
+    print(("  ok   " if not bad else "  FAIL ") + "json output clean" + ("" if not bad else f": {bad}")); fails += bad
 
     # --json records every redirect hop (www to apex fixture).
     bad = []
@@ -204,8 +194,18 @@ def main():
         try: hops = [h["status"] for h in doc["fetches"]["ads.txt"]["hops"]]
         except Exception as e: hops = []; bad = [f"json hops: {e}"]
         if not bad: bad = [] if hops == [301, 200] else [f"hops {hops}"]
-    print(("  ok   " if not bad else "  FAIL ") + "json redirect hops" + ("" if not bad else f": {bad}"))
-    fails += bad
+    print(("  ok   " if not bad else "  FAIL ") + "json redirect hops" + ("" if not bad else f": {bad}")); fails += bad
+
+    # Alarm outside fetch (slow parse): final line and --json output still print.
+    site(); e = env_for(base, 1.0); e["ADSENSE_CHECK_TEST_SLOW_PARSE"] = "3"
+    r = subprocess.run([str(TOOL), "example.com", PUB], env=e, capture_output=True, text=True, timeout=25)
+    out = r.stdout + r.stderr
+    bad = [] if r.returncode == 1 and "deadline exceeded" in out and "adsense-check: failed" in out else ["final line missing"]
+    r = subprocess.run([str(TOOL), "example.com", PUB, "--json"], env=e, capture_output=True, text=True, timeout=25)
+    try: j = json.loads(r.stdout)
+    except Exception as ex: j = {}; bad += [f"json stdout: {ex}"]
+    bad += [] if r.returncode == 1 and j.get("ok") is False else ["json ok not false"]
+    print(("  ok   " if not bad else "  FAIL ") + "deadline outside fetch" + ("" if not bad else f": {bad}")); fails += bad
 
     srv.shutdown()
     print(f"{'PASS' if not fails else 'FAIL'}: {len(fails)} problem(s)")
