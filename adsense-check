@@ -93,7 +93,7 @@ class MetaParser(HTMLParser):
         if t == "noscript": self._noscript += 1
         elif t == "body": self._in_body = True
         elif t == "meta": self._meta(attrs)
-        elif t not in ("html", "head", "base", "link", "title", "style", "script", "template"): self._in_body = True
+        elif not self._noscript and t not in ("html", "head", "base", "link", "title", "style", "script", "template"): self._in_body = True
 
     def handle_endtag(self, tag):
         t = tag.lower()
@@ -103,7 +103,13 @@ class MetaParser(HTMLParser):
 
 def meta_ids(html):
     p = MetaParser()
-    try: p.feed(html)
+    try: slow = float(os.environ.get("ADSENSE_CHECK_TEST_SLOW_PARSE") or 0)
+    except ValueError: slow = 0
+    try:
+        for i in range(0, len(html), 65536):
+            p.feed(html[i:i + 65536])
+            if 0 < slow < 60: time.sleep(slow)
+    except DeadlineExceeded: raise
     except Exception: pass
     pick = lambda tags: [t.get("content", "") for t in tags
                          if t.get("name", "").lower() == "google-adsense-account"]
@@ -153,7 +159,7 @@ def main():
     urls = {"ads.txt": f"{base}/ads.txt" if base else f"https://{domain}/ads.txt", "home": f"{base}/" if base else f"https://{domain}/"}
     try: budget = float(os.environ.get("ADSENSE_CHECK_TEST_DEADLINE") or DEADLINE)
     except ValueError: budget = DEADLINE
-    if budget <= 0: budget = DEADLINE
+    if not 0 < budget < float("inf"): budget = DEADLINE
     deadline = time.monotonic() + budget
 
     checks, results, ok = [], {}, True
@@ -198,8 +204,6 @@ def main():
             record("meta tag", "fail", hm["error"] or f"home page status {hm['status']}, want 200")
         else:
             page = hm["body"].decode("utf-8-sig", "replace")
-            try: time.sleep(float(os.environ.get("ADSENSE_CHECK_TEST_SLOW_PARSE") or 0))
-            except ValueError: pass
             head_ids, outside_ids = meta_ids(page)
             if outside_ids:
                 record("meta tag position", "info", "meta tag found outside head")

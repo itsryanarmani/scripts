@@ -4,8 +4,7 @@
 ads.txt and meta-tag failure modes FAIL; valid variants PASS. Redirects
 off the host pair, sibling subdomains and ftp: FAIL; www-to-apex PASSes.
 Bad ids exit 2 unfetched. Only GETs. --json has status/hops, no bodies.
-Trickling body/headers/chunk sizes and a slow parse hit the deadline with
-final output still printed.
+Deadline cases (trickles, slow parse, in-parse) end rc 1 with final output.
 """
 import json, os, re, socket, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +16,7 @@ DIG = "0000000000000000"
 ADS_OK = f"google.com, pub-{DIG}, DIRECT, f08c47fec0942fa0\n"
 META = f'<meta name="google-adsense-account" content="{PUB}">'
 HOME_OK = f"<html><head>{META}</head><body>example</body></html>"
+BIGPAGE = f"<html><head>{META}</head><body>{'<p>x</p>' * 150000}</body></html>"
 SENT = "BODY-SENTINEL-9f3e"
 OKW = ["PASS ads.txt", "PASS meta tag", "adsense-check: ok"]
 FW = ["FAIL ads.txt", "adsense-check: failed"]
@@ -145,6 +145,7 @@ def main():
         ("meta tag two ids fails", base, page(f'<html><head>{META}<meta name="google-adsense-account" content="{other}"></head><body>x</body></html>'), ["FAIL meta tag", re.escape(other), re.escape(PUB)]),
         ("meta tag wrong id fails", base, page(HOME_OK.replace(PUB, other)), ["FAIL meta tag", re.escape(other), re.escape(PUB)]),
         ("meta tag in noscript fails", base, page(f"<html><head><noscript>{META}</noscript></head><body>x</body></html>"), ["FAIL meta tag"]),
+        ("meta tag after noscript img passes", base, page(f"<html><head><noscript><img src=x></noscript>{META}</head><body>x</body></html>"), OKW),
         ("meta tag in body fails", base, page(f"<html><head></head><body>{META}</body></html>"), ["FAIL meta tag", "outside head"]),
         ("meta tag bare pub- fails", base, page(HOME_OK.replace(PUB, "pub-" + DIG)), ["FAIL meta tag"]),
         ("meta tag after head text fails", base, page(f"<html><head></head>stray text{META}</html>"), ["FAIL meta tag", "outside head"]),
@@ -156,6 +157,7 @@ def main():
         ("trickle body hits deadline", base, lambda: site(ads=("trickle",)), ["deadline exceeded"], FAST, 1.0, True),
         ("header trickle hits deadline", base, lambda: site(ads=("hdrtrickle",)), ["deadline exceeded"], FAST, 1.0),
         ("chunked trickle hits deadline", base, lambda: site(ads=("chunktrickle",)), ["deadline exceeded"], FAST, 1.0),
+        ("slow parse hits deadline", base, page(BIGPAGE), ["deadline exceeded", "adsense-check: failed"], FAST, 0.4),
     ]
     if resolves("www.localhost"):
         rows.append(("www to apex redirect passes", f"http://www.localhost:{port}",
@@ -199,8 +201,7 @@ def main():
     # Alarm outside fetch (slow parse): final line and --json output still print.
     site(); e = env_for(base, 1.0); e["ADSENSE_CHECK_TEST_SLOW_PARSE"] = "3"
     r = subprocess.run([str(TOOL), "example.com", PUB], env=e, capture_output=True, text=True, timeout=25)
-    out = r.stdout + r.stderr
-    bad = [] if r.returncode == 1 and "deadline exceeded" in out and "adsense-check: failed" in out else ["final line missing"]
+    bad = [] if r.returncode == 1 and "deadline exceeded" in r.stdout + r.stderr and "adsense-check: failed" in r.stdout + r.stderr else ["final line missing"]
     r = subprocess.run([str(TOOL), "example.com", PUB, "--json"], env=e, capture_output=True, text=True, timeout=25)
     try: j = json.loads(r.stdout)
     except Exception as ex: j = {}; bad += [f"json stdout: {ex}"]

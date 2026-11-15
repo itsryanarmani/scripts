@@ -4,8 +4,8 @@ Verifies AdSense ownership proofs — an `ads.txt` line and a
 `google-adsense-account` meta tag — by GETting `/ads.txt` and `/`. Stdlib only.
 
 ```sh
-./adsense-check example.com ca-pub-0000000000000000
-python3 -I adsense-check.test.py   # local http.server fixture (--json: one JSON object)
+./adsense-check <domain> <publisher-id> [--json]
+python3 -I adsense-check.test.py   # local http.server fixture
 ```
 
 `<publisher-id>` is `ca-pub-` + 16 ASCII digits (`pub-` normalized); else
