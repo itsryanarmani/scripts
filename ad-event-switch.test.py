@@ -17,9 +17,11 @@ Ways a switch can fail, written before the tool. Each one is a case below:
 13. An error text with "more than N" that is not a budget changes the budget.
 14. A long account is read only to its first page, or paging.next (with the token) is used.
 15. A daily budget, or a missing end time, crashes the tool.
+16. An ad set whose budget sits on the campaign is copied with budget 0.
+17. A dropped connection ends the run with a traceback and loses the list of what exists.
 Set AD_EVENT_SWITCH_TRANSCRIPT=<file> to keep the transcript as the artifact.
 """
-import json, os, subprocess, sys, tempfile, threading
+import json, os, socket, subprocess, sys, tempfile, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -66,6 +68,9 @@ class Fake(BaseHTTPRequestHandler):
         body = {k: v[0] for k, v in parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()).items()}
         STATE["posts"].append((u.path, body)), STATE["headers"].append(self.headers.get("Authorization"))
         mode, parts = STATE["mode"], u.path.strip("/").split("/")[1:]
+        if mode.get("drop_on") and parts[-1] == mode["drop_on"]:  # close the socket with no reply
+            self.close_connection = True
+            return self.request.shutdown(socket.SHUT_RDWR)
         if mode.get("rate_limit") and STATE["rl"] < mode["rate_limit"]:
             STATE["rl"] += 1
             return self.err(17, 2446079, "User request limit reached")
@@ -171,9 +176,13 @@ code, out = run(["--execute", "--activate"], seed=pending)
 check("11 an ad set with no ACTIVE ad creates nothing and the original keeps running", code == 2 and len(STATE["sets"]) == 3 and STATE["sets"]["1"]["status"] == "ACTIVE" and "no ACTIVE ad" in out, out)
 
 code, out = run(["--execute", "--activate"], seed=lambda: STATE["sets"]["1"].update({"bid_strategy": "COST_CAP", "bid_amount": "500"}))
-check("12 an ad set with a cost cap is skipped, not copied without it", code == 0 and not STATE["posts"] and "cost cap" in out, out)
+check("12 an ad set with a cost cap is refused (exit 2), not copied without it", code == 2 and not STATE["posts"] and "cost cap" in out, out)
 code, out = run(["--execute", "--activate"], seed=lambda: STATE["sets"]["1"].update({"adset_schedule": [{"start_minute": 0}]}))
-check("12 a dayparted ad set is skipped", not STATE["posts"] and "dayparting" in out, out)
+check("12 a dayparted ad set is refused (exit 2)", code == 2 and not STATE["posts"] and "dayparting" in out, out)
+code, out = run(["--execute"], seed=lambda: STATE["sets"]["1"].update({"budget_remaining": "0", "daily_budget": "0"}))
+check("16 an ad set with no budget of its own is refused, not copied with budget 0", code == 2 and not STATE["posts"] and "campaign" in out, out)
+code, out = run(["--execute", "--activate"], drop_on="adsets")
+check("17 a dropped connection exits 3 with a message and no traceback", code == 3 and "Traceback" not in out and "no usable reply" in out, out)
 
 code, out = run(["--execute"], odd_msg=True)
 check("13 an unrelated 'more than N' message does not lower the budget or retry", code == 3 and len([p for p, _ in STATE["posts"] if p.endswith("/adsets")]) == 1, out)

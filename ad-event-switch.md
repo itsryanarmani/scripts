@@ -26,7 +26,7 @@ python3 -I ad-event-switch.test.py                                        # E2E 
 | `--max-extra-cents` | Most extra budget one copy may need to meet Meta's minimum. Default 200. |
 | `--env-file`, `META_MARKETING_TOKEN` | The token. Keep the file outside the repository. |
 
-Exit: 0 clean, 2 refused (bad input, or at least one ad set refused because its minimum budget is over the cap or it has no ACTIVE ad; the others are still copied), 3 a call failed (the output lists what exists).
+Exit: 0 clean, 2 refused (bad input, or at least one ad set refused because its minimum budget is over the cap or it has no ACTIVE ad or a setting the tool cannot copy; the others are still copied), 3 a call failed (the output lists what exists).
 
 ## What a copy keeps
 
@@ -34,7 +34,7 @@ Same campaign, targeting, end time, billing event, attribution window and lowest
 `creative_id`, so the ad keeps its post and the likes and comments on it. The pixel stays; only the
 event changes. A copy is named `<old name> [<EVENT>]`, and a rerun skips an ad set that already has one.
 
-The tool skips an ad set that has a bid cap, a cost cap, dayparting or a frequency cap, because the copy would lose them.
+The tool refuses an ad set that has a bid cap, a cost cap, dayparting, a frequency cap, or a budget on the campaign, because the copy would lose it. A refusal counts in the summary and gives exit 2.
 It also refuses an ad set with no ACTIVE ad, so it never replaces a running ad set with an empty one.
 
 ## Order of steps

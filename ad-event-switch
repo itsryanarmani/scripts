@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ad-event-switch: move Meta ad sets to a new conversion event by copying them. Dry run by default.
 Meta refuses to edit the event of a published ad set, so each ad set is copied. See ad-event-switch.md."""
-import argparse, json, math, os, re, sys, time
+import argparse, http.client, json, math, os, re, sys, time
 import urllib.error, urllib.parse, urllib.request
 RATE_LIMIT = (17, 2446079)  # ads-management "user request limit reached"; nothing else is retried
 WAITS = (60, 120, 240)
@@ -38,14 +38,15 @@ class Graph:
         req = urllib.request.Request(url, data=None if method == "GET" else enc.encode(), method=method,
                                      headers={"Authorization": f"Bearer {self.token}"})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                return r.status, json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            raw = e.read()
-            err = json.loads(raw).get("error", {}) if raw.strip().startswith(b"{") else {}
-            return e.code, {"error": {"code": err.get("code"), "subcode": err.get("error_subcode"), "message": scrub(err.get("error_user_msg") or err.get("message", ""))}}
-        except (urllib.error.URLError, TimeoutError, ValueError) as e:  # network failure or a non-JSON reply
-            return 0, {"error": {"code": None, "subcode": None, "message": scrub(f"no usable reply: {e}")}}
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                raw = e.read()
+                err = json.loads(raw).get("error", {}) if raw.strip().startswith(b"{") else {}
+                return e.code, {"error": {"code": err.get("code"), "subcode": err.get("error_subcode"), "message": scrub(err.get("error_user_msg") or err.get("message", ""))}}
+        except (OSError, http.client.HTTPException, ValueError) as e:  # a dropped connection, a short read, or a body that is not JSON
+            return 0, {"error": {"code": None, "subcode": None, "message": scrub(f"no usable reply: {type(e).__name__}")}}
 class Stop(Exception):
     """A write failed. The message lists what exists."""
 class Skip(Exception):
@@ -67,6 +68,8 @@ def unsupported(old):
         return "it has a bid cap or cost cap"
     if old.get("adset_schedule") or old.get("frequency_control_specs"):
         return "it has dayparting or a frequency cap"
+    if not int(old.get("daily_budget") or 0) and not int(old.get("budget_remaining") or 0):
+        return "its budget sits on the campaign, or nothing remains"
     return None
 def copy_one(graph, acct, old, args, made):
     name = f"{old['name']} [{args.to_event}]"
@@ -142,8 +145,9 @@ def main():
     have = {s["name"] for s in sets}
     todo = [s for s in sets if s.get("effective_status") == "ACTIVE" and (s.get("promoted_object") or {}).get("custom_event_type") == args.from_event
             and (not args.adset or s["id"] in args.adset)]
+    unsafe = 0
     for s in [s for s in todo if unsupported(s)]:
-        say(f" skip {s['id']} {s['name']}: {unsupported(s)}, which the copy would not keep"); todo.remove(s)
+        say(f" refused {s['id']} {s['name']}: {unsupported(s)}, so a copy would differ. Nothing created for it."); todo.remove(s); unsafe += 1
     say(f"{len(todo)} active ad set(s) optimize for {args.from_event}; target {args.to_event}" + ("" if args.execute else " (dry run)"))
     made, skipped, refused = [], 0, 0
     try:
@@ -163,6 +167,7 @@ def main():
         say("stopped:", e)
         say("created so far:", ", ".join(made) or "nothing")
         return 3
+    refused += unsafe
     say(f"done: {len(made)} object(s) created, {skipped} skipped, {refused} refused")
     return 2 if refused else 0
 if __name__ == "__main__":
