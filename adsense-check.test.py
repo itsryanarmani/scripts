@@ -5,8 +5,8 @@ ads.txt 404, wrong content type, HTML soft-404, wrong/uppercase cert id
 FAIL; BOM and trailing comment PASS. Meta tag missing, duplicated, wrong/
 bare-pub-/two ids, <noscript>/<body> FAIL. Off-domain, sibling and ftp:
 redirects FAIL even when the target is valid; www-to-apex PASSes. Bad ids
-exit 2 unfetched. Only GETs to the two URLs. --json has status/hops, no bodies.
-A trickling body hits the deadline.
+exit 2 unfetched. Only GETs to the two URLs. --json has status/hops, no
+bodies. Trickling body, headers and chunk sizes hit the deadline.
 """
 import json, os, re, socket, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,54 +21,48 @@ HOME_OK = f"<html><head>{META}</head><body>example</body></html>"
 SENT = "BODY-SENTINEL-9f3e"
 OKW = ["PASS ads.txt", "PASS meta tag", "adsense-check: ok"]
 FW = ["FAIL ads.txt", "adsense-check: failed"]
+FAST = lambda: [] if LAST[0] < 5 else [f"ran {LAST[0]:.1f}s"]  # deadline cases must not hang
 
-ROUTES = {}  # (host, path) -> (status, headers, body), ("redirect", loc) or ("trickle",)
+ROUTES = {}  # (host, path) -> (status, headers, body), ("redirect", loc) or ("*trickle",)
 LOG = []     # (method, host, path); every request method is logged
+LAST = [0.0]  # wall seconds of the last run()
 
 
 class Fake(BaseHTTPRequestHandler):
     log_message = lambda *a: None
 
-    def _record(self):
-        LOG.append((self.command, self.headers.get("Host", "").split(":")[0], self.path))
+    def _record(self): LOG.append((self.command, self.headers.get("Host", "").split(":")[0], self.path))
 
     def do_GET(self):
         self._record()
         host = self.headers.get("Host", "").split(":")[0]
         spec = (ROUTES.get((host, self.path)) or ROUTES.get(("*", self.path)) or (404, {}, "x"))
         if spec[0] == "redirect":
-            self.send_response(301)
-            self.send_header("Location", spec[1])
-            self.end_headers()
-            return
-        if spec[0] == "trickle":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
+            self.send_response(301); self.send_header("Location", spec[1]); self.end_headers(); return
+        if spec[0] in ("trickle", "hdrtrickle", "chunktrickle"):
+            if spec[0] == "hdrtrickle":
+                self.wfile.write(b"HTTP/1.1 200 OK\r\n"); self.wfile.flush()
+            else:
+                self.send_response(200); self.send_header("Content-Type", "text/plain")
+                if spec[0] == "chunktrickle": self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
             try:
-                while True:
-                    self.wfile.write(b"x"); self.wfile.flush(); time.sleep(0.2)
-            except OSError:
-                pass
+                while True: self.wfile.write(b"X"); self.wfile.flush(); time.sleep(0.2)
+            except OSError: pass
             return
         status, headers, body = spec
         self.send_response(status)
-        for k, v in headers.items():
-            self.send_header(k, v)
+        for k, v in headers.items(): self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def _reject(self):
-        self._record()
-        self.send_error(501)
-
+    def _reject(self): self._record(); self.send_error(501)
     do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _reject
 
 
 def serve():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, srv.server_port
+    threading.Thread(target=srv.serve_forever, daemon=True).start(); return srv, srv.server_port
 
 
 def plain(body=ADS_OK, ctype="text/plain"):
@@ -80,26 +74,28 @@ def home(body=HOME_OK):
 
 
 def site(ads=None, page=None):
-    ROUTES.clear()
-    LOG.clear()
+    ROUTES.clear(); LOG.clear()
     ROUTES[("*", "/ads.txt")] = ads if ads is not None else plain()
     ROUTES[("*", "/")] = page if page is not None else home()
 
 
-def env_for(base, deadline=None):
+def env_for(base, deadline=None, nowd=False):
     env = {k: v for k, v in os.environ.items() if not k.startswith("ADSENSE_CHECK_")}
     env["ADSENSE_CHECK_TEST_BASE_URL"] = base
-    if deadline: env["ADSENSE_CHECK_TEST_DEADLINE"] = str(deadline)
+    env["ADSENSE_CHECK_TEST_DEADLINE"] = str(deadline or 30)
+    if nowd: env["ADSENSE_CHECK_TEST_NO_WATCHDOG"] = "1"
     return env
 
 
-def run(name, base, pub=PUB, args=(), fix=None, want_rc=1, want=(), check=None, deadline=None):
+def run(name, base, pub=PUB, args=(), fix=None, want_rc=1, want=(), check=None, deadline=None, nowd=False):
     (fix or site)()
+    t = time.monotonic()
     try:
-        r = subprocess.run([str(TOOL), "example.com", pub, *args], env=env_for(base, deadline),
+        r = subprocess.run([str(TOOL), "example.com", pub, *args], env=env_for(base, deadline, nowd),
                            capture_output=True, text=True, timeout=25)
     except subprocess.TimeoutExpired:
         print(f"  FAIL {name}: subprocess timed out"); return ["timeout"]
+    LAST[0] = time.monotonic() - t
     out = r.stdout + r.stderr
     bad = [f"exit {r.returncode} != {want_rc}"] if r.returncode != want_rc else []
     bad += [f"missing {w!r}" for w in want if not re.search(w, out)]
@@ -158,12 +154,16 @@ def main():
         ("meta tag in noscript fails", base, page(f"<html><head><noscript>{META}</noscript></head><body>x</body></html>"), ["FAIL meta tag"]),
         ("meta tag in body fails", base, page(f"<html><head></head><body>{META}</body></html>"), ["FAIL meta tag", "outside head"]),
         ("meta tag bare pub- fails", base, page(HOME_OK.replace(PUB, "pub-" + DIG)), ["FAIL meta tag"]),
+        ("meta tag after head text fails", base,
+         page(f"<html><head></head>stray text{META}</html>"), ["FAIL meta tag", "outside head"]),
         ("redirect off-domain fails", lbase,
          redir({("localhost", "/ads.txt"): f"http://127.0.0.1:{port}/ads.txt",
                 ("localhost", "/"): f"http://127.0.0.1:{port}/"}),
          ["FAIL", "left the site domain"], lambda: only_two_gets() + no_host("127.0.0.1")()),
         ("ftp redirect fails", lbase, redir({("localhost", "/ads.txt"): "ftp://localhost/x"}), ["FAIL ads.txt", "unsupported URL"]),
-        ("trickle body hits deadline", base, lambda: site(ads=("trickle",)), ["deadline exceeded"], None, 1.0),
+        ("trickle body hits deadline", base, lambda: site(ads=("trickle",)), ["deadline exceeded"], FAST, 1.0, True),
+        ("header trickle hits deadline", base, lambda: site(ads=("hdrtrickle",)), ["deadline exceeded"], FAST, 1.0),
+        ("chunked trickle hits deadline", base, lambda: site(ads=("chunktrickle",)), ["deadline exceeded"], FAST, 1.0),
     ]
     if resolves("www.localhost"):
         rows.append(("www to apex redirect passes", f"http://www.localhost:{port}",
@@ -174,27 +174,24 @@ def main():
                      redir({("foo.localhost", "/ads.txt"): f"http://bar.localhost:{port}/ads.txt", ("foo.localhost", "/"): f"http://bar.localhost:{port}/"}),
                      ["FAIL", "left the site domain"], no_host("bar.localhost")))
     for name, b, fix, want, *rest in rows:
-        fails += run(name, b, fix=fix, want=want,
-                     check=rest[0] if rest else None,
-                     want_rc=0 if want is OKW else 1,
-                     deadline=rest[1] if len(rest) > 1 else None)
+        fails += run(name, b, fix=fix, want=want, check=rest[0] if rest else None,
+                     want_rc=0 if want is OKW else 1, deadline=rest[1] if len(rest) > 1 else None,
+                     nowd=rest[2] if len(rest) > 2 else False)
 
     # Bad publisher ids: exit 2, nothing fetched.
-    for bad_id in ("ca-pub-123", "abc", "ca-pub-٠١٢٣٤٥٦٧٨٩٠١٢٣٤٥"):
+    for bad_id in ("ca-pub-000000000000000", "abc", "ca-pub-٠١٢٣٤٥٦٧٨٩٠١٢٣٤٥"):
         fails += run(f"{bad_id!r} rejected", base, pub=bad_id, want_rc=2, want=["publisher id"],
                      check=lambda: [] if not LOG else [f"fetched {LOG}"])
 
     # --json parses, carries status codes and hops, leaks no body text.
     site(ads=plain(ADS_OK + f"# {SENT}\n"), page=home(HOME_OK.replace("</body>", f"<!-- {SENT} --></body>")))
     r, doc = json_run(base)
-    out = r.stdout + r.stderr
     bad = [f"exit {r.returncode} != 0"] if r.returncode != 0 else []
     bad += [] if doc.get("ok") is True else ["json ok is not true"]
-    for key in ("ads.txt", "home"):
-        f = (doc.get("fetches") or {}).get(key) or {}
-        if f.get("status") != 200 or (f.get("hops") or [{}])[-1].get("status") != 200:
-            bad.append(f"fetches.{key} lacks status/hops")
-    bad += ["response body leaked"] if SENT in out else []
+    for k in ("ads.txt", "home"):
+        f = doc.get("fetches", {}).get(k, {})
+        if f.get("status") != 200 or (f.get("hops") or [{}])[-1].get("status") != 200: bad.append(f"fetches.{k} lacks status/hops")
+    bad += ["response body leaked"] if SENT in r.stdout + r.stderr else []
     print(("  ok   " if not bad else "  FAIL ") + "json output clean" + ("" if not bad else f": {bad}"))
     fails += bad
 
@@ -204,11 +201,9 @@ def main():
         redir({("www.localhost", "/ads.txt"): f"http://localhost:{port}/ads.txt",
                ("www.localhost", "/"): f"http://localhost:{port}/"})()
         r, doc = json_run(f"http://www.localhost:{port}")
-        try:
-            hops = doc["fetches"]["ads.txt"]["hops"]
-            bad = [] if [h["status"] for h in hops] == [301, 200] else [f"hops {[h.get('status') for h in hops]}"]
-        except Exception as e:
-            bad = [f"json hops: {e}"]
+        try: hops = [h["status"] for h in doc["fetches"]["ads.txt"]["hops"]]
+        except Exception as e: hops = []; bad = [f"json hops: {e}"]
+        if not bad: bad = [] if hops == [301, 200] else [f"hops {hops}"]
     print(("  ok   " if not bad else "  FAIL ") + "json redirect hops" + ("" if not bad else f": {bad}"))
     fails += bad
 
