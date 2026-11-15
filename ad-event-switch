@@ -42,7 +42,7 @@ class Graph:
         except urllib.error.HTTPError as e:
             raw = e.read()
             err = json.loads(raw).get("error", {}) if raw.strip().startswith(b"{") else {}
-            return e.code, {"error": {"code": err.get("code"), "subcode": err.get("error_subcode"), "message": scrub(err.get("message", ""))}}
+            return e.code, {"error": {"code": err.get("code"), "subcode": err.get("error_subcode"), "message": scrub(err.get("error_user_msg") or err.get("message", ""))}}
 class Stop(Exception):
     """A write failed. The message lists what exists."""
 class Skip(Exception):

@@ -38,8 +38,9 @@ class Fake(BaseHTTPRequestHandler):
     log_message = lambda *a: None
     def send(self, code, body):
         self.send_response(code), self.end_headers(), self.wfile.write(json.dumps(body).encode())
-    def err(self, code, sub=None, msg="error"):
-        self.send(400, {"error": {"code": code, "error_subcode": sub, "message": msg, "type": "OAuthException"}})
+    def err(self, code, sub=None, msg="error", user_msg=None):
+        # Meta puts the useful text in error_user_msg and leaves message generic.
+        self.send(400, {"error": {"code": code, "error_subcode": sub, "message": "Invalid parameter" if user_msg else msg, "error_user_msg": user_msg, "type": "OAuthException"}})
     def do_GET(self):
         u = urlparse(self.path)
         STATE["paths"].append(self.path), STATE["headers"].append(self.headers.get("Authorization"))
@@ -62,7 +63,7 @@ class Fake(BaseHTTPRequestHandler):
         if parts[-1] == "adsets":
             floor = STATE["min_budget"]
             if floor and int(body["lifetime_budget"]) < floor:
-                return self.err(100, 1, f"Your ad set budget must be more than CA${(floor - 1) / 100:.2f} or your ads may not deliver.")
+                return self.err(100, 1, user_msg=f"Your ad set budget must be more than CA${(floor - 1) / 100:.2f} or your ads may not deliver.")
             STATE["n"] += 1
             nid = str(STATE["n"])
             STATE["sets"][nid] = {**adset(nid, body["name"], status=body["status"], event=json.loads(body["promoted_object"])["custom_event_type"]),
