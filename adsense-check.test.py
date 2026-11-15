@@ -16,7 +16,7 @@ DIG = "0000000000000000"
 ADS_OK = f"google.com, pub-{DIG}, DIRECT, f08c47fec0942fa0\n"
 META = f'<meta name="google-adsense-account" content="{PUB}">'
 HOME_OK = f"<html><head>{META}</head><body>example</body></html>"
-BIGPAGE = f"<html><head>{META}</head><body>{'<p>x</p>' * 150000}</body></html>"
+SLOWPAGE = f"<html><head>{META}</head><body>{'<p>x</p>' * 40000}</body></html>"
 SENT = "BODY-SENTINEL-9f3e"
 OKW = ["PASS ads.txt", "PASS meta tag", "adsense-check: ok"]
 FW = ["FAIL ads.txt", "adsense-check: failed"]
@@ -77,18 +77,18 @@ def site(ads=None, page=None):
     ROUTES[("*", "/")] = page if page is not None else home()
 
 
-def env_for(base, deadline=None, nowd=False):
+def env_for(base, deadline=None, nowd=False, slow=""):
     env = {k: v for k, v in os.environ.items() if not k.startswith("ADSENSE_CHECK_")}
-    env["ADSENSE_CHECK_TEST_BASE_URL"], env["ADSENSE_CHECK_TEST_DEADLINE"] = base, str(deadline or 30)
+    env["ADSENSE_CHECK_TEST_BASE_URL"], env["ADSENSE_CHECK_TEST_DEADLINE"], env["ADSENSE_CHECK_TEST_SLOW_PARSE"] = base, str(deadline or 30), slow
     env["ADSENSE_CHECK_TEST_NO_WATCHDOG"] = "1" if nowd else ""
     return env
 
 
-def run(name, base, pub=PUB, args=(), fix=None, want_rc=1, want=(), check=None, deadline=None, nowd=False):
+def run(name, base, pub=PUB, args=(), fix=None, want_rc=1, want=(), check=None, deadline=None, nowd=False, slow=""):
     (fix or site)()
     t = time.monotonic()
     try:
-        r = subprocess.run([str(TOOL), "example.com", pub, *args], env=env_for(base, deadline, nowd),
+        r = subprocess.run([str(TOOL), "example.com", pub, *args], env=env_for(base, deadline, nowd, slow),
                            capture_output=True, text=True, timeout=25)
     except subprocess.TimeoutExpired:
         print(f"  FAIL {name}: subprocess timed out"); return ["timeout"]
@@ -157,7 +157,7 @@ def main():
         ("trickle body hits deadline", base, lambda: site(ads=("trickle",)), ["deadline exceeded"], FAST, 1.0, True),
         ("header trickle hits deadline", base, lambda: site(ads=("hdrtrickle",)), ["deadline exceeded"], FAST, 1.0),
         ("chunked trickle hits deadline", base, lambda: site(ads=("chunktrickle",)), ["deadline exceeded"], FAST, 1.0),
-        ("slow parse hits deadline", base, page(BIGPAGE), ["deadline exceeded", "adsense-check: failed"], FAST, 0.4),
+        ("slow parse hits deadline", base, page(SLOWPAGE), ["deadline exceeded", "adsense-check: failed"], FAST, 0.4, False, "0.2"),
     ]
     if resolves("www.localhost"):
         rows.append(("www to apex redirect passes", f"http://www.localhost:{port}",
@@ -170,7 +170,7 @@ def main():
     for name, b, fix, want, *rest in rows:
         fails += run(name, b, fix=fix, want=want, check=rest[0] if rest else None,
                      want_rc=0 if want is OKW else 1, deadline=rest[1] if len(rest) > 1 else None,
-                     nowd=rest[2] if len(rest) > 2 else False)
+                     nowd=rest[2] if len(rest) > 2 else False, slow=rest[3] if len(rest) > 3 else "")
 
     # Bad publisher ids: exit 2, nothing fetched.
     for bad_id in ("ca-pub-000000000000000", "abc", "ca-pub-٠١٢٣٤٥٦٧٨٩٠١٢٣٤٥"):

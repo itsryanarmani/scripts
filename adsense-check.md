@@ -1,7 +1,6 @@
 # adsense-check
 
-Verifies AdSense ownership proofs — an `ads.txt` line and a
-`google-adsense-account` meta tag — by GETting `/ads.txt` and `/`. Stdlib only.
+Verifies AdSense ownership proofs — an `ads.txt` line and a `google-adsense-account` meta tag — by GETting `/ads.txt` and `/`. Stdlib only.
 
 ```sh
 ./adsense-check <domain> <publisher-id> [--json]
@@ -38,6 +37,7 @@ only; `--json` prints `ok`, `publisher_id`, `domain`, `checks`, `fetches`.
 | `FAIL ...: redirect left the site domain` | Hop leaves the host, even a sibling subdomain. | Stay on the host or its `www.`/apex pair. |
 | `FAIL ...: redirect to unsupported URL` | Non-http(s) scheme like `ftp:`. | Redirect to https. |
 | `FAIL ...: deadline exceeded` | Any phase trickles past the deadline. | Check response time for both URLs. |
+| `FAIL ...: TimeoutError: timed out` | Server accepts but never answers; 15 s socket timeout. | Check the site is up and not tarpitting. |
 | `FAIL meta tag` | Absent, sub-page, `<noscript>`, or outside head (`meta tag found outside head`). | Put exactly one in the home `<head>`. |
 | `FAIL meta tag: ...` | Duplicated (ids listed) or wrong/missing `ca-`. | Keep exactly one `ca-pub-<digits>`. |
 | `FAIL ...: home page status ...` / `exit 2` | Home not 200 / bad publisher id. | Fix the site / copy the id from AdSense. |
