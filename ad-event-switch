@@ -45,6 +45,8 @@ class Graph:
             return e.code, {"error": {"code": err.get("code"), "subcode": err.get("error_subcode"), "message": scrub(err.get("message", ""))}}
 class Stop(Exception):
     """A write failed. The message lists what exists."""
+class Skip(Exception):
+    """One ad set needs more budget than --max-extra-cents allows. Nothing was created for it."""
 def need(graph, method, path, params, made):
     status, body = graph.call(method, path, params)
     if "error" in body:
@@ -70,7 +72,7 @@ def copy_one(graph, acct, old, args, made):
         raised = math.ceil((float(floor.group(1)) + 0.01) * 100)
         extra = raised - int(amount)
         if extra > args.max_extra_cents:
-            raise Stop(f"{old['name']}: Meta needs {raised} cents and only {amount} remain: {extra} extra cents is over --max-extra-cents {args.max_extra_cents}. Nothing created for it.")
+            raise Skip(f"{old['name']}: Meta needs {raised} cents and only {amount} remain: {extra} extra cents is over --max-extra-cents {args.max_extra_cents}. Nothing created for it.")
         say(f"   {old['name']}: budget raised from {amount} to {raised} cents (+{extra}) to meet Meta's minimum")
         status, res = graph.call("POST", f"act_{acct}/adsets", {**body, key: str(raised)})
     if "error" in res:
@@ -117,7 +119,7 @@ def main():
     todo = [s for s in sets if s.get("effective_status") == "ACTIVE" and (s.get("promoted_object") or {}).get("custom_event_type") == args.from_event
             and (not args.adset or s["id"] in args.adset)]
     say(f"{len(todo)} active ad set(s) optimize for {args.from_event}; target {args.to_event}" + ("" if args.execute else " (dry run)"))
-    made, skipped = [], 0
+    made, skipped, refused = [], 0, 0
     try:
         for s in todo:
             key, amount = plan_budget(s)
@@ -126,13 +128,16 @@ def main():
                 say(f" skip {s['id']} {s['name']}: the copy exists"); skipped += 1; continue
             if not args.execute:
                 say(f" would copy {s['id']} {s['name']}: {key} {amount}"); continue
-            new_id, n = copy_one(graph, acct, s, args, made)
+            try:
+                new_id, n = copy_one(graph, acct, s, args, made)
+            except Skip as e:
+                say(" refused:", e); refused += 1; continue
             say(f" copied {s['id']} -> {new_id} with {n} ad(s), {'ACTIVE; original paused' if args.activate else 'PAUSED'}")
     except Stop as e:
         say("stopped:", e)
         say("created so far:", ", ".join(made) or "nothing")
-        return 2 if "extra cents" in str(e) else 3
-    say(f"done: {len(made)} object(s) created, {skipped} skipped")
-    return 0
+        return 3
+    say(f"done: {len(made)} object(s) created, {skipped} skipped, {refused} refused for budget")
+    return 2 if refused else 0
 if __name__ == "__main__":
     sys.exit(main())

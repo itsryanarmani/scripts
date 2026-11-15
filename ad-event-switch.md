@@ -26,7 +26,7 @@ python3 -I ad-event-switch.test.py                                        # E2E 
 | `--max-extra-cents` | Most extra budget one copy may need to meet Meta's minimum. Default 200. |
 | `--env-file`, `META_MARKETING_TOKEN` | The token. Keep the file outside the repository. |
 
-Exit: 0 clean, 2 refused (bad input, or a minimum budget over the cap), 3 a call failed (the output lists what exists).
+Exit: 0 clean, 2 refused (bad input, or at least one ad set skipped because its minimum budget is over the cap; the others are still copied), 3 a call failed (the output lists what exists).
 
 ## What a copy keeps
 
@@ -38,8 +38,8 @@ event changes. A copy is named `<old name> [<EVENT>]`, and a rerun skips an ad s
 
 A copy gets the budget that remains on the original, not the original total. Meta sets a minimum
 lifetime budget and states it in the error ("must be more than CA$7.59"). When the remainder is lower,
-the tool retries with that minimum. Total spend then rises by the difference. It refuses a rise over
-`--max-extra-cents` and prints the amount for any rise it makes.
+the tool retries with that minimum. Total spend then rises by the difference. It skips an ad set whose rise is over
+`--max-extra-cents`, creates nothing for it, goes on to the next, and prints the amount for any rise it makes.
 
 ## Limits
 

@@ -127,6 +127,8 @@ copy = [s for s in STATE["sets"].values() if s["name"].endswith("[INITIATED_CHEC
 check("4 a minimum within the cap is used, and the rise is reported", code == 0 and copy and copy[0]["lifetime_budget"] == "760" and "119" in out, out)
 code, out = run(["--execute"], min_budget=900)
 check("4 a minimum over the cap is refused and nothing is created", code == 2 and len(STATE["sets"]) == 3 and not any(p.endswith("/ads") for p, _ in STATE["posts"]) and "max-extra-cents" in out, out)
+code, out = run(["--execute"], min_budget=900, seed=lambda: STATE["sets"].update({"4": adset("4", "D funded", remaining="900")}))
+check("4 an ad set over the cap is skipped and the next one is still copied", code == 2 and any(s["name"] == "D funded [INITIATED_CHECKOUT]" for s in STATE["sets"].values()) and not any(s["name"] == "A $29 [INITIATED_CHECKOUT]" for s in STATE["sets"].values()), out)
 code, out = run(["--execute", "--max-extra-cents", "400"], min_budget=900)
 check("4 a raised cap lets the same minimum through", code == 0 and any(s["name"].endswith("[INITIATED_CHECKOUT]") and s["lifetime_budget"] == "900" for s in STATE["sets"].values()), out)
 
