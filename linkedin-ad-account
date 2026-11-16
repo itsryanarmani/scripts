@@ -29,8 +29,13 @@ await p.goto('$BASE', {waitUntil: 'domcontentloaded'});
 await p.waitForSelector('text=Your ad accounts', {timeout: 30000});
 await p.waitForTimeout(4000);
 const t = (await p.innerText('main')).replace(/\s*\n\s*/g, ' | ');
-const rows = [...t.matchAll(/([^|]+?) \| Account ID: (\d+) \| .*?\| (On hold|Active|Paused|Draft|Archived)/g)]
-  .map(m => ({name: m[1].trim(), id: m[2], status: m[3]}));
+const ms = [...t.matchAll(/([^|]+?) \| Account ID: (\d+)/g)];
+const rows = ms.map((m, i) => {
+  // Each row stops where the next row starts, so a status never bleeds across rows.
+  const seg = t.slice(m.index + m[0].length, i + 1 < ms.length ? ms[i + 1].index : undefined);
+  const s = seg.match(/(On hold|Active|Paused|Draft|Archived|Canceled|Cancelled|Pending[^|]*)/);
+  return {name: m[1].trim(), id: m[2], status: s ? s[1].trim() : 'unknown'};
+});
 await p.close();
 return JSON.stringify(rows);
 "
@@ -40,9 +45,14 @@ cmd_create() {
   local name="" currency="" page="" yes=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --name) name="${2:-}"; shift 2 ;;
-      --currency) currency="${2:-}"; shift 2 ;;
-      --page) page="${2:-}"; shift 2 ;;
+      --name|--currency|--page)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        case "$1" in
+          --name) name="$2" ;;
+          --currency) currency="$2" ;;
+          --page) page="$2" ;;
+        esac
+        shift 2 ;;
       --yes) yes=1; shift ;;
       *) die "unknown flag $1" ;;
     esac
@@ -64,10 +74,10 @@ await d.waitFor({timeout: 15000});
 await d.getByLabel(/account name/i).fill(name);
 await d.locator('select').first().selectOption({value: cur});
 if (page) {
-  await d.getByRole('combobox').last().click();
+  await d.getByRole('combobox').last().click(); // the Page picker is the last combobox, after the currency select
   await p.getByText(page, {exact: true}).first().click();
 }
-await d.getByRole('checkbox').first().check();
+await d.getByRole('checkbox', {name: /agree/i}).check();
 await d.getByRole('button', {name: /^save\$/i}).click();
 await p.waitForURL(/accounts\/(\d+)\/campaigns\/new/, {timeout: 30000});
 const id = p.url().match(/accounts\/(\d+)\//)[1];
