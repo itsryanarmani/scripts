@@ -1,0 +1,213 @@
+#!/usr/bin/env -S python3 -I
+"""Keep an authenticator secret in a mode 600 env file and print the current code.
+
+  totp save ENVFILE PREFIX   read an otpauth:// URI on stdin, store it
+  totp code ENVFILE PREFIX   print the current code
+  totp put  ENVFILE KEY      read one value on stdin, store it as KEY
+
+Failure modes: totp.failure-modes.md. TOTP_NOW (seconds) is for the tests only.
+"""
+import base64
+import binascii
+import fcntl
+import hashlib
+import hmac
+import os
+import re
+import struct
+import sys
+import tempfile
+import time
+import unicodedata
+import urllib.parse
+
+ALGOS = {"SHA1": hashlib.sha1, "SHA256": hashlib.sha256, "SHA512": hashlib.sha512}
+NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
+
+
+def die(code, message):
+    print(f"totp: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def decode_secret(secret):
+    cleaned = secret.replace(" ", "").replace("=", "").upper()
+    if not cleaned:
+        die(2, "the secret is empty")
+    try:
+        return base64.b32decode(cleaned + "=" * (-len(cleaned) % 8))
+    except (binascii.Error, ValueError):
+        die(2, "the secret is not valid base32")
+
+
+def is_ascii_number(text):
+    # str.isdigit() accepts characters such as a superscript two, and int() then fails.
+    return text.isascii() and text.isdigit() and len(text) <= 9
+
+
+def check_settings(algo, digits, period):
+    if algo not in ALGOS:
+        die(2, f"algorithm {algo!r} is not SHA1, SHA256 or SHA512")
+    if not (is_ascii_number(digits) and 6 <= int(digits) <= 8):
+        die(2, "digits must be 6 to 8")
+    if not (is_ascii_number(period) and int(period) > 0):
+        die(2, "period must be a positive number of seconds")
+
+
+def check_name(name, what):
+    if not NAME_RE.fullmatch(name):
+        die(2, f"{what} starts with a capital letter or underscore and holds only capital letters, digits and underscores")
+
+
+def in_git_work_tree(folder):
+    while True:
+        if os.path.lexists(os.path.join(folder, ".git")):  # a dangling link counts
+            return True
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return False
+        folder = parent
+
+
+def one_plain_line(text):
+    # Refuse every character that splits a line in some reader: line breaks, form feed,
+    # next line, U+2028 and U+2029, and the rest of the control characters.
+    return bool(text) and not any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in text)
+
+
+def read_lines(path):
+    # One definition of a line for every reader and for the writer: split on newline
+    # only, drop a trailing CR and a leading byte order mark.
+    with open(path, encoding="utf-8-sig", newline="") as handle:
+        lines = [line.rstrip("\r") for line in handle.read().split("\n")]
+    return lines[:-1] if lines and lines[-1] == "" else lines
+
+
+def read_stdin():
+    try:
+        return sys.stdin.buffer.read().decode("utf-8")
+    except UnicodeError:
+        die(2, "stdin is not valid UTF-8")
+
+
+def read_env(path):
+    values = {}
+    for line in read_lines(path):
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, value = line.split("=", 1)
+            values[key] = value
+    return values
+
+
+def write_env(path, drop, add):
+    """Drop lines that match `drop`, append the lines in `add`, keep the rest."""
+    real = os.path.realpath(path)  # write through a symlink
+    folder = os.path.dirname(real) or "."
+    if in_git_work_tree(folder):
+        die(6, f"{path} is inside a git work tree; use a folder outside any repository")
+    tmp = None
+    try:
+        lock = os.open(folder, os.O_RDONLY)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # parallel saves take turns
+            kept = []
+            if os.path.exists(real):
+                kept = [line for line in read_lines(real) if not drop.match(line)]
+            fd, tmp = tempfile.mkstemp(dir=folder, prefix=".totp-")  # mode 600
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(kept + add) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, real)
+            tmp = None
+        finally:
+            os.close(lock)
+    except BaseException as error:  # an interrupt must not leave the temp file behind
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if not isinstance(error, (OSError, UnicodeError)):
+            raise
+        die(5, f"cannot write {path}: {getattr(error, 'strerror', None) or type(error).__name__}")
+
+
+def save(path, prefix):
+    check_name(prefix, "PREFIX")
+    try:
+        uri = urllib.parse.urlparse(read_stdin().strip())
+    except ValueError:
+        die(2, "stdin is not an otpauth://totp/ URI")
+    if uri.scheme != "otpauth" or uri.netloc.lower() != "totp":
+        die(2, "stdin is not an otpauth://totp/ URI")
+    query = urllib.parse.parse_qs(uri.query)
+    if not query.get("secret"):
+        die(2, "the URI has no secret")
+    secret = query["secret"][0]
+    algo = query.get("algorithm", ["SHA1"])[0].upper()
+    digits = query.get("digits", ["6"])[0]
+    period = query.get("period", ["30"])[0]
+    decode_secret(secret)
+    check_settings(algo, digits, period)
+    write_env(
+        path,
+        re.compile(rf"{prefix}_TOTP_(SECRET|ALGO|DIGITS|PERIOD)="),
+        [
+            f"{prefix}_TOTP_SECRET={secret}",
+            f"{prefix}_TOTP_ALGO={algo}",
+            f"{prefix}_TOTP_DIGITS={digits}",
+            f"{prefix}_TOTP_PERIOD={period}",
+        ],
+    )
+    print(f"saved {prefix}: {digits} digits, {period}s, {algo}")
+
+
+def put(path, key):
+    check_name(key, "KEY")
+    value = read_stdin()
+    if value.endswith("\n"):
+        value = value[:-1]
+    if not one_plain_line(value):
+        die(2, "the value must be one non-empty line with no control or line-separator character")
+    write_env(path, re.compile(rf"{key}="), [f"{key}={value}"])
+    print(f"saved {key}")
+
+
+def code(path, prefix):
+    check_name(prefix, "PREFIX")
+    if not os.path.exists(path):
+        die(4, f"{path} does not exist")
+    if os.stat(path).st_mode & 0o077:
+        die(3, f"{path} can be read by group or others; run chmod 600")
+    try:
+        env = read_env(path)
+    except (OSError, UnicodeError) as error:
+        die(5, f"cannot read {path}: {getattr(error, 'strerror', None) or type(error).__name__}")
+    key = f"{prefix}_TOTP_SECRET"
+    if key not in env:
+        die(4, f"{path} has no {key}")
+    algo = env.get(f"{prefix}_TOTP_ALGO", "SHA1").upper()
+    digits = env.get(f"{prefix}_TOTP_DIGITS", "6")
+    period = env.get(f"{prefix}_TOTP_PERIOD", "30")
+    check_settings(algo, digits, period)
+    key_bytes = decode_secret(env[key])
+    clock = os.environ.get("TOTP_NOW") or str(int(time.time()))
+    if not (clock.isascii() and clock.isdigit()):
+        die(2, "TOTP_NOW must be a whole number of seconds")
+    now = int(clock)
+    digest = hmac.new(key_bytes, struct.pack(">Q", now // int(period)), ALGOS[algo]).digest()
+    offset = digest[-1] & 15
+    number = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % 10 ** int(digits)
+    print(str(number).zfill(int(digits)))
+
+
+def main():
+    commands = {"save": save, "code": code, "put": put}
+    if len(sys.argv) != 4 or sys.argv[1] not in commands:
+        die(1, "usage: totp save|code|put ENVFILE PREFIX_OR_KEY")
+    commands[sys.argv[1]](sys.argv[2], sys.argv[3])
+
+
+main()
