@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# linkedin-ad-account: list or create LinkedIn ad accounts in a signed-in Chrome.
+#
+#   linkedin-ad-account list
+#   linkedin-ad-account create --name NAME --currency CODE [--page PAGE] --yes
+#
+# It drives Campaign Manager through the `browse` extension, so Chrome must be
+# signed in to LinkedIn. It never enters card details. A new account stays on
+# hold until a person adds a payment method.
+set -euo pipefail
+
+BROWSE="${BROWSE:-$HOME/.local/bin/browse}"
+BASE="https://www.linkedin.com/campaignmanager/accounts"
+
+die() { echo "linkedin-ad-account: $*" >&2; exit 1; }
+[ -x "$BROWSE" ] || die "browse not found at $BROWSE"
+
+run_js() { # $1 = JS body, env vars are read inside the body
+  local f
+  f="$(mktemp -d)/run.js"
+  printf '%s\n' "$1" >"$f"
+  "$BROWSE" execute --file "$f"
+}
+
+cmd_list() {
+  run_js "
+const p = await context.newPage();
+await p.goto('$BASE', {waitUntil: 'domcontentloaded'});
+await p.waitForSelector('text=Your ad accounts', {timeout: 30000});
+await p.waitForTimeout(4000);
+const t = (await p.innerText('main')).replace(/\s*\n\s*/g, ' | ');
+const ms = [...t.matchAll(/([^|]+?) \| Account ID: (\d+)/g)];
+const rows = ms.map((m, i) => {
+  // Each row stops where the next row starts, so a status never bleeds across rows.
+  const seg = t.slice(m.index + m[0].length, i + 1 < ms.length ? ms[i + 1].index : undefined);
+  const s = seg.match(/(On hold|Active|Paused|Draft|Archived|Canceled|Cancelled|Pending[^|]*)/);
+  return {name: m[1].trim(), id: m[2], status: s ? s[1].trim() : 'unknown'};
+});
+await p.close();
+return JSON.stringify(rows);
+"
+}
+
+cmd_create() {
+  local name="" currency="" page="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name|--currency|--page)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        case "$1" in
+          --name) name="$2" ;;
+          --currency) currency="$2" ;;
+          --page) page="$2" ;;
+        esac
+        shift 2 ;;
+      --yes) yes=1; shift ;;
+      *) die "unknown flag $1" ;;
+    esac
+  done
+  [ -n "$name" ] || die "--name is required"
+  [ -n "$currency" ] || die "--currency is required. It cannot change later."
+  [[ "$currency" =~ ^[A-Z]{3}$ ]] || die "--currency must be a 3 letter code, such as CAD"
+  [ "$yes" = 1 ] || die "add --yes. This accepts the LinkedIn Ads Agreement and creates an account."
+
+  run_js "
+const name = $(printf '%s' "$name" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))');
+const cur = $(printf '%s' "$currency" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))');
+const page = $(printf '%s' "$page" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))');
+const p = await context.newPage();
+await p.goto('$BASE', {waitUntil: 'domcontentloaded'});
+await p.getByRole('button', {name: /create account/i}).first().click();
+const d = p.getByRole('dialog').first();
+await d.waitFor({timeout: 15000});
+await d.getByLabel(/account name/i).fill(name);
+await d.locator('select').first().selectOption({value: cur});
+if (page) {
+  await d.getByRole('combobox').last().click(); // the Page picker is the last combobox, after the currency select
+  await p.getByText(page, {exact: true}).first().click();
+}
+await d.getByRole('checkbox', {name: /agree/i}).check();
+await d.getByRole('button', {name: /^save\$/i}).click();
+await p.waitForURL(/accounts\/(\d+)\/campaigns\/new/, {timeout: 30000});
+const id = p.url().match(/accounts\/(\d+)\//)[1];
+await p.close();
+return JSON.stringify({name, currency: cur, id, status: 'On hold: payment method required'});
+"
+}
+
+case "${1:-}" in
+  list) cmd_list ;;
+  create) shift; cmd_create "$@" ;;
+  *) die "usage: linkedin-ad-account list | create --name NAME --currency CODE [--page PAGE] --yes" ;;
+esac
