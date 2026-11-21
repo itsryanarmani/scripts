@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# chrome-profile-fleet — add named Chrome profiles with seeded bookmarks,
+# avatars and theme colors by editing Chrome's Local State on a quit browser.
+#
+# Usage:
+#   chrome-profile-fleet add --spec SPEC.tsv
+#   chrome-profile-fleet list
+#   chrome-profile-fleet open "Profile 7" <url>
+#
+# SPEC.tsv rows:  profile-dir <TAB> display-name <TAB> bookmark-spec
+# bookmark-spec:  Label|URL,Label|URL,...   (comma-separated pairs)
+#
+# Chrome MUST be fully quit before `add`; the script refuses while
+# "/Applications/Google Chrome.app" is running. Bundled automation browsers
+# (agent-browser etc.) do not count — only the real Chrome process holds
+# "Local State". A timestamped backup is written next to Local State first.
+#
+# Avatars: file:// icons do NOT render in current Chrome — use built-in
+# chrome://theme/IDR_PROFILE_AVATAR_<n> (0..~55). Theme color comes from
+# profile_highlight_color (palette index, -1 = Chrome default).
+set -euo pipefail
+
+CHROME_DIR="$HOME/Library/Application Support/Google/Chrome"
+LOCAL_STATE="$CHROME_DIR/Local State"
+APP="/Applications/Google Chrome.app"
+
+die(){ echo "chrome-profile-fleet: $*" >&2; exit 1; }
+
+chrome_running(){ pgrep -f "$APP/Contents/MacOS/Google Chrome$" >/dev/null; }
+
+cmd_list(){
+  python3 - "$LOCAL_STATE" <<'PY'
+import json,sys
+c=json.load(open(sys.argv[1]))["profile"]["info_cache"]
+for d,e in sorted(c.items()):
+    print(f"{d}\t{e.get('name','')}\t{e.get('user_name') or '-'}")
+PY
+}
+
+cmd_open(){
+  local dir="$1"; shift
+  open -na "Google Chrome" --args --profile-directory="$dir" "$@"
+}
+
+cmd_add(){
+  local spec=""
+  while [ $# -gt 0 ]; do case "$1" in --spec) spec="$2"; shift 2;; *) shift;; esac; done
+  [ -n "$spec" ] || die "--spec file required"
+  [ -f "$spec" ] || die "spec not found: $spec"
+  chrome_running && die "Chrome is running — quit it first (osascript -e 'tell app \"Google Chrome\" to quit')"
+  [ -f "$LOCAL_STATE" ] || die "no Local State at $LOCAL_STATE"
+  cp "$LOCAL_STATE" "$LOCAL_STATE.bak-$(date +%Y%m%d-%H%M%S)"
+  SPEC="$spec" python3 - "$LOCAL_STATE" <<'PY'
+import json, os, sys
+spec, ls_path = os.environ["SPEC"], sys.argv[1]
+ls = json.load(open(ls_path))
+cache = ls["profile"]["info_cache"]
+cdir = os.path.dirname(ls_path)
+def fresh_dir():
+    n = 1
+    while f"Profile {n}" in cache: n += 1
+    return f"Profile {n}"
+made = []
+for line in open(spec):
+    line = line.rstrip("\n")
+    if not line or line.startswith("#"): continue
+    d, name, marks = (line.split("\t") + ["", ""])[:3]
+    d = d.strip() or fresh_dir()
+    kids = []
+    for i, pair in enumerate([m for m in marks.split(",") if "|" in m]):
+        label, url = pair.split("|", 1)
+        kids.append({"date_added":"13370000000000000","id":str(10+i),
+                     "name":label.strip(),"type":"url","url":url.strip()})
+    cache[d] = {
+        "active_time":0.0,"avatar_icon":f"chrome://theme/IDR_PROFILE_AVATAR_{len(cache)%40}",
+        "background_apps":False,"default_avatar_fill_color":False,
+        "default_avatar_stroke_color":False,"force_signin_profile_locked":False,
+        "gaia_given_name":"","gaia_id":"","gaia_name":"","hosted_domain":"",
+        "is_using_default_avatar":True,"is_using_default_name":False,
+        "local_auth_credentials":[],"managed_user_id":"","metrics_consent":False,
+        "name":name.strip(),"profile_color_seed":0,
+        "profile_highlight_color":len(cache)%24,"signin.with_credential_provider":False,
+        "user_name":"","account_capabilities":{}
+    }
+    pdir = os.path.join(cdir, d); os.makedirs(pdir, exist_ok=True)
+    b = {"version":1,"roots":{
+      "bookmark_bar":{"children":kids,"date_added":"13370000000000000","date_modified":"13370000000000000","id":"1","name":"Bookmarks Bar","type":"folder"},
+      "other":{"children":[],"date_added":"13370000000000000","date_modified":"13370000000000000","id":"2","name":"Other bookmarks","type":"folder"},
+      "synced":{"children":[],"date_added":"13370000000000000","date_modified":"13370000000000000","id":"3","name":"Mobile bookmarks","type":"folder"}}}
+    json.dump(b, open(os.path.join(pdir,"Bookmarks"),"w"))
+    made.append(d)
+json.dump(ls, open(ls_path,"w"))
+print("added:", ", ".join(made))
+PY
+}
+
+case "${1:-}" in
+  add) shift; cmd_add "$@";;
+  list) cmd_list;;
+  open) shift; cmd_open "$@";;
+  *) echo "usage: chrome-profile-fleet {add --spec SPEC.tsv|list|open <dir> [url]}" >&2; exit 2;;
+esac
