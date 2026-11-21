@@ -1,0 +1,42 @@
+name: public-name-guard
+
+# Keeps the names of private repositories out of every public repository of the
+# owner. The deny list is read from the owner's private repos at run time, so no
+# name is stored here. The log prints places and counts, never a name.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: public-name-guard
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Sweep issues, pull requests and comments
+        env:
+          GH_TOKEN: ${{ secrets.NAME_GUARD_TOKEN }}
+          NAME_GUARD_OWNER: ${{ github.repository_owner }}
+          NAME_GUARD_ALLOW: ${{ secrets.NAME_GUARD_ALLOW }}
+          NAME_GUARD_EXTRA: ${{ secrets.NAME_GUARD_EXTRA }}
+          DAILY: ${{ github.event.schedule == '17 6 * * *' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          since=""
+          if [ "$DAILY" != "true" ]; then since="--since $(date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"; fi
+          node public-name-guard.mjs sweep "$NAME_GUARD_OWNER" $since --redact
