@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Sign warm-up mailboxes up for third-party services so they receive real mail.
+#
+# WHY THIS EXISTS
+# The sweep itself lives with the `domain-email-warming` skill, not here,
+# because the skill and the tool it drives go stale the moment they live in
+# two places. This is a launcher, not a copy: it locates signup-sweep.py and
+# execs it, so `signup-sweep --daemon` works from any directory and from a
+# scheduler, without the caller knowing where the skill is checked out.
+#
+#   signup-sweep <args...>        forwarded to scripts/signup-sweep.py
+#   signup-sweep --where          print the resolved toolkit path and exit
+#
+# Override the search with WARM_DOMAIN_HOME.
+set -uo pipefail
+
+CANDIDATES=(
+  "${WARM_DOMAIN_HOME:-}"
+  "$HOME/.local/share/domain-email-warming"
+  "$HOME/Documents/Personal/skills/domain-email-warming"
+  "$HOME/.claude/skills/domain-email-warming"
+  "$HOME/.agents/skills/domain-email-warming"
+)
+
+TOOLKIT=""
+for c in "${CANDIDATES[@]}"; do
+  [ -n "$c" ] || continue
+  if [ -f "$c/scripts/signup-sweep.py" ]; then TOOLKIT="$c"; break; fi
+done
+
+if [ -z "$TOOLKIT" ]; then
+  echo "signup-sweep: cannot find signup-sweep.py" >&2
+  echo "looked in:" >&2
+  for c in "${CANDIDATES[@]}"; do [ -n "$c" ] && echo "  $c" >&2; done
+  echo "Install the domain-email-warming skill, or set WARM_DOMAIN_HOME." >&2
+  exit 127
+fi
+
+if [ "${1:-}" = "--where" ]; then
+  echo "$TOOLKIT"
+  exit 0
+fi
+
+exec python3 "$TOOLKIT/scripts/signup-sweep.py" "$@"
