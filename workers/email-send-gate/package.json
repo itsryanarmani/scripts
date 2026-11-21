@@ -1,0 +1,9 @@
+{
+  "name": "email-send-gate",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test send-gate.test.mjs",
+    "deploy": "wrangler deploy"
+  }
+}

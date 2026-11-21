@@ -1,0 +1,15 @@
+{
+  "name": "email-send-gate",
+  "main": "src/index.js",
+  "compatibility_date": "2025-02-01",
+  // One send_email binding per persona. `allowed_sender_addresses` is the
+  // enforcement point: Cloudflare refuses to send as any other From address
+  // through that binding, so a leaked key cannot impersonate another sender.
+  "send_email": [
+    { "name": "EMAIL_SAINA", "allowed_sender_addresses": ["saina@private-repo-ba8a.com"] },
+    { "name": "EMAIL_ALI", "allowed_sender_addresses": ["ali@private-repo-f304.com"] },
+    { "name": "EMAIL_ZARGHAM", "allowed_sender_addresses": ["zargham@private-repo-831a.io"] }
+    // Template — copy one entry per person:
+    // { "name": "EMAIL_<NAME>", "allowed_sender_addresses": ["<person>@<domain>"] }
+  ]
+}
