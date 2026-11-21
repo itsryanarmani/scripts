@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Fill a Typefully quote-post chain one link at a time.
+
+Each launch post in a series quotes the one before it on X, but a post has
+no X URL until it publishes. So every later draft stays unscheduled until
+the previous post is live; then this sets the draft's quote_post_url (X
+only) and schedules it `gap_days` after the previous post. A draft is never
+scheduled before its quote is set.
+
+  typefully-quote-chain run                  one pass (launchd runs this)
+  typefully-quote-chain selftest <draft-id>  re-send a draft unchanged, check it survives
+  typefully-quote-chain install <chain.json> copy the chain file, start the launchd job
+  typefully-quote-chain uninstall            stop the job
+
+chain.json: {"social_set": 23679, "gap_days": 2, "chain": [<draft ids in order>]}
+The first draft is scheduled by hand. The key comes from TYPEFULLY_API_KEY,
+else from the login Keychain item "typefully-api" (launchd cannot read
+~/Documents under macOS privacy rules, so install stores it there).
+"""
+import datetime as dt
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.request
+
+LABEL = "com.pooriaarab.typefully-quote-chain"
+HOME = os.environ.get("TQC_HOME", os.path.expanduser("~/Library/Application Support/typefully-quote-chain"))
+BASE = os.environ.get("TYPEFULLY_API_BASE", "https://api.typefully.com/v2")
+PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
+
+
+def key():
+    k = os.environ.get("TYPEFULLY_API_KEY")
+    if k:
+        return k
+    return subprocess.check_output(["security", "find-generic-password", "-s", "typefully-api", "-w"], text=True).strip()
+
+
+def load():
+    return json.load(open(os.path.join(HOME, "chain.json")))
+
+
+def api(cfg, method, draft, body=None):
+    req = urllib.request.Request(
+        f"{BASE}/social-sets/{cfg['social_set']}/drafts/{draft}",
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {key()}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+
+def log(msg):
+    os.makedirs(HOME, exist_ok=True)
+    with open(os.path.join(HOME, "chain.log"), "a") as f:
+        f.write(f"{dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')} {msg}\n")
+    print(msg)
+
+
+def enabled(d):
+    return {k: v for k, v in d["platforms"].items() if isinstance(v, dict) and v.get("enabled")}
+
+
+def post(p, quote):
+    out = {"text": p["text"], "media_ids": p.get("media_ids") or []}
+    if quote:
+        out["quote_post_url"] = quote
+    return out
+
+
+def platforms(d, quote):
+    """Every enabled platform, unchanged, so a PATCH never drops one.
+    The quote goes on the first X post only."""
+    out = {}
+    for name, v in enabled(d).items():
+        ps = [post(p, p.get("quote_post_url")) for p in v["posts"]]
+        if name == "x" and quote:
+            ps[0] = post(v["posts"][0], quote)
+        out[name] = {"enabled": True, "posts": ps}
+    return out
+
+
+def view(d):
+    return {k: [(p["text"], p.get("media_ids"), p.get("quote_post_url")) for p in v["posts"]] for k, v in enabled(d).items()}
+
+
+def run(cfg):
+    chain = cfg["chain"]
+    for prev_id, next_id in zip(chain, chain[1:]):
+        nxt = api(cfg, "GET", next_id)
+        if nxt.get("status") != "draft":
+            continue  # already scheduled or published
+        prev = api(cfg, "GET", prev_id)
+        url = prev.get("x_published_url")
+        if not url:
+            return "waiting"  # every later link waits on this one too
+        when = dt.datetime.fromisoformat(prev["published_at"].replace("Z", "+00:00")) + dt.timedelta(days=cfg.get("gap_days", 2))
+        when = max(when, dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=30))
+        out = api(cfg, "PATCH", next_id, {
+            "platforms": platforms(nxt, url),
+            "publish_at": when.isoformat().replace("+00:00", "Z"),
+        })
+        got = enabled(out)["x"]["posts"][0].get("quote_post_url")
+        kept = {k: [t[:2] for t in v] for k, v in view(out).items()} == {k: [t[:2] for t in v] for k, v in view(nxt).items()}
+        log(f"{next_id}: quote={got} status={out.get('status')} at={out.get('scheduled_date')} kept={kept}")
+        if got != url or not kept:
+            log(f"{next_id}: PROBLEM, expected quote {url} and unchanged platforms")
+        return "scheduled"
+    log("chain complete")
+    if os.path.exists(PLIST) and not os.environ.get("TQC_NO_LAUNCHCTL"):
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], check=False)
+    return "complete"
+
+
+def selftest(cfg, draft):
+    before = api(cfg, "GET", draft)
+    after = api(cfg, "PATCH", draft, {"platforms": platforms(before, None)})
+    same = view(before) == view(after)
+    print("selftest", draft, "unchanged" if same else "CHANGED", after.get("status"))
+    return 0 if same else 1
+
+
+def install(src):
+    cfg = json.load(open(src))
+    assert cfg.get("social_set") and len(cfg.get("chain", [])) >= 2, "chain.json needs social_set and 2+ drafts"
+    k = os.environ.get("TYPEFULLY_API_KEY")
+    if k:
+        subprocess.run(["security", "add-generic-password", "-U", "-a", os.environ["USER"], "-s", "typefully-api", "-w", k], check=True)
+    os.makedirs(HOME, exist_ok=True)
+    shutil.copy(src, os.path.join(HOME, "chain.json"))
+    exe = os.path.join(HOME, "typefully-quote-chain")
+    shutil.copy(os.path.abspath(__file__), exe)  # launchd cannot run a script under ~/Documents
+    os.chmod(exe, 0o755)
+    open(PLIST, "w").write(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{LABEL}</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>{exe}</string><string>run</string></array>
+  <key>StartInterval</key><integer>900</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>{HOME}/launchd.err</string>
+</dict></plist>
+""")
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], check=False, stderr=subprocess.DEVNULL)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", PLIST], check=True)
+    print(f"installed {LABEL}: {len(cfg['chain'])} drafts, log {HOME}/chain.log")
+
+
+def uninstall():
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], check=False)
+    if os.path.exists(PLIST):
+        os.remove(PLIST)
+    print(f"uninstalled {LABEL}")
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "run"
+    if cmd == "install" and len(argv) == 3:
+        return install(argv[2])
+    if cmd == "uninstall":
+        return uninstall()
+    if cmd == "selftest" and len(argv) == 3:
+        return selftest(load(), int(argv[2]))
+    if cmd == "run":
+        try:
+            print(run(load()))
+        except Exception as e:  # noqa: BLE001 - one failed poll must not kill the job
+            log(f"error: {e!r}")
+        return 0
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv) or 0)
