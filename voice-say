@@ -17,12 +17,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) dry=1 ;;
     --yes) yes=1 ;;
-    --cap) cap="${2:?--cap needs a number}"; shift ;;
-    --voice-file) voice_file="${2:?--voice-file needs a path}"; shift ;;
+    --cap) [[ $# -ge 2 ]] || die "--cap needs a number"; cap="$2"; shift ;;
+    --voice-file) [[ $# -ge 2 ]] || die "--voice-file needs a path"; voice_file="$2"; shift ;;
     *) die "unknown option: $1" ;;
   esac
   shift
 done
+python3 -I -c 'import math,sys;v=float(sys.argv[1]);sys.exit(0 if math.isfinite(v) and v>=0 else 1)' "$cap" 2>/dev/null \
+  || die "--cap must be a number of 0 or more"
 
 [[ -n "$text" ]] || die "TEXT is empty"
 [[ "$out" == *.mp3 || "$out" == *.wav ]] || die "OUT must end in .mp3 or .wav"
@@ -46,7 +48,9 @@ command -v wavespeed >/dev/null || die "wavespeed CLI not found"
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 wavespeed run minimax/speech-02-hd -i "voice_id=$voice_id" -i "text=$text" \
-  --download "$tmp/out.{ext}" </dev/null >"$tmp/log" 2>&1 || { tail -5 "$tmp/log" >&2; echo "voice-say: call failed" >&2; exit 1; }
+  --download "$tmp/out.{ext}" </dev/null >"$tmp/log" 2>&1 || {
+    tail -5 "$tmp/log" | python3 -I -c 'import os,sys;k=os.environ["WAVESPEED_API_KEY"];sys.stdout.write(sys.stdin.read().replace(k,"[redacted]"))' >&2
+    echo "voice-say: call failed" >&2; exit 1; }
 got="$(ls "$tmp"/out.* 2>/dev/null | head -1 || true)"
 [[ -n "$got" && -s "$got" ]] || { echo "voice-say: no audio came back" >&2; exit 1; }
 

@@ -35,6 +35,7 @@ Train the voice once with the `voice-clone-from-video` skill. That writes
 
 ## Test
 
-`./voice-say.test.sh` makes one real call (about $0.001). It also runs four
-controls that must fail: over the cap, no voice record, empty text, bad file
-type. It prints a JSON verdict.
+`./voice-say.test.sh` makes one real call (about $0.001). A stub `wavespeed`
+counts calls, so each control proves nothing was sent: over the cap, no voice
+record, empty text, bad file type, a `NaN` or negative cap. A failing call must
+not print the key. It prints a JSON verdict.
