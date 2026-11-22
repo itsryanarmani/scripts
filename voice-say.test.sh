@@ -60,16 +60,15 @@ import sys
 rc, dur, mx = int(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])
 sys.exit(0 if rc == 0 and 1.0 <= dur <= 15 and mx > -30 else 1)
 PY
-# The key voice-say used: the environment first, else the env file. Compared inside Python, not on a command line.
+# The key voice-say used: the environment first, else the env file, loaded with the same shell rules.
+# It goes to Python in the environment, never on a command line.
 SECRETS="${VOICE_SECRETS:-$HOME/Documents/Personal/.secrets}"
-python3 -I - "$SECRETS/wavespeed.env" "$tmp/o" "$tmp/e" <<'PY' && ok real_call_key_not_printed true || ok real_call_key_not_printed false
-import os, re, sys
-key = os.environ.get("WAVESPEED_API_KEY", "")
-if not key:
-    m = re.search(r'WAVESPEED_API_KEY=["\']?([^"\'\n]+)', open(sys.argv[1]).read())
-    key = m.group(1) if m else ""
+used_key="${WAVESPEED_API_KEY:-$( . "$SECRETS/wavespeed.env" 2>/dev/null; printf %s "${WAVESPEED_API_KEY:-}" )}"
+USED_KEY="$used_key" python3 -I - "$tmp/o" "$tmp/e" <<'PY' && ok real_call_key_not_printed true || ok real_call_key_not_printed false
+import os, sys
+key = os.environ.get("USED_KEY", "")
 if not key: sys.exit(1)
-sys.exit(1 if any(key in open(p).read() for p in sys.argv[2:]) else 0)
+sys.exit(1 if any(key in open(p).read() for p in sys.argv[1:]) else 0)
 PY
 
 python3 -I - "$res" "${1:-}" <<'PY'
