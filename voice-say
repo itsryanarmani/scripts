@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# voice-say TEXT OUT.mp3 [--dry-run] [--yes] [--cap USD] [--voice-file F]
+# Speak TEXT with the saved WaveSpeed voice clone. Prints the price first.
+# Exit: 0 ok, 1 call failed or empty audio, 2 usage, setup or spend-cap refusal.
+set -euo pipefail
+
+SECRETS="${VOICE_SECRETS:-$HOME/Documents/Personal/.secrets}"
+voice_file="$SECRETS/wavespeed-voice/voice.json"
+env_file="$SECRETS/wavespeed.env"
+cap="1.00"; dry=0; yes=0
+RATE="0.0001"   # USD per character: minimax/speech-02-hd lists $0.10 per 1,000
+
+die() { echo "voice-say: $*" >&2; exit 2; }
+[[ $# -ge 2 ]] || die "usage: voice-say TEXT OUT.mp3 [--dry-run] [--yes] [--cap USD] [--voice-file F]"
+text="$1"; out="$2"; shift 2
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) dry=1 ;;
+    --yes) yes=1 ;;
+    --cap) cap="${2:?--cap needs a number}"; shift ;;
+    --voice-file) voice_file="${2:?--voice-file needs a path}"; shift ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+
+[[ -n "$text" ]] || die "TEXT is empty"
+[[ "$out" == *.mp3 || "$out" == *.wav ]] || die "OUT must end in .mp3 or .wav"
+[[ -f "$voice_file" ]] || die "no voice record at $voice_file (train one with the voice-clone-from-video skill)"
+voice_id="$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["voice_id"])' "$voice_file")" \
+  || die "voice record has no voice_id"
+
+chars=${#text}
+price="$(python3 -I -c 'import sys;print(f"{int(sys.argv[1])*float(sys.argv[2]):.4f}")' "$chars" "$RATE")"
+echo "voice-say: $chars characters, about \$$price (cap \$$cap)"
+over="$(python3 -I -c 'import sys;print(1 if float(sys.argv[1])>float(sys.argv[2]) else 0)' "$price" "$cap")"
+if [[ "$over" == 1 && "$yes" != 1 ]]; then
+  die "price is over the cap. Pass --yes or raise --cap to go on."
+fi
+[[ "$dry" == 1 ]] && { echo "voice-say: dry run, nothing sent"; exit 0; }
+
+# The key goes in the environment, never on a command line.
+if [[ -z "${WAVESPEED_API_KEY:-}" && -f "$env_file" ]]; then set -a; . "$env_file"; set +a; fi
+[[ -n "${WAVESPEED_API_KEY:-}" ]] || die "WAVESPEED_API_KEY is not set and $env_file has none"
+command -v wavespeed >/dev/null || die "wavespeed CLI not found"
+
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+wavespeed run minimax/speech-02-hd -i "voice_id=$voice_id" -i "text=$text" \
+  --download "$tmp/out.{ext}" </dev/null >"$tmp/log" 2>&1 || { tail -5 "$tmp/log" >&2; echo "voice-say: call failed" >&2; exit 1; }
+got="$(ls "$tmp"/out.* 2>/dev/null | head -1 || true)"
+[[ -n "$got" && -s "$got" ]] || { echo "voice-say: no audio came back" >&2; exit 1; }
+
+if [[ "${got##*.}" == "${out##*.}" ]]; then cp "$got" "$out"
+else ffmpeg -v error -y -i "$got" "$out" </dev/null || { echo "voice-say: convert failed" >&2; exit 1; }
+fi
+dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" </dev/null)"
+echo "voice-say: wrote $out (${dur}s)"
+echo "voice-say: this is synthetic speech. Say so where a viewer would care."
