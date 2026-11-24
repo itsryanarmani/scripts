@@ -18,7 +18,7 @@ echo cutouts >> "$LOG"; wc -c < /dev/stdin | tr -d ' ' >> "$LOG.stdin"; [ "${STU
 X
 cat > "$S/render.sh" <<'X'
 #!/usr/bin/env bash
-echo render >> "$LOG"; wc -c < /dev/stdin | tr -d ' ' >> "$LOG.stdin"; [ -n "${STUB_NO_OUT:-}" ] || echo video > "$2"; exit 0
+echo render "${@:3}" >> "$LOG"; wc -c < /dev/stdin | tr -d ' ' >> "$LOG.stdin"; [ -n "${STUB_NO_OUT:-}" ] || echo video > "$2"; exit 0
 X
 chmod +x "$S"/*.sh; echo x > "$tmp/in.mp4"
 run() { : > "$LOG"; : > "$LOG.stdin"; echo data | TH_SKILL_DIR="$S" "$here/th-graphics" "$@" >"$tmp/o" 2>"$tmp/e"; echo $?; }   # real stdin on purpose: the stages must still get EOF
@@ -70,13 +70,16 @@ echo old > "$tmp/keep.mp4"; rc=$(STUB_NO_OUT=1 run "$tmp/in.mp4" "$tmp/p1" "$tmp
 mkdir -p "$tmp/adir"; rc1=$(run "$tmp/in.mp4" "$tmp/p1" "$tmp/adir"); rc2=$(run "$tmp/in.mp4" "$tmp/p1" "$tmp/p1/timing.json"); [ "$rc1" = 2 ] && [ "$rc2" = 2 ]; ok control_output_alias_refused $?
 # 7h link/../file means the parent of the link target (filesystem meaning), not the parent of the link
 mkdir -p "$tmp/real/nested"; ln -s "$tmp/real/nested" "$tmp/link"; echo x > "$tmp/real/sym.mp4"; rc=$(run "$tmp/link/../sym.mp4" "$tmp/p1" "$tmp/o12.mp4"); [ "$rc" = 0 ]; ok symlink_dotdot_resolves_like_the_filesystem $?
+# 7i render options are forwarded to the render stage as given (a negative number is a value, not an option)
+rc=$(run "$tmp/in.mp4" "$tmp/p1" "$tmp/o13.mp4" --pace 1.05 --end 98.9 --lufs -14); [ "$rc" = 0 ] && grep -q 'render --pace 1.05 --end 98.9 --lufs -14' "$LOG"; ok render_options_forwarded $?
+rc=$(run "$tmp/in.mp4" "$tmp/p1" "$tmp/o14.mp4" --pace); [ "$rc" = 2 ] && [ ! -s "$LOG" ]; ok control_option_value_required $?
 # 8 a missing skill script is refused (2)
 rm "$S/render.sh"; rc=$(run "$tmp/in.mp4" "$tmp/p1" "$tmp/o6.mp4"); [ "$rc" = 2 ] && [ ! -s "$LOG" ]; ok control_missing_skill_script_refused $?
 
 python3 - "$res" "${1:-}" <<'PY'
 import json, sys
 c = {a: b == "true" for a, b in (l.rstrip("\n").split("\t") for l in open(sys.argv[1]))}
-v = {"checks": c, "pass": all(c.values()) and len(c) == 16}
+v = {"checks": c, "pass": all(c.values()) and len(c) == 18}
 s = json.dumps(v, indent=2); print(s)
 if sys.argv[2]: open(sys.argv[2], "w").write(s + "\n")
 sys.exit(0 if v["pass"] else 1)

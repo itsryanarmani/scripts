@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# th-graphics IN.mp4 PROJECT_DIR OUT.mp4 [--skill DIR] [--build FILE] [--force] [--dry-run]
+# th-graphics IN.mp4 PROJECT_DIR OUT.mp4 [--skill DIR] [--build FILE] [--pace F] [--end S] [--lufs L] [--force] [--dry-run]
 # Runs the talking-head-graphics pipeline in order: prep, build, cutouts, render. Stops at the first failing stage.
 # stdout is one JSON line; stage logs go to stderr. PROJECT_DIR/timing.json holds the same JSON. Status: 0 ok, 1 a stage failed, 2 usage or setup.
 # The build file is the per-video timeline (a copy of the skill's build.py with your beat times). The agent writes it.
@@ -8,11 +8,12 @@ SKILL="${TH_SKILL_DIR:-$HOME/Documents/Personal/skills/talking-head-graphics/scr
 die() { echo "th-graphics: $*" >&2; exit 2; }
 abspath() { python3 -c 'import os, sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])), end="")' "$1"; }   # realpath: link/../x means the parent of the link target
 now() { python3 -c 'import time; print(time.monotonic())'; }
-args=(); BUILD=""; FORCE=0; DRY=0
+args=(); BUILD=""; FORCE=0; DRY=0; RARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --skill) { [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; } || die "--skill needs a folder"; SKILL="$2"; shift 2 ;;
     --build) { [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; } || die "--build needs a file"; BUILD="$2"; shift 2 ;;
+    --pace|--end|--lufs) [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[0-9]*|[0-9]*|.[0-9]*) ;; *) die "$1 needs a number, not $2" ;; esac; RARGS+=("$1" "$2"); shift 2 ;;
     --force) FORCE=1; shift ;;
     --dry-run) DRY=1; shift ;;
     --) shift; args+=("$@"); break ;;
@@ -20,7 +21,7 @@ while [ $# -gt 0 ]; do
     *) args+=("$1"); shift ;;
   esac
 done
-[ ${#args[@]} -eq 3 ] || die "usage: th-graphics IN.mp4 PROJECT_DIR OUT.mp4 [--skill DIR] [--build FILE] [--force] [--dry-run]"
+[ ${#args[@]} -eq 3 ] || die "usage: th-graphics IN.mp4 PROJECT_DIR OUT.mp4 [--skill DIR] [--build FILE] [--pace F] [--end S] [--lufs L] [--force] [--dry-run]"
 for a in "${args[@]}" "$SKILL" "$BUILD"; do case "$a" in *$'\n'*) die "a path contains a newline" ;; esac; done
 IN="$(abspath "${args[0]}")"; P="$(abspath "${args[1]}")"; OUT="$(abspath "${args[2]}")"; SKILL="$(abspath "$SKILL")"
 [ -n "$BUILD" ] && BUILD="$(abspath "$BUILD")" || BUILD="$P/build.py"
@@ -54,7 +55,7 @@ if [ "$FORCE" = 1 ] || [ ! -f "$P/assets/base.mp4" ]; then stage prep bash "$SKI
 if [ "$DRY" = 0 ] && [ ! -f "$BUILD" ]; then finish 2 needs_build_file; die "no build file at $BUILD. Copy $SKILL/build.py there, set the beat times from $P/words.json, then run this again"; fi
 stage build python3 -- "$BUILD" "$P" || fail build
 stage cutouts bash "$SKILL/cutouts.sh" "$IN" "$P" || fail cutouts
-stage render bash "$SKILL/render.sh" "$P" "$T/out.mp4" || fail render   # render into a fresh file, so an old $OUT cannot pass for a new one
+stage render bash "$SKILL/render.sh" "$P" "$T/out.mp4" ${RARGS[@]+"${RARGS[@]}"} || fail render   # render into a fresh file, so an old $OUT cannot pass for a new one
 if [ "$DRY" = 0 ]; then
   [ -s "$T/out.mp4" ] || { echo "th-graphics: render wrote no output file" >&2; fail render; }
   mv -f "$T/out.mp4" "$OUT" || { echo "th-graphics: cannot write $OUT" >&2; fail render; }
