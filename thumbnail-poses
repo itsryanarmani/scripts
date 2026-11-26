@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""thumbnail-poses - make pose images of one person for thumbnails (WaveSpeed).
+
+    thumbnail-poses --ref PHOTO [--ref PHOTO ...] --out DIR --yes
+                    [--tags all|pointing,sad,...] [--model ID] [--jobs 3]
+                    [--force] [--dry-run]
+
+Each pose is a 16:9 photo on one flat colour with the left half empty for
+text. Writes DIR/<tag>.png and DIR/index.json (the tags that exist). Uploads
+the reference photos to WaveSpeed's CDN, so --yes is required (not for
+--dry-run). Use only your own likeness, or a person who agreed. Costs about
+$0.07 per pose. Details: thumbnail-poses.md. Exit: 0 all ok, 1 any pose
+failed, 2 usage error or missing wavespeed CLI.
+"""
+import argparse, concurrent.futures as cf, json, os, re, shutil, subprocess, sys, tempfile
+
+PRICE = float(os.environ.get('THUMBNAIL_POSE_PRICE', '0.07'))
+MODEL = 'openai/gpt-image-2/edit'
+BASE = ("Use the man in the reference photos exactly: same face, hair, clothes. "
+        "Photorealistic 16:9 YouTube thumbnail photo. Soft even studio lighting. "
+        "He fills the right 45% of the frame from the waist up; the left half is "
+        "empty clean background reserved for text. No text, no logos, no "
+        "watermark, no extra props unless stated. Flat solid studio background "
+        "colour: ")
+POSES = {
+    'pointing': ('vivid orange', 'pointing with one hand toward the empty left side, friendly confident look'),
+    'surprised': ('vivid royal blue', 'wide surprised eyes, one hand on his cheek, mouth slightly open'),
+    'thumbsup': ('bright yellow', 'big genuine smile, thumbs up toward the camera'),
+    'armscrossed': ('near-black charcoal', 'arms crossed, calm confident look with a slight smile'),
+    'card': ('warm cream', 'holding a plain blank white card up toward the camera, friendly smile'),
+    'thinking': ('deep forest green', 'one hand on his chin, eyes looking up and to the left, curious'),
+    'presenting': ('vivid purple', 'both hands open and palms up presenting something to the left, open smile'),
+    'waving': ('bright teal', 'waving hello with one hand, warm smile'),
+    'finger': ('vivid red', 'leaning slightly toward the camera, serious focus, one finger raised'),
+    'candid': ('light warm grey', 'candid relaxed laugh, natural unposed look, hands down'),
+    'shocked': ('vivid royal blue', 'mouth wide open in disbelief, eyes very wide, both hands raised near his face'),
+    'sad': ('deep navy', 'downturned mouth, sad worried eyes, slightly slumped shoulders'),
+    'headhands': ('warm orange', 'both hands on top of his head in stress and disbelief, wide eyes'),
+    'pointup': ('bright yellow', 'pointing straight up above his head with one finger, excited'),
+    'pointcam': ('vivid magenta', 'pointing one finger straight at the camera, confident smirk'),
+    'facepalm': ('charcoal grey', 'one hand over his face, the other arm at his side, tired'),
+    'mindblown': ('bright teal', 'both hands open beside his head, wide eyes, open mouth'),
+    'shush': ('deep purple', 'finger on his lips in a shush gesture, eyes sideways, secretive smile'),
+    'fistpump': ('vivid green', 'celebrating with a clenched fist pumped in the air, big smile'),
+    'shrug': ('warm cream', 'shrugging with palms up and a questioning half-smile, eyebrows raised'),
+    'skeptical': ('light blue', 'one eyebrow raised, head slightly tilted, lips pressed together'),
+    'angry': ('vivid red', 'furrowed brows and a clenched fist in front of him'),
+    'laugh': ('light warm grey', 'big natural laugh with head slightly back, relaxed shoulders'),
+    'frame': ('dark forest green', 'both hands out in front as if framing a screen, focused and curious'),
+    'pleading': ('soft pink', 'hands pressed together in a please gesture, hopeful eyes'),
+}
+
+
+def die(msg, code=2):
+    print('thumbnail-poses: ' + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def upload(refs):
+    urls = []
+    for r in refs:
+        p = subprocess.run(['wavespeed', 'upload', r], capture_output=True, text=True)
+        m = re.search(r'https?://\S+', p.stdout)
+        if not m:
+            die('upload failed for %s: %s' % (r, (p.stdout + p.stderr)[-200:]), 1)
+        urls.append(m.group(0))
+    return urls
+
+
+def make(tag, urls, args, tmp):
+    f = os.path.join(tmp, tag + '.json')
+    bg, pose = POSES[tag]
+    json.dump({'prompt': BASE + bg + '. Pose: ' + pose + '.', 'images': urls, 'aspect_ratio': '16:9'}, open(f, 'w'))
+    for _ in range(2):  # one retry
+        p = subprocess.run(['wavespeed', 'run', args.model, '--input-file', f, '--download',
+                            os.path.join(args.out, tag + '.png')], capture_output=True, text=True)
+        if 'Source URLs' in p.stdout:
+            return tag, True
+    return tag, False
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--ref', action='append', default=[])
+    ap.add_argument('--out', required=True)
+    ap.add_argument('--tags', default='all')
+    ap.add_argument('--model', default=MODEL)
+    ap.add_argument('--jobs', type=int, default=3)
+    ap.add_argument('--yes', action='store_true')
+    ap.add_argument('--force', action='store_true')
+    ap.add_argument('--dry-run', action='store_true')
+    a = ap.parse_args()
+    tags = list(POSES) if a.tags == 'all' else [t.strip() for t in a.tags.split(',') if t.strip()]
+    bad = [t for t in tags if t not in POSES]
+    if bad:
+        die('unknown tag(s): %s. Known: %s' % (', '.join(bad), ', '.join(POSES)))
+    todo = [t for t in tags if a.force or not os.path.exists(os.path.join(a.out, t + '.png'))]
+    est = round(PRICE * len(todo), 2)
+    if a.dry_run:
+        for t in todo:
+            print('%s: %s%s' % (t, BASE + POSES[t][0] + '. Pose: ', POSES[t][1]))
+        print(json.dumps({'would_make': todo, 'estimated_cost_usd': est}))
+        return
+    if not a.ref or not all(os.path.isfile(r) for r in a.ref):
+        die('give one or more existing --ref photos')
+    if not a.yes:
+        die('this uploads your reference photos to WaveSpeed and costs about $%.2f. Add --yes.' % est)
+    if not shutil.which('wavespeed'):
+        die('wavespeed CLI not found (npm i -g wavespeed, then set WAVESPEED_API_KEY)')
+    os.makedirs(a.out, exist_ok=True)
+    urls = upload(a.ref)
+    failed = []
+    with tempfile.TemporaryDirectory() as tmp, cf.ThreadPoolExecutor(max(1, a.jobs)) as ex:
+        for tag, ok in ex.map(lambda t: make(t, urls, a, tmp), todo):
+            print(tag, 'ok' if ok else 'FAILED', flush=True)
+            if not ok:
+                failed.append(tag)
+    have = [t for t in POSES if os.path.exists(os.path.join(a.out, t + '.png'))]
+    json.dump(have, open(os.path.join(a.out, 'index.json'), 'w'))
+    print(json.dumps({'made': [t for t in todo if t not in failed], 'failed': failed,
+                      'skipped_existing': [t for t in tags if t not in todo], 'estimated_cost_usd': est}))
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == '__main__':
+    main()
