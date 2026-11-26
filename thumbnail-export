@@ -12,7 +12,7 @@ one 1280x720 thumbnail, and set <html data-ready="ok"> (or "fail:reason") when
 done; a page that does not report ok fails. Serves DIR on 127.0.0.1 only.
 Checks each file: PNG, 1280x720, at most --max-bytes (YouTube's limit is 2 MB);
 a larger PNG is re-encoded as JPEG with ffmpeg when it is installed. Files are
-named NN-title-Ln so equal titles never overwrite each other. Prints one JSON
+named NN-title-Ln[-pose] so equal titles never overwrite each other. Prints one JSON
 line per file. Exit: 0 all ok, 1 any check failed, 2 usage error or no Chrome.
 """
 import argparse, functools, http.server, json, os, re, shutil, struct, subprocess, sys, threading, urllib.parse
@@ -63,7 +63,7 @@ def page_ready(chrome, url):
     r = chrome_run(chrome, '--dump-dom', url)
     if r is None:
         return False, 'Chrome timed out'
-    m = re.search(r'data-ready="([^"]*)"', r.stdout)
+    m = re.search(r'<html[^>]*?\sdata-ready="([^"]*)"', r.stdout)
     if not m:
         return False, 'page did not set data-ready'
     return (True, '') if m.group(1) == 'ok' else (False, m.group(1).replace('fail:', '', 1))
@@ -87,11 +87,11 @@ def main():
     if not os.path.isfile(os.path.join(a.gallery, 'index.html')) or not os.path.isfile(cfg_path):
         die('--gallery needs index.html and config.json')
     try:
-        items = json.load(open(cfg_path)).get('items', [])
-    except (ValueError, OSError) as e:
-        die('config.json is not valid JSON: %s' % e)
-    if not items:
-        die('config.json has no items')
+        items = json.load(open(cfg_path))['items']
+        if not isinstance(items, list) or not items or not all(isinstance(x, dict) for x in items):
+            raise ValueError('items must be a non-empty list of objects')
+    except (ValueError, KeyError, TypeError, OSError) as e:
+        die('config.json needs {"items": [{"title": ...}]}: %s' % e)
     if not re.fullmatch(r'\d+(,\d+)*', a.layout) or any(int(x) < 1 for x in a.layout.split(',')):
         die('--layout is a comma list of numbers from 1')
     if a.pose and not re.fullmatch(r'[A-Za-z0-9_-]+', a.pose):
@@ -107,7 +107,7 @@ def main():
     for i in pick:
         slug = re.sub(r'[^a-z0-9]+', '-', items[i].get('title', 'item').lower()).strip('-') or 'item'
         for l in a.layout.split(','):
-            base = '%02d-%s-L%s' % (i + 1, slug, l)
+            base = '%02d-%s-L%s%s' % (i + 1, slug, l, '-' + a.pose if a.pose else '')
             png = os.path.join(a.out, base + '.png')
             for old in (png, png[:-4] + '.jpg'):
                 if os.path.exists(old):
@@ -120,7 +120,7 @@ def main():
                 bad += 1
                 print(json.dumps(res), flush=True)
                 continue
-            shoot(chrome, url, png)
+            shoot(chrome, url, png)  # a second load of the same URL: the page must be deterministic
             size = png_size(png) if os.path.isfile(png) else None
             if not size:
                 res.update(ok=False, why='no PNG written')

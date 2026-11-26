@@ -51,13 +51,13 @@ python3 thumbnail-export --gallery gallery --out thumbs --layout 5,12 --item 3 -
 under `youtube-thumbnails/assets/gallery`. Layout and item numbers start at 1.
 It serves the folder on `127.0.0.1`, opens each thumbnail in headless Chrome,
 and checks the file: PNG, exactly 1280x720, at most 2 MB. A larger PNG is
-re-encoded as JPEG if `ffmpeg` is installed. It prints one JSON line per file. Files are named `NN-title-Ln`, where `NN` is the item
+re-encoded as JPEG if `ffmpeg` is installed. It prints one JSON line per file. Files are named `NN-title-Ln` (plus `-pose` with `--pose`), where `NN` is the item
 number, so equal titles never overwrite each other.
 
 The page must report that it drew the thumbnail: it sets `<html data-ready="ok">`, or
 `data-ready="fail:<reason>"` for an unknown item or layout, a missing pose or cutout, an
 image that does not load, or text below 32 px. The script loads the page once to read the
-flag, then takes the screenshot. A page that does not report `ok` fails.
+flag, then loads it again for the screenshot, so the page must draw the same result each time. A page that does not report `ok` on the `<html>` tag fails.
 
 Exit codes. `thumbnail-export`: 0 all ok, 1 a check failed, 2 usage error or no Chrome.
 `thumbnail-poses`: 0 all ok, 1 a pose failed, 2 usage error or no `wavespeed` CLI.
