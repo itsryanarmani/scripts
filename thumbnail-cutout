@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""thumbnail-cutout - turn a photo on a flat colour background into a transparent PNG.
+
+    thumbnail-cutout SRC DST [--tolerance 14] [--min-hole 2500]
+
+The background colour is the median of the border pixels. A pixel counts as
+background when it is within --tolerance (Lab distance) of that colour and joins the
+border through background pixels, or sits in a patch of at least --min-hole pixels
+(the gap between an arm and the body). The edge gets a soft ramp and the colour is
+pulled away from the background. Needs opencv-python and numpy.
+DST must end in .png. Fails (exit 1) when the photo is not on a flat background: more
+than one border pixel in five is over 25 Lab units from the border median (a person
+touching the edge is fine, a wall of another colour is not), or when the result keeps less than 5 percent or more
+than 95 percent of the picture. Exit 2: usage error, unreadable file, a DST that is
+not .png, or an output that could not be written.
+It also fails when more than 5 percent of the border sits between --tolerance and 25
+Lab units from the backdrop (a medium shadow): it would stay in the cutout as a slab.
+Limits: a shadow on the floor or a vignette stays opaque, because only the sides and
+the top are sampled. Use an evenly lit backdrop.
+"""
+import argparse, sys
+
+try:
+    import cv2, numpy as np
+except ImportError:
+    print('thumbnail-cutout: install opencv-python and numpy', file=sys.stderr)
+    sys.exit(2)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('src')
+    ap.add_argument('dst')
+    ap.add_argument('--tolerance', type=float, default=14)
+    ap.add_argument('--min-hole', type=int, default=2500)
+    a = ap.parse_args()
+    if not a.dst.lower().endswith('.png'):
+        print('thumbnail-cutout: DST must end in .png (a JPEG has no transparency)', file=sys.stderr)
+        sys.exit(2)
+    im = cv2.imread(a.src)
+    if im is None:
+        print('thumbnail-cutout: cannot read ' + a.src, file=sys.stderr)
+        sys.exit(2)
+    lab = cv2.cvtColor(im, cv2.COLOR_BGR2LAB).astype(np.float32)
+    border = np.concatenate([lab[:6].reshape(-1, 3), lab[:, :6].reshape(-1, 3), lab[:, -6:].reshape(-1, 3)])
+    bg = np.median(border, axis=0)
+    off = np.linalg.norm(border - bg, axis=1)
+    if (off > 25).mean() > 0.2:
+        print('thumbnail-cutout: the border is not one flat colour', file=sys.stderr)
+        sys.exit(1)
+    if ((off > a.tolerance) & (off <= 25)).mean() > 0.05:
+        print('thumbnail-cutout: a shadow or gradient on the backdrop is too dark for --tolerance '
+              'to remove and too light to be the person: light the backdrop evenly or raise --tolerance',
+              file=sys.stderr)
+        sys.exit(1)
+    d = np.linalg.norm(lab - bg, axis=2)
+    n, cc = cv2.connectedComponents((d < a.tolerance).astype(np.uint8), connectivity=4)
+    edge_ids = set(np.unique(np.concatenate([cc[0], cc[-1], cc[:, 0], cc[:, -1]]))) - {0}
+    areas = np.bincount(cc.ravel())
+    big = {i for i in range(1, n) if areas[i] >= a.min_hole}
+    fg = 1 - np.isin(cc, list(edge_ids | big)).astype(np.uint8)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    share = fg.mean()
+    if not 0.05 <= share <= 0.95:
+        print(f'thumbnail-cutout: the cutout keeps {share:.0%} of the picture: wrong background colour?', file=sys.stderr)
+        sys.exit(1)
+    alpha = fg.astype(np.float32)
+    ring = cv2.dilate(fg, np.ones((5, 5), np.uint8)) - cv2.erode(fg, np.ones((5, 5), np.uint8))
+    alpha = np.where(ring > 0, np.minimum(alpha, np.clip((d - 8) / 28, 0, 1)), alpha)
+    alpha = cv2.GaussianBlur(alpha, (0, 0), 0.8)
+    out = im.astype(np.float32)
+    soft = (alpha > 0) & (alpha < 1)
+    a3 = np.clip(alpha, 0.05, 1)[..., None]
+    bgc = np.median(im[:6].reshape(-1, 3), axis=0).astype(np.float32)
+    out = np.where(soft[..., None], np.clip((out - (1 - a3) * bgc) / a3, 0, 255), out)
+    if not cv2.imwrite(a.dst, np.dstack([out.astype(np.uint8), (alpha * 255).astype(np.uint8)])):
+        print('thumbnail-cutout: could not write ' + a.dst, file=sys.stderr)
+        sys.exit(2)
+    print(f'{a.dst}: {share:.0%} of the picture kept')
+
+
+if __name__ == '__main__':
+    main()
