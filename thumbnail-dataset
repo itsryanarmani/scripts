@@ -1,35 +1,24 @@
 #!/usr/bin/env python3
 """thumbnail-dataset - collect real YouTube thumbnails with their numbers.
 
-    thumbnail-dataset --out DIR --query "how to get hired" [--query ...]
-                      [--queries-file FILE] [--refresh-searches] [--max 25] [--published-after DATE]
-                      [--order viewCount|relevance|date] [--region US] [--language en]
-                      [--keep-shorts] [--short-max 60] [--no-images] [--dry-run]
+    thumbnail-dataset --out DIR --query "how to get hired" [--query ...] [--queries-file FILE]
+        [--max 25] [--published-after DATE] [--order viewCount|relevance|date] [--region US]
+        [--language en] [--keep-shorts] [--short-max 60] [--no-images] [--refresh-searches] [--dry-run]
 
-For each query it calls the official YouTube Data API (read-only: search,
-videos, channels), then writes DIR/dataset.jsonl, DIR/dataset.csv and
-DIR/thumbs/<id>.jpg. Each row has views, likes, comments, channel
-subscribers, views_per_day and outlier (views / subscribers, only for
-channels of 1,000+ subscribers). Shorts (--short-max seconds or less, default
-60) are skipped unless --keep-shorts; the API cannot tell a 61 to 180 s Short
-from a video, so raise --short-max if they matter. A video with no usable
-duration (a live stream) is kept. A rerun skips ids already in dataset.jsonl, reuses
-finished searches (searches.json; --refresh-searches searches again) and retries
-a failed thumbnail up to 3 times. An API error, a crash or Ctrl-C saves what
-was gathered.
-
-Auth, from the environment: YOUTUBE_ACCESS_TOKEN, or YOUTUBE_CLIENT_ID +
-YOUTUBE_CLIENT_SECRET + YOUTUBE_REFRESH_TOKEN. The token needs the
-youtube.readonly scope. Quota: a search costs 100 units, a videos or channels
-page 1; the default daily quota is 10,000. --dry-run prints the cost and calls
-nothing. Thumbnails are other people's work: keep the images for study and do
-not republish them. Exit: 0 ok, 1 quota used up or some downloads failed,
-2 usage, auth or other API error.
+Searches the official YouTube Data API (read-only) and writes DIR/dataset.jsonl,
+dataset.csv and thumbs/<id>.jpg: views, likes, comments, channel subscribers,
+views_per_day and outlier (views / subscribers, channels of 1,000+ only). Shorts
+are skipped. A rerun skips known ids, reuses finished searches and retries failed
+thumbnails; an error, crash or Ctrl-C saves what was gathered. Auth from the
+environment: YOUTUBE_ACCESS_TOKEN, or YOUTUBE_CLIENT_ID + YOUTUBE_CLIENT_SECRET +
+YOUTUBE_REFRESH_TOKEN (youtube.readonly). A search costs 100 quota units; --dry-run
+prints the cost. Thumbnails are other people's work: study them, do not republish.
+Exit: 0 ok, 1 quota used up or a download failed, 2 usage, auth or other error.
+Details: thumbnail-dataset.md.
 """
 import argparse, csv, datetime as dt, json, math, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 VID = re.compile(r'[A-Za-z0-9_-]{11}')
-
 API = os.environ.get('YOUTUBE_API_BASE', 'https://www.googleapis.com/youtube/v3')
 TOKEN_URL = os.environ.get('YOUTUBE_TOKEN_URL', 'https://oauth2.googleapis.com/token')
 THUMB = os.environ.get('YOUTUBE_THUMB_BASE', 'https://i.ytimg.com/vi')
@@ -142,12 +131,11 @@ def write_all(out, rows, seen_short, gone):
         if ids:
             atomic(os.path.join(out, name), lambda f, ids=ids: f.write('\n'.join(sorted(ids)) + '\n'))
     atomic(os.path.join(out, 'dataset.jsonl'), lambda f: [f.write(json.dumps(r, ensure_ascii=False) + '\n') for r in rows.values()])
-
     def csv_out(f):
         w = csv.DictWriter(f, FIELDS, extrasaction='ignore')
         w.writeheader()
         for r in rows.values():
-            w.writerow(dict(r, queries='|'.join(r['queries'])))
+            w.writerow(dict(r, queries='|'.join(r.get('queries', []))))
     atomic(os.path.join(out, 'dataset.csv'), csv_out, newline='')
 
 
@@ -190,7 +178,9 @@ def main():
         cache = {} if a.refresh_searches else json.load(open(cache_path))
     except (OSError, ValueError):
         cache = {}
-    err, found, failed, skipped, bad_items = None, {}, [], 0, 0
+    if not isinstance(cache, dict):
+        cache = {}
+    err, found, failed, skipped, bad_items, unresolved = None, {}, [], 0, 0, 0
     now = dt.datetime.now(dt.timezone.utc)
     vids = {}
     try:
@@ -201,8 +191,8 @@ def main():
                     res = api(token, 'search', part='id', type='video', q=q, maxResults=a.max, order=a.order, regionCode=a.region,
                               relevanceLanguage=a.language,
                               publishedAfter=a.published_after + 'T00:00:00Z' if a.published_after else None)
-                    cache[key] = [it['id']['videoId'] for it in res.get('items', [])
-                                  if isinstance(it.get('id'), dict) and VID.fullmatch(it['id'].get('videoId') or '')]
+                    cache[key] = [it['id']['videoId'] for it in res.get('items') or []
+                                  if isinstance(it, dict) and isinstance(it.get('id'), dict) and VID.fullmatch(str(it['id'].get('videoId')))]
                     atomic(cache_path, lambda f: json.dump(cache, f))
                 for vid in cache[key]:
                     found.setdefault(vid, []).append(q)
@@ -211,29 +201,32 @@ def main():
         new = []
         for vid, q in found.items():
             if vid in rows:
-                rows[vid]['queries'] = sorted(set(rows[vid]['queries']) | set(q))
+                rows[vid]['queries'] = sorted(set(rows[vid].get('queries', [])) | set(q))
             elif vid not in seen_short and vid not in gone:
                 new.append(vid)
         subs = {}
         try:
             for ch in chunks(new, 50):
-                got = {v['id']: v for v in api(token, 'videos', part='snippet,statistics,contentDetails', id=','.join(ch)).get('items', [])
+                got = {v['id']: v for v in api(token, 'videos', part='snippet,statistics,contentDetails', id=','.join(ch)).get('items') or []
                        if isinstance(v, dict) and v.get('id') in ch}
                 vids.update(got)
                 gone.update(i for i in ch if i not in got)
         except ApiError as e:
             err = err or e  # still look up the channels of the videos we did get
         try:
-            for ch in chunks(sorted({v.get('snippet', {}).get('channelId') for v in vids.values()} - {None}), 50):
-                for c in api(token, 'channels', part='statistics', id=','.join(ch)).get('items', []):
-                    st = c.get('statistics', {})
+            for ch in chunks(sorted({(v.get('snippet') or {}).get('channelId') for v in vids.values()} - {None}), 50):
+                for c in api(token, 'channels', part='statistics', id=','.join(ch)).get('items') or []:
+                    if not isinstance(c, dict) or 'id' not in c:
+                        continue
+                    st = c.get('statistics') or {}
                     subs[c['id']] = None if st.get('hiddenSubscriberCount') or 'subscriberCount' not in st else int(st['subscriberCount'])
         except ApiError as e:
             err = err or e
         for vid, v in vids.items():
             try:
-                sn, st = v['snippet'], v.get('statistics', {})
+                sn, st = v['snippet'], v.get('statistics') or {}
                 if sn['channelId'] not in subs:
+                    unresolved += 1
                     continue  # channel lookup failed: leave it out, so a rerun fetches it with its subscriber count
                 dur = seconds(v.get('contentDetails', {}).get('duration'))
                 if dur is not None and dur <= a.short_max and not a.keep_shorts:
@@ -260,9 +253,11 @@ def main():
                     r['thumb_tries'] = r.get('thumb_tries', 0) + (0 if r['thumb'] else 1)
                     if not r['thumb']:
                         failed.append(vid)
+    except Exception as e:  # odd data or a disk error: save, say so, and do not exit 1 (that means quota)
+        err = err or ApiError('unexpected %s: %s' % (type(e).__name__, e), 2)
     finally:
         write_all(a.out, rows, seen_short, gone)  # always saved, also after an API error, a crash or Ctrl-C
-    print(json.dumps({'total': len(rows), 'new': len(vids) - skipped - bad_items, 'shorts_skipped': skipped, 'malformed_items': bad_items,
+    print(json.dumps({'total': len(rows), 'new': len(vids) - skipped - bad_items - unresolved, 'shorts_skipped': skipped, 'malformed_items': bad_items, 'unresolved': unresolved,
                       'download_failed': failed, 'quota_units_estimate': est, 'error': str(err) if err else None}))
     if err:
         print('thumbnail-dataset: stopped early, saved what was gathered: %s' % err, file=sys.stderr)
