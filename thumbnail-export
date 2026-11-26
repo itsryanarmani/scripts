@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""thumbnail-export - render gallery layouts to 1280x720 thumbnail files.
+
+    thumbnail-export --gallery DIR --out DIR --layout N[,N...]
+                     [--item N|all] [--pose TAG] [--max-bytes 2000000]
+                     [--chrome PATH]
+
+DIR holds the gallery page (index.html, config.json, poses/, optional
+cutout.png). Layout and item numbers start at 1, as the gallery shows them.
+The page must read the hash #solo=1&i=ITEM&l=LAYOUT[&pose=TAG] (0-based), draw
+one 1280x720 thumbnail, and set <html data-ready="ok"> (or "fail:reason") when
+done; a page that does not report ok fails. Serves DIR on 127.0.0.1 only.
+Checks each file: PNG, 1280x720, at most --max-bytes (YouTube's limit is 2 MB);
+a larger PNG is re-encoded as JPEG with ffmpeg when it is installed. Files are
+named NN-title-Ln[-pose] so equal titles never overwrite each other. Prints one JSON
+line per file. Exit: 0 all ok, 1 any check failed, 2 usage error or no Chrome.
+"""
+import argparse, functools, http.server, json, os, re, shutil, struct, subprocess, sys, threading, urllib.parse
+
+CHROME = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', 'google-chrome',
+          'google-chrome-stable', 'chromium', 'chromium-browser']
+
+
+def die(msg):
+    print('thumbnail-export: ' + msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def find_chrome(given):
+    for c in ([given] if given else os.environ.get('CHROME') and [os.environ['CHROME']] or CHROME):
+        if c and (os.path.isfile(c) or shutil.which(c)):
+            return c
+    die('no Chrome found. Pass --chrome PATH or set CHROME.')
+
+
+def png_size(path):
+    with open(path, 'rb') as f:
+        h = f.read(24)
+    if h[:8] != b'\x89PNG\r\n\x1a\n':
+        return None
+    return struct.unpack('>II', h[16:24])
+
+
+def serve(root):
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Quiet, directory=root))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def chrome_run(chrome, *flags):
+    try:
+        return subprocess.run([chrome, '--headless=new', '--disable-gpu', '--hide-scrollbars', '--window-size=1280,720',
+                               '--virtual-time-budget=8000', *flags], capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def page_ready(chrome, url):
+    """Return (True, '') when the page set data-ready="ok", else (False, reason)."""
+    r = chrome_run(chrome, '--dump-dom', url)
+    if r is None:
+        return False, 'Chrome timed out'
+    m = re.search(r'<html[^>]*?\sdata-ready="([^"]*)"', r.stdout)
+    if not m:
+        return False, 'page did not set data-ready'
+    return (True, '') if m.group(1) == 'ok' else (False, m.group(1).replace('fail:', '', 1))
+
+
+def shoot(chrome, url, out):
+    return chrome_run(chrome, '--screenshot=' + out, url) is not None
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--gallery', required=True)
+    ap.add_argument('--out', required=True)
+    ap.add_argument('--layout', required=True)
+    ap.add_argument('--item', default='all')
+    ap.add_argument('--pose')
+    ap.add_argument('--max-bytes', type=int, default=2000000)
+    ap.add_argument('--chrome')
+    a = ap.parse_args()
+    cfg_path = os.path.join(a.gallery, 'config.json')
+    if not os.path.isfile(os.path.join(a.gallery, 'index.html')) or not os.path.isfile(cfg_path):
+        die('--gallery needs index.html and config.json')
+    try:
+        items = json.load(open(cfg_path))['items']
+        if not isinstance(items, list) or not items or not all(isinstance(x, dict) for x in items):
+            raise ValueError('items must be a non-empty list of objects')
+    except (ValueError, KeyError, TypeError, OSError) as e:
+        die('config.json needs {"items": [{"title": ...}]}: %s' % e)
+    if not re.fullmatch(r'\d+(,\d+)*', a.layout) or any(int(x) < 1 for x in a.layout.split(',')):
+        die('--layout is a comma list of numbers from 1')
+    if a.pose and not re.fullmatch(r'[A-Za-z0-9_-]+', a.pose):
+        die('--pose is a tag such as sad or pointing')
+    pick = list(range(len(items))) if a.item == 'all' else [int(a.item) - 1] if a.item.isdigit() else None
+    if pick is None or any(i < 0 or i >= len(items) for i in pick):
+        die('--item must be "all" or a number from 1 to %d' % len(items))
+    chrome = find_chrome(a.chrome)
+    os.makedirs(a.out, exist_ok=True)
+    srv = serve(a.gallery)
+    base_url = 'http://127.0.0.1:%d/index.html' % srv.server_address[1]
+    bad = 0
+    for i in pick:
+        slug = re.sub(r'[^a-z0-9]+', '-', items[i].get('title', 'item').lower()).strip('-') or 'item'
+        for l in a.layout.split(','):
+            base = '%02d-%s-L%s%s' % (i + 1, slug, l, '-' + a.pose if a.pose else '')
+            png = os.path.join(a.out, base + '.png')
+            for old in (png, png[:-4] + '.jpg'):
+                if os.path.exists(old):
+                    os.remove(old)  # a stale file must never pass the check
+            url = '%s#solo=1&i=%d&l=%d%s' % (base_url, i, int(l) - 1, '&pose=' + urllib.parse.quote(a.pose) if a.pose else '')
+            res = {'file': png, 'item': i + 1, 'layout': int(l)}
+            ok, why = page_ready(chrome, url)
+            if not ok:
+                res.update(ok=False, why='page: ' + why)
+                bad += 1
+                print(json.dumps(res), flush=True)
+                continue
+            shoot(chrome, url, png)  # a second load of the same URL: the page must be deterministic
+            size = png_size(png) if os.path.isfile(png) else None
+            if not size:
+                res.update(ok=False, why='no PNG written')
+            elif size != (1280, 720):
+                res.update(ok=False, why='size %dx%d, need 1280x720' % size)
+            else:
+                nbytes = os.path.getsize(png)
+                if nbytes > a.max_bytes and shutil.which('ffmpeg'):
+                    jpg = png[:-4] + '.jpg'
+                    r = subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', png, '-q:v', '3', jpg])
+                    if r.returncode == 0 and os.path.isfile(jpg):
+                        res['file'], nbytes = jpg, os.path.getsize(jpg)
+                        os.remove(png)
+                    else:
+                        res['why'] = 'ffmpeg could not re-encode'
+                res.update(bytes=nbytes, ok=nbytes <= a.max_bytes and 'why' not in res)
+                if nbytes > a.max_bytes and 'why' not in res:
+                    res['why'] = 'over %d bytes' % a.max_bytes
+            bad += not res['ok']
+            print(json.dumps(res), flush=True)
+    srv.shutdown()
+    sys.exit(1 if bad else 0)
+
+
+if __name__ == '__main__':
+    main()
