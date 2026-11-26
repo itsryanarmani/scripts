@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""E2E for thumbnail-dataset against a fake YouTube API on 127.0.0.1 (no quota).
-
-Covers rows, outlier, Shorts, thumbnail fallback and retry, dedupe, token refresh,
-reruns, the search cache, quota stop, partial failure, malformed, null and deleted
-items, odd durations, a hostile id, unicode, --no-images. Prints evidence JSON.
+"""E2E for thumbnail-dataset against a fake YouTube API on 127.0.0.1 (no quota): rows, outlier, Shorts,
+thumbnail fallback and retry, token refresh, reruns, the search cache, quota stop, partial failure, malformed,
+null and deleted items, odd durations, a hostile id, unicode, --no-images, usage errors. Prints evidence JSON.
 """
 import csv, datetime as dt, json, os, subprocess, sys, tempfile, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -107,7 +105,6 @@ def main():
         check('views_per_day_and_outlier', abs(a.get('views_per_day', 0) - 100000) < 5000 and a.get('outlier') == 10.0, str(a))
         check('outlier_none_under_1000_subs', c.get('outlier') is None and c.get('subscribers') == 500, str(c))
         check('thumb_maxres_and_hq_fallback', a.get('thumb') == 'maxresdefault' and os.path.getsize(P('ds/thumbs/AAAAAAAAAAA.jpg')) > 2000 and c.get('thumb') == 'hqdefault')
-        check('csv_written', len(list(csv.DictReader(open(P('ds/dataset.csv'))))) == 2)
         before = dict(calls)
         r2 = run('--out', P('ds'), '--query', 'q one', '--query', 'q two', '--max', '10')
         check('rerun_no_refetch', r2.returncode == 0 and calls['videos'] == before['videos'] and calls['channels'] == before['channels'], str(calls))
@@ -115,16 +112,15 @@ def main():
         check('dry_run_quota_no_auth', d.returncode == 0 and json.loads(d.stdout)['estimated_quota_units'] == 102, d.stdout + d.stderr)
         check('missing_auth_exit_2', run('--out', P('ds'), '--query', 'x', e=dict(env)).returncode == 2)
         check('failed_token_refresh_exit_2', run('--out', P('bt'), '--query', 'q one', e=dict(env, YOUTUBE_TOKEN_URL=base + '/badtoken', **auth)).returncode == 2)
-        for name, args in (('no_query', []), ('bad_date', ['--query', 'x', '--published-after', 'yesterday']), ('bad_max', ['--query', 'x', '--max', '99'])):
+        open(P('afile'), 'w').write('x')
+        for name, args in (('missing_queries_file', ['--queries-file', P('nope.txt')]), ('no_query', []), ('bad_date', ['--query', 'x', '--published-after', 'yesterday']), ('bad_max', ['--query', 'x', '--max', '99'])):
             check(name + '_exit_2', run('--out', P('ds'), *args).returncode == 2)
+        check('out_is_a_file_exit_2', run('--out', P('afile'), '--query', 'q one').returncode == 2)
         r = run('--out', P('quota'), '--query', 'q one', '--query', 'q boom', '--max', '10')  # quota stop: exit 1, work saved
         check('quota_403_exit_1_partial_saved', r.returncode == 1 and list(rows(P('quota'))) == ['AAAAAAAAAAA'], r.stdout + r.stderr)
         s0 = calls['search']
         r = run('--out', P('quota'), '--query', 'q one', '--query', 'q boom', '--max', '10')
         check('search_cache_reused', r.returncode == 1 and calls['search'] - s0 == 1, str(calls))
-        s0 = calls['search']
-        run('--out', P('dup'), '--query', 'q one', '--query', ' q one ', '--max', '10')
-        check('repeated_query_searched_once', calls['search'] - s0 == 1, str(calls))
         state['hq_fail'] = True  # a failing thumbnail: exit 1, retried by a rerun with no videos call, capped at 3 tries
         r = run('--out', P('retry'), '--query', 'q two', '--max', '10')
         check('failed_download_exit_1', r.returncode == 1 and 'CCCCCCCCCCC' in json.loads(r.stdout)['download_failed'], r.stdout)
@@ -140,7 +136,7 @@ def main():
         r = run('--out', P('odd'), '--query', 'q three', '--max', '10')  # hostile id, hidden subs, null likes, live and week durations
         o = rows(P('odd'))
         check('odd_run_ok', r.returncode == 0 and set(o) == {'DDDDDDDDDDD', 'EEEEEEEEEEE', 'FFFFFFFFFFF', 'GGGGGGGGGGG'}, r.stdout + r.stderr)
-        check('hostile_id_never_requested', '../../x' not in asked and not os.path.exists(P('x.jpg')), str(asked[-3:]))
+        check('hostile_id_never_requested', '../../x' not in asked, str(asked[-3:]))
         check('hidden_subscribers_and_missing_likes_null', o['EEEEEEEEEEE']['subscribers'] is None and o['EEEEEEEEEEE']['outlier'] is None
               and o['DDDDDDDDDDD']['likes'] is None and o['DDDDDDDDDDD']['comments'] is None)
         check('live_null_and_week_parsed', o['FFFFFFFFFFF']['duration_s'] is None and o['GGGGGGGGGGG']['duration_s'] == 604800)

@@ -13,7 +13,7 @@ thumbnails; an error, crash or Ctrl-C saves what was gathered. Auth from the
 environment: YOUTUBE_ACCESS_TOKEN, or YOUTUBE_CLIENT_ID + YOUTUBE_CLIENT_SECRET +
 YOUTUBE_REFRESH_TOKEN (youtube.readonly). A search costs 100 quota units; --dry-run
 prints the cost. Thumbnails are other people's work: study them, do not republish.
-Exit: 0 ok, 1 quota used up or a download failed, 2 usage, auth or other error.
+Exit: 0 ok, 1 quota used up or a download failed, 2 usage, auth or other error, 130 Ctrl-C.
 Details: thumbnail-dataset.md.
 """
 import argparse, csv, datetime as dt, json, math, os, re, sys, time, urllib.error, urllib.parse, urllib.request
@@ -135,7 +135,7 @@ def write_all(out, rows, seen_short, gone):
         w = csv.DictWriter(f, FIELDS, extrasaction='ignore')
         w.writeheader()
         for r in rows.values():
-            w.writerow(dict(r, queries='|'.join(r.get('queries', []))))
+            w.writerow(dict(r, queries='|'.join(r.get('queries') or [])))
     atomic(os.path.join(out, 'dataset.csv'), csv_out, newline='')
 
 
@@ -178,8 +178,7 @@ def main():
         cache = {} if a.refresh_searches else json.load(open(cache_path))
     except (OSError, ValueError):
         cache = {}
-    if not isinstance(cache, dict):
-        cache = {}
+    cache = cache if isinstance(cache, dict) else {}
     err, found, failed, skipped, bad_items, unresolved = None, {}, [], 0, 0, 0
     now = dt.datetime.now(dt.timezone.utc)
     vids = {}
@@ -201,7 +200,7 @@ def main():
         new = []
         for vid, q in found.items():
             if vid in rows:
-                rows[vid]['queries'] = sorted(set(rows[vid].get('queries', [])) | set(q))
+                rows[vid]['queries'] = sorted(set(rows[vid].get('queries') or []) | set(q))
             elif vid not in seen_short and vid not in gone:
                 new.append(vid)
         subs = {}
@@ -266,4 +265,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        die('interrupted; what was gathered is saved', 130)
+    except Exception as e:  # a usage or disk error outside the guarded block: never exit 1 (quota)
+        die('%s: %s' % (type(e).__name__, e))

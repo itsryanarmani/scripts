@@ -23,8 +23,8 @@ python3 thumbnail-dataset --out data --queries-file q.txt --max 30 --published-a
 and `YOUTUBE_REFRESH_TOKEN` (refreshed by the script). Scope `youtube.readonly`.
 
 **Output.** `dataset.jsonl` and `dataset.csv`: `id`, `title`, `channel`, `published`,
-`duration_s`, `views`, `likes`, `comments` (null when hidden), `subscribers`,
-`views_per_day`, `outlier`, `thumb`, `thumb_tries`, `queries`. `thumbs/<id>.jpg`
+`channel_id`, `duration_s`, `views`, `likes`, `comments` (null when hidden), `subscribers`,
+`views_per_day`, `outlier`, `thumb`, `queries` (the jsonl also has `thumb_tries`). `thumbs/<id>.jpg`
 is `maxresdefault`, or `hqdefault` for older videos. Also `skipped.txt` (Shorts),
 `gone.txt` (deleted or private ids; delete the file to look again) and
 `searches.json` (finished searches, keyed by query, `--max`, `--order`, region,
@@ -38,14 +38,12 @@ views. It is a hint: topic, timing and title count, and one video can be lucky.
 pays only for searches that did not finish. A failed thumbnail is tried 3 times in
 all. A video is saved only with its channel's subscriber count; one whose channel
 lookup failed is counted in `unresolved` and fetched again next run. An API error,
-a crash or Ctrl-C saves what was gathered. A thumbnail-only rerun still needs a token.
+a crash or Ctrl-C saves what was gathered. A thumbnail-only rerun still needs a token. Changing `--short-max` later does not re-check ids already in `skipped.txt` or rows already saved; delete `skipped.txt` to look again.
 
 **Quota.** A search costs 100 units, a page of 50 videos or channels 1. The default
 is 10,000 a day (reset at midnight Pacific): 25 searches of 30 results cost about 2,530.
 
 **Exit codes.** 0 ok; 1 quota used up or a download failed; 2 usage, auth, a failed
-token refresh, odd data, or any other API or network error.
+token refresh, odd data, a disk error or any other error; 130 Ctrl-C (data saved).
 
-**Rights.** The images are other people's work: study them, do not republish or commit them. The numbers are facts.
-
-`python3 thumbnail-dataset.test.py` runs it against a fake API (no quota).
+**Rights.** The images are other people's work: study, do not republish or commit them. The numbers are facts. Test: `python3 thumbnail-dataset.test.py` (a fake API, no quota).
