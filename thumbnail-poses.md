@@ -21,7 +21,7 @@ python3 thumbnail-poses --ref a.jpg --out poses --tags sad,shocked,pointing --ye
 | `--model ID` | WaveSpeed image-edit model. Default `openai/gpt-image-2/edit`. |
 | `--jobs N` | Parallel runs. Default 3. Each run uses its own input file. |
 | `--who`, `--he`, `--his`, `--him` | How the prompt names the person. Defaults: `the man`, `he`, `his`, `him`. Set them for anyone else, for example `--who "the woman" --he she --his her --him her`. |
-| `--force` | Redo poses that already exist. |
+| `--force` | Redo poses that already exist. It deletes the old file first, so if the redo fails the pose is gone: copy a pose you like before you redo it. |
 | `--yes` | Required. The reference photos go to WaveSpeed's CDN. |
 | `--dry-run` | Print the prompts and the estimated cost. Needs no key. |
 
