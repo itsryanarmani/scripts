@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""address-verify - check postal addresses with the PostGrid address verification API.
+
+    address-verify (--file FILE | --sheet-json FILE [--column N])
+                   [--dry-run | --yes] [--out FILE] [--url URL]
+
+--file         one address per line ('#' lines and blanks are ignored).
+--sheet-json   output of `gog sheets get ... --json` (a "values" list of rows);
+               --column is the 0-based column that holds the address (default 0).
+               Add --header when the first row is a header: it is then skipped.
+A note in brackets, such as "(HQ; role is remote)", is cut off before the lookup: the
+cut starts at the first bracket that has no postal code after it. A bracket with a
+postal code after it is part of the address and is kept. Each lookup is paid, so a run needs --yes; --dry-run prints
+the list and the lookup count and makes no network call.
+Key: POSTGRID_ADDVER_LIVE_API_KEY in the environment. A key that starts with test_
+is refused: it answers every address with the same dummy address.
+Prints one JSON line per address: input, status (verified, corrected, failed,
+error), canonical (one line, or null), errors. A timeout, a network error or an answer
+that is not JSON marks that row error and the run goes on. Exit 0 when the run
+finished (even if some rows failed), 1 on an API stop (401, 403), 2 on a usage or
+input error.
+PostGrid verifies US and Canada addresses well. Other countries come back failed
+even when the address is real: check those in an official register.
+"""
+import argparse, http.client, json, os, re, sys, urllib.error, urllib.request
+
+URL = 'https://api.postgrid.com/v1/addver/verifications?includeDetails=true'
+
+
+def die(msg, code=2):
+    print('address-verify: ' + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+POSTAL = re.compile(r'\b\d{5}(-\d{4})?\b|\b[A-Za-z]\d[A-Za-z] ?\d[A-Za-z]\d\b')
+
+
+def clean(raw):
+    """Cut a trailing note: from the first bracket with no postal code after it."""
+    raw = str(raw).strip()
+    i = raw.find('(')
+    while i != -1:
+        if not POSTAL.search(raw[i:]):
+            return raw[:i].strip()
+        i = raw.find('(', i + 1)
+    return raw
+
+
+def load(args):
+    try:
+        if args.file:
+            lines = [l.strip() for l in open(args.file, encoding='utf8')]
+            return [clean(l) for l in lines if l and not l.startswith('#')]
+        rows = json.load(open(args.sheet_json, encoding='utf8'))['values']
+        if args.header:
+            rows = rows[1:]
+        return [clean(r[args.column]) if 0 <= args.column < len(r) else '' for r in rows]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        die(f'cannot read the input: {e}')
+
+
+def verify(addr, key, url):
+    req = urllib.request.Request(url, json.dumps({'address': addr}).encode(),
+                                 {'x-api-key': key, 'Content-Type': 'application/json',
+                                  'User-Agent': 'address-verify/1.0'})  # no UA: Cloudflare error 1010
+    d = json.load(urllib.request.urlopen(req, timeout=30))['data']
+    if not isinstance(d, dict):
+        raise ValueError('unexpected answer')
+    parts = [d.get('line1'), d.get('line2'), d.get('city'), d.get('provinceOrState'), d.get('postalOrZip')]
+    canon = ' '.join(p for p in parts if p) if d.get('status') in ('verified', 'corrected') else None
+    return {'status': d.get('status'), 'canonical': canon, 'errors': d.get('errors') or None}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument('--file')
+    g.add_argument('--sheet-json')
+    ap.add_argument('--column', type=int, default=0)
+    ap.add_argument('--header', action='store_true', help='skip the first row of a sheet export')
+    ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--yes', action='store_true', help='allow the paid lookups')
+    ap.add_argument('--out')
+    ap.add_argument('--url', default=URL)
+    args = ap.parse_args()
+    addrs = load(args)
+    if not any(addrs):
+        die('no addresses in the input (is --column right?)')
+    if args.dry_run:
+        for a in addrs:
+            print(a or '(empty)')
+        print(f'{len([a for a in addrs if a])} lookups, no network call', file=sys.stderr)
+        return
+    if not args.yes:
+        die(f'{len([a for a in addrs if a])} paid lookups: add --yes (or --dry-run to preview)')
+    key = os.environ.get('POSTGRID_ADDVER_LIVE_API_KEY', '')
+    if not key or key.startswith('test_'):
+        die('set POSTGRID_ADDVER_LIVE_API_KEY to a live key (the TEST key returns a dummy address)')
+    out, stop = [], False
+    for a in addrs:
+        if not a:
+            res = {'status': 'error', 'canonical': None, 'errors': {'input': ['empty address']}}
+        else:
+            try:
+                res = verify(a, key, args.url)
+            except urllib.error.HTTPError as e:
+                res = {'status': 'error', 'canonical': None, 'errors': {'http': [str(e.code)]}}
+                stop = e.code in (401, 403)
+            except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError) as e:
+                res = {'status': 'error', 'canonical': None, 'errors': {'network': [type(e).__name__]}}
+        out.append({'input': a, **res})
+        print(json.dumps(out[-1]), flush=True)
+        if stop:
+            break
+    if args.out:
+        try:
+            json.dump(out, open(args.out, 'w'), indent=1)
+        except OSError as e:
+            print(f'address-verify: could not write {args.out}: {e}', file=sys.stderr)
+            sys.exit(2)
+    sys.exit(1 if stop else 0)
+
+
+if __name__ == '__main__':
+    main()
