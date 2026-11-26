@@ -20,6 +20,7 @@ python3 thumbnail-poses --ref a.jpg --out poses --tags sad,shocked,pointing --ye
 | `--tags` | `all` (25 poses, default) or a comma list. Tags: see `POSES` in the script. |
 | `--model ID` | WaveSpeed image-edit model. Default `openai/gpt-image-2/edit`. |
 | `--jobs N` | Parallel runs. Default 3. Each run uses its own input file. |
+| `--who`, `--he`, `--his`, `--him` | How the prompt names the person. Defaults: `the man`, `he`, `his`, `him`. Set them for anyone else, for example `--who "the woman" --he she --his her --him her`. |
 | `--force` | Redo poses that already exist. |
 | `--yes` | Required. The reference photos go to WaveSpeed's CDN. |
 | `--dry-run` | Print the prompts and the estimated cost. Needs no key. |
@@ -30,7 +31,7 @@ colour from the top-left pixel and picks a text colour from it.
 
 **Cost.** About $0.07 per pose, $1.75 for all 25 (measured November 2026 on
 `openai/gpt-image-2/edit`). A run of 15 poses with 3 jobs took under 10 minutes.
-Existing poses are skipped, so a rerun only pays for the missing ones.
+A pose that writes no file is retried once, so the worst case is twice that. Existing poses are skipped, so a rerun only pays for the missing ones.
 
 **Likeness.** The output is generated, not photographed. Use your own face, or a
 person who agreed. Do not show an event that did not happen as if it did.
@@ -50,10 +51,16 @@ python3 thumbnail-export --gallery gallery --out thumbs --layout 5,12 --item 3 -
 under `youtube-thumbnails/assets/gallery`. Layout and item numbers start at 1.
 It serves the folder on `127.0.0.1`, opens each thumbnail in headless Chrome,
 and checks the file: PNG, exactly 1280x720, at most 2 MB. A larger PNG is
-re-encoded as JPEG if `ffmpeg` is installed. It prints one JSON line per file.
+re-encoded as JPEG if `ffmpeg` is installed. It prints one JSON line per file. Files are named `NN-title-Ln`, where `NN` is the item
+number, so equal titles never overwrite each other.
 
-Exit codes: 0 all ok, 1 a check failed, 2 usage error, a missing Chrome, or a
-missing `wavespeed` CLI.
+The page must report that it drew the thumbnail: it sets `<html data-ready="ok">`, or
+`data-ready="fail:<reason>"` for an unknown item or layout, a missing pose or cutout, an
+image that does not load, or text below 32 px. The script loads the page once to read the
+flag, then takes the screenshot. A page that does not report `ok` fails.
+
+Exit codes. `thumbnail-export`: 0 all ok, 1 a check failed, 2 usage error or no Chrome.
+`thumbnail-poses`: 0 all ok, 1 a pose failed, 2 usage error or no `wavespeed` CLI.
 
 ## Failure modes
 
@@ -64,6 +71,8 @@ missing `wavespeed` CLI.
 | Background not flat | The model added a gradient. Rerun that tag. The text colour is still read from the top-left pixel. |
 | Export is not 1280x720 | The page did not size itself to 1280x720 or Chrome added a scrollbar. The page must draw exactly one 1280x720 box. |
 | Export over 2 MB | `ffmpeg` converts it to JPEG. Without `ffmpeg` the file is reported as failed. |
+| `page: pose file missing`, `unknown layout`, `image missing`, `text too small` | The page refused to draw. Fix the named cause. Layouts above 24 need `cutout.png`. |
+| `page did not set data-ready` | A custom page does not follow the contract above. |
 | Blank export | The page needs `#solo=1`. A page loaded from `file://` cannot read pose pixels, so the script serves the folder over HTTP. |
 
 ## Test

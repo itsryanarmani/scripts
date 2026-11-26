@@ -3,44 +3,45 @@
 
     thumbnail-poses --ref PHOTO [--ref PHOTO ...] --out DIR --yes
                     [--tags all|pointing,sad,...] [--model ID] [--jobs 3]
-                    [--force] [--dry-run]
+                    [--who "the man"] [--he he] [--his his] [--force] [--dry-run]
 
 Each pose is a 16:9 photo on one flat colour with the left half empty for
 text. Writes DIR/<tag>.png and DIR/index.json (the tags that exist). Uploads
 the reference photos to WaveSpeed's CDN, so --yes is required (not for
 --dry-run). Use only your own likeness, or a person who agreed. Costs about
-$0.07 per pose. Details: thumbnail-poses.md. Exit: 0 all ok, 1 any pose
+$0.07 per pose; a pose that fails to write is retried once, so the worst case
+is twice that. Details: thumbnail-poses.md. Exit: 0 all ok, 1 any pose
 failed, 2 usage error or missing wavespeed CLI.
 """
 import argparse, concurrent.futures as cf, json, os, re, shutil, subprocess, sys, tempfile
 
 PRICE = float(os.environ.get('THUMBNAIL_POSE_PRICE', '0.07'))
 MODEL = 'openai/gpt-image-2/edit'
-BASE = ("Use the man in the reference photos exactly: same face, hair, clothes. "
+BASE = ("Use {who} in the reference photos exactly: same face, hair, clothes. "
         "Photorealistic 16:9 YouTube thumbnail photo. Soft even studio lighting. "
-        "He fills the right 45% of the frame from the waist up; the left half is "
+        "{He} fills the right 45% of the frame from the waist up; the left half is "
         "empty clean background reserved for text. No text, no logos, no "
         "watermark, no extra props unless stated. Flat solid studio background "
         "colour: ")
 POSES = {
     'pointing': ('vivid orange', 'pointing with one hand toward the empty left side, friendly confident look'),
-    'surprised': ('vivid royal blue', 'wide surprised eyes, one hand on his cheek, mouth slightly open'),
+    'surprised': ('vivid royal blue', 'wide surprised eyes, one hand on {his} cheek, mouth slightly open'),
     'thumbsup': ('bright yellow', 'big genuine smile, thumbs up toward the camera'),
     'armscrossed': ('near-black charcoal', 'arms crossed, calm confident look with a slight smile'),
     'card': ('warm cream', 'holding a plain blank white card up toward the camera, friendly smile'),
-    'thinking': ('deep forest green', 'one hand on his chin, eyes looking up and to the left, curious'),
+    'thinking': ('deep forest green', 'one hand on {his} chin, eyes looking up and to the left, curious'),
     'presenting': ('vivid purple', 'both hands open and palms up presenting something to the left, open smile'),
     'waving': ('bright teal', 'waving hello with one hand, warm smile'),
     'finger': ('vivid red', 'leaning slightly toward the camera, serious focus, one finger raised'),
     'candid': ('light warm grey', 'candid relaxed laugh, natural unposed look, hands down'),
-    'shocked': ('vivid royal blue', 'mouth wide open in disbelief, eyes very wide, both hands raised near his face'),
+    'shocked': ('vivid royal blue', 'mouth wide open in disbelief, eyes very wide, both hands raised near {his} face'),
     'sad': ('deep navy', 'downturned mouth, sad worried eyes, slightly slumped shoulders'),
-    'headhands': ('warm orange', 'both hands on top of his head in stress and disbelief, wide eyes'),
-    'pointup': ('bright yellow', 'pointing straight up above his head with one finger, excited'),
+    'headhands': ('warm orange', 'both hands on top of {his} head in stress and disbelief, wide eyes'),
+    'pointup': ('bright yellow', 'pointing straight up above {his} head with one finger, excited'),
     'pointcam': ('vivid magenta', 'pointing one finger straight at the camera, confident smirk'),
-    'facepalm': ('charcoal grey', 'one hand over his face, the other arm at his side, tired'),
-    'mindblown': ('bright teal', 'both hands open beside his head, wide eyes, open mouth'),
-    'shush': ('deep purple', 'finger on his lips in a shush gesture, eyes sideways, secretive smile'),
+    'facepalm': ('charcoal grey', 'one hand over {his} face, the other arm at {his} side, tired'),
+    'mindblown': ('bright teal', 'both hands open beside {his} head, wide eyes, open mouth'),
+    'shush': ('deep purple', 'finger on {his} lips in a shush gesture, eyes sideways, secretive smile'),
     'fistpump': ('vivid green', 'celebrating with a clenched fist pumped in the air, big smile'),
     'shrug': ('warm cream', 'shrugging with palms up and a questioning half-smile, eyebrows raised'),
     'skeptical': ('light blue', 'one eyebrow raised, head slightly tilted, lips pressed together'),
@@ -67,14 +68,20 @@ def upload(refs):
     return urls
 
 
+def prompt(tag, a):
+    bg, pose = POSES[tag]
+    who = dict(who=a.who, He=a.he.capitalize(), he=a.he, his=a.his, him=a.him)
+    return (BASE + bg + '. Pose: ' + pose + '.').format(**who)
+
+
 def make(tag, urls, args, tmp):
     f = os.path.join(tmp, tag + '.json')
-    bg, pose = POSES[tag]
-    json.dump({'prompt': BASE + bg + '. Pose: ' + pose + '.', 'images': urls, 'aspect_ratio': '16:9'}, open(f, 'w'))
-    for _ in range(2):  # one retry
-        p = subprocess.run(['wavespeed', 'run', args.model, '--input-file', f, '--download',
-                            os.path.join(args.out, tag + '.png')], capture_output=True, text=True)
-        if 'Source URLs' in p.stdout:
+    json.dump({'prompt': prompt(tag, args), 'images': urls, 'aspect_ratio': '16:9'}, open(f, 'w'))
+    out = os.path.join(args.out, tag + '.png')
+    for _ in range(2):  # one retry, only when no file was written
+        subprocess.run(['wavespeed', 'run', args.model, '--input-file', f, '--download', out],
+                       capture_output=True, text=True)
+        if os.path.isfile(out) and os.path.getsize(out) > 0:
             return tag, True
     return tag, False
 
@@ -86,6 +93,10 @@ def main():
     ap.add_argument('--tags', default='all')
     ap.add_argument('--model', default=MODEL)
     ap.add_argument('--jobs', type=int, default=3)
+    ap.add_argument('--who', default='the man', help='how the prompt names the person')
+    ap.add_argument('--he', default='he')
+    ap.add_argument('--his', default='his')
+    ap.add_argument('--him', default='him')
     ap.add_argument('--yes', action='store_true')
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
@@ -98,7 +109,7 @@ def main():
     est = round(PRICE * len(todo), 2)
     if a.dry_run:
         for t in todo:
-            print('%s: %s%s' % (t, BASE + POSES[t][0] + '. Pose: ', POSES[t][1]))
+            print('%s: %s' % (t, prompt(t, a)))
         print(json.dumps({'would_make': todo, 'estimated_cost_usd': est}))
         return
     if not a.ref or not all(os.path.isfile(r) for r in a.ref):
