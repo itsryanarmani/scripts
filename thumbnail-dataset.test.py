@@ -6,7 +6,7 @@ The fake serves search, videos, channels, a token endpoint and thumbnails
 views_per_day, outlier (only for 1,000+ subscribers), a Short skipped, one id
 found by two queries stored once with both queries, the token refresh path,
 a rerun that calls no videos or channels endpoint again, --dry-run quota with
-no network, and the usage and auth errors. It also covers: a quota 403 mid-run (exit 1, the work so far is saved), a failed thumbnail that a rerun retries, a live-stream duration (kept), a week duration, hidden subscribers, missing likes (null), a hostile video id (ignored), a title with comma, quote, newline and unicode, and a failed token refresh. Prints an evidence JSON line.
+no network, and the usage and auth errors. It also covers: a quota 403 mid-run (exit 1, the work so far is saved), a failed thumbnail that a rerun retries, a live-stream duration (kept), a week duration, hidden subscribers, missing likes (null), a hostile video id (ignored), a title with comma, quote, newline and unicode, and a failed token refresh, the search cache after a quota stop, a repeated query, a partial videos failure (no row without subscribers; the rerun completes it), a malformed item, a deleted video, --no-images then a normal run, the 3-try cap on a failing thumbnail, and a cut-off jsonl line. Prints an evidence JSON line.
 """
 import csv, datetime as dt, json, os, subprocess, sys, tempfile, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,7 +31,8 @@ CHANNELS = {'C1': 100000, 'C2': 500, 'C3': None}
 SEARCH = {'q one': ['AAAAAAAAAAA', 'BBBBBBBBBBB'], 'q two': ['AAAAAAAAAAA', 'CCCCCCCCCCC'],
           'q three': ['DDDDDDDDDDD', 'EEEEEEEEEEE', 'FFFFFFFFFFF', 'GGGGGGGGGGG', '../../x']}
 calls = {'videos': 0, 'channels': 0, 'token': 0, 'search': 0}
-state = {'hq_fail': False}
+state = {'hq_fail': False, 'videos_fail': False}
+SEARCH.update({'q many': ['MMMMMMMMM%02d' % i for i in range(60)], 'q gone': ['AAAAAAAAAAA', 'XXXXXXXXXXX'], 'q bad': ['HHHHHHHHHHH']})
 
 
 class H(BaseHTTPRequestHandler):
@@ -71,8 +72,19 @@ class H(BaseHTTPRequestHandler):
         if u.path.endswith('/videos'):
             calls['videos'] += 1
             items = []
-            for v in q['id'].split(','):
-                d = VIDEOS[v]
+            ids = q['id'].split(',')
+            if state['videos_fail'] and 'MMMMMMMMM59' in ids:
+                return self.send(500, {'error': 'backend'})
+            for v in ids:
+                if v.startswith('MMMMMMMMM'):
+                    d = dict(title='Many ' + v, ch='C1', dur='PT5M', views=1000, likes=1, comments=1)
+                elif v == 'HHHHHHHHHHH':
+                    items.append({'id': v, 'snippet': {'channelId': 'C1'}, 'statistics': {}, 'contentDetails': {'duration': 'PT5M'}})  # no title
+                    continue
+                elif v in VIDEOS:
+                    d = VIDEOS[v]
+                else:
+                    continue  # deleted or private: the API omits it
                 stats = {'viewCount': str(d['views'])}
                 if d['likes'] is not None:
                     stats.update(likeCount=str(d['likes']), commentCount=str(d['comments']))
@@ -156,6 +168,49 @@ def main():
         check('week_duration_parsed', orow['GGGGGGGGGGG']['duration_s'] == 604800)
         check('unicode_title_roundtrip', orow['DDDDDDDDDDD']['title'] == 'Hello, "\u4e16\u754c"\nline two'
               and [x for x in csv.DictReader(open(os.path.join(od, 'dataset.csv'), encoding='utf-8')) if x['id'] == 'DDDDDDDDDDD'][0]['title'] == 'Hello, "\u4e16\u754c"\nline two')
+        # search cache: after the quota stop, a rerun repeats only the search that failed
+        s0 = calls['search']
+        r = run('--out', qd, '--query', 'q one', '--query', 'q boom', '--max', '10')
+        check('search_cache_reused', r.returncode == 1 and calls['search'] - s0 == 1, str(calls))
+        s0 = calls['search']
+        run('--out', os.path.join(t, 'dup'), '--query', 'q one', '--query', ' q one ', '--max', '10')
+        check('repeated_query_searched_once', calls['search'] - s0 == 1, str(calls))
+        # partial videos failure: no row without subscribers, and a rerun completes it
+        pd = os.path.join(t, 'partial')
+        state['videos_fail'] = True
+        r = run('--out', pd, '--query', 'q many', '--max', '50')
+        prow = [json.loads(x) for x in open(os.path.join(pd, 'dataset.jsonl'))] if os.path.exists(os.path.join(pd, 'dataset.jsonl')) else []
+        check('partial_failure_exit_2_rows_complete', r.returncode == 2 and len(prow) == 50 and all(x['subscribers'] == 100000 for x in prow), r.stdout + r.stderr)
+        state['videos_fail'] = False
+        v0 = calls['videos']
+        r = run('--out', pd, '--query', 'q many', '--max', '50')
+        check('partial_rerun_fetches_only_missing', r.returncode == 0 and calls['videos'] - v0 == 1 and len(open(os.path.join(pd, 'dataset.jsonl')).readlines()) == 60, r.stdout + calls.__repr__())
+        # a malformed item and a deleted video
+        gd = os.path.join(t, 'gone')
+        r = run('--out', gd, '--query', 'q gone', '--query', 'q bad', '--max', '10')
+        check('malformed_item_skipped_run_ok', r.returncode == 0 and json.loads(r.stdout)['malformed_items'] == 1 and json.loads(r.stdout)['total'] == 1, r.stdout)
+        check('deleted_video_recorded', 'XXXXXXXXXXX' in open(os.path.join(gd, 'gone.txt')).read())
+        v0 = calls['videos']
+        run('--out', gd, '--query', 'q gone', '--query', 'q bad', '--max', '10')
+        check('deleted_video_not_requested_again', calls['videos'] - v0 == 1, str(calls))
+        # --no-images then a normal run
+        nd = os.path.join(t, 'noimg')
+        run('--out', nd, '--query', 'q one', '--max', '10', '--no-images')
+        check('no_images_leaves_no_thumbs', not os.listdir(os.path.join(nd, 'thumbs')))
+        r = run('--out', nd, '--query', 'q one', '--max', '10')
+        check('later_run_downloads_thumbs', r.returncode == 0 and os.path.exists(os.path.join(nd, 'thumbs', 'AAAAAAAAAAA.jpg')), r.stdout)
+        # a thumbnail that keeps failing is tried 3 times in all
+        td = os.path.join(t, 'tries')
+        state['hq_fail'] = True
+        for _ in range(5):
+            run('--out', td, '--query', 'q two', '--max', '10')
+        trow = {x['id']: x for x in map(json.loads, open(os.path.join(td, 'dataset.jsonl')))}
+        check('failed_thumb_capped_at_3_tries', trow['CCCCCCCCCCC']['thumb_tries'] == 3, str(trow['CCCCCCCCCCC']))
+        state['hq_fail'] = False
+        # a line cut short by an earlier kill does not stop the run
+        with open(os.path.join(nd, 'dataset.jsonl'), 'a') as f:
+            f.write('{"id": "brok')
+        check('cut_jsonl_line_tolerated', run('--out', nd, '--query', 'q one', '--max', '10').returncode == 0)
         badtok = dict(env, YOUTUBE_TOKEN_URL=base + '/badtoken')
         check('failed_token_refresh_exit_2', run('--out', os.path.join(t, 'bt'), '--query', 'q one', e=badtok).returncode == 2)
     print(json.dumps({'evidence': ev, 'failures': fails}))

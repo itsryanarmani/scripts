@@ -22,7 +22,8 @@ python3 thumbnail-dataset --out data --queries-file queries.txt --max 30 --publi
 | `--language` | Preferred result language. Default `en`. |
 | `--keep-shorts` | Keep Shorts. They are skipped by default. |
 | `--short-max N` | A video of N seconds or less counts as a Short. Default 60. The API cannot tell a 61 to 180 s Short from a video, so raise this if they matter. A video with no usable duration (a live stream) is kept, with `duration_s` null. |
-| `--no-images` | Write the numbers only. |
+| `--no-images` | Write the numbers only. A later run without it downloads the images. |
+| `--refresh-searches` | Search again even if `searches.json` has the answer. |
 | `--dry-run` | Print the quota estimate and stop. Needs no token. |
 
 ## Auth
@@ -39,7 +40,8 @@ bearer token, so a plain API key is not used.
   `subscribers`, `views_per_day`, `outlier`, `thumb` (which size was saved) and
   the `queries` that found it.
 - `thumbs/<id>.jpg`: `maxresdefault`, or `hqdefault` for older videos.
-- `skipped.txt`: Shorts already seen, so a rerun does not fetch them again.
+- `skipped.txt`: Shorts already seen. `gone.txt`: ids the API no longer returns (deleted or private). `searches.json`: finished searches. A rerun uses all three, so it does not fetch or search for them again.
+- Files are written whole and then renamed, so a kill cannot leave a half file.
 
 `views_per_day` is views divided by the age in days (at least 1). `outlier` is
 views divided by subscribers, only for channels of 1,000 or more subscribers.
@@ -47,7 +49,7 @@ A high outlier means the video beat its own channel, which says more about the
 thumbnail and title than raw views do. It is not proof: topic, timing and the
 title also count, and a small channel can have one lucky video.
 
-A rerun skips ids it already has, so it costs only the searches. It also retries thumbnails that failed, and downloads them after an earlier `--no-images` run, without calling the API again. Missing likes or comments are `null`, not 0.
+A rerun skips ids it already has and reuses finished searches, so after a quota stop it pays only for the searches that did not finish. It retries a failed thumbnail (3 tries in all, then it gives up and the row keeps `thumb` null), and downloads thumbnails after an earlier `--no-images` run, without calling the API. A video is saved only with its channel's subscriber count, so a failed channel lookup leaves it for the next run. Missing likes or comments are `null`, not 0.
 
 ## Quota
 
@@ -65,8 +67,8 @@ fine to share.
 | Symptom | Cause and fix |
 | --- | --- |
 | `token refresh failed` | Wrong client or an expired refresh token. The client that made the token must be the one you pass. |
-| `YouTube API 403 ... quota` (exit 1) | The daily quota is used. It resets at midnight Pacific. The script saves everything gathered before the error, so rerun later and only the missing searches cost quota. Any other API or network error exits 2 and also saves. |
-| `download_failed` lists ids | Neither `maxresdefault` nor `hqdefault` answered. Rerun: the script retries them without an API call. |
+| `YouTube API 403 ... quota` (exit 1) | The daily quota is used. It resets at midnight Pacific. The script saves everything gathered before the error, so rerun later and only the searches that did not finish cost quota. Any other API or network error exits 2 and also saves. A crash or Ctrl-C saves too. |
+| `download_failed` lists ids | Neither `maxresdefault` nor `hqdefault` answered. Rerun: the script retries them without an API call, up to 3 tries in all. |
 | `outlier` is `null` | The channel hides subscribers or has under 1,000. |
 | Too many videos from huge channels | Add a narrower query, or sort by `outlier` and ignore raw views. |
 
