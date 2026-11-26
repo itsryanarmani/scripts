@@ -29,7 +29,7 @@ behind, so a layout can put text on the left. The page reads the background
 colour from the top-left pixel and picks a text colour from it.
 
 **Cost.** About $0.07 per pose, $1.75 for all 25 (measured November 2026 on
-`openai/gpt-image-2/edit`). A run of 15 poses with 3 jobs took about 6 minutes.
+`openai/gpt-image-2/edit`). A run of 15 poses with 3 jobs took under 10 minutes.
 Existing poses are skipped, so a rerun only pays for the missing ones.
 
 **Likeness.** The output is generated, not photographed. Use your own face, or a
