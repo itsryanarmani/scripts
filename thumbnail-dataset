@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""thumbnail-dataset - collect real YouTube thumbnails with their numbers.
+
+    thumbnail-dataset --out DIR --query "how to get hired" [--query ...] [--queries-file FILE]
+        [--max 25] [--published-after DATE] [--order viewCount|relevance|date] [--region US]
+        [--language en] [--keep-shorts] [--short-max 60] [--no-images] [--refresh-searches] [--dry-run]
+
+Searches the official YouTube Data API (read-only) and writes DIR/dataset.jsonl,
+dataset.csv and thumbs/<id>.jpg: views, likes, comments, channel subscribers,
+views_per_day and outlier (views / subscribers, channels of 1,000+ only). Shorts
+are skipped. A rerun skips known ids, reuses finished searches and retries failed
+thumbnails; an error, crash or Ctrl-C saves what was gathered. Auth from the
+environment: YOUTUBE_ACCESS_TOKEN, or YOUTUBE_CLIENT_ID + YOUTUBE_CLIENT_SECRET +
+YOUTUBE_REFRESH_TOKEN (youtube.readonly). A search costs 100 quota units; --dry-run
+prints the cost. Thumbnails are other people's work: study them, do not republish.
+Exit: 0 ok, 1 quota used up or a download failed, 2 usage, auth or other error, 130 Ctrl-C.
+Details: thumbnail-dataset.md.
+"""
+import argparse, csv, datetime as dt, json, math, os, re, sys, time, urllib.error, urllib.parse, urllib.request
+
+VID = re.compile(r'[A-Za-z0-9_-]{11}')
+API = os.environ.get('YOUTUBE_API_BASE', 'https://www.googleapis.com/youtube/v3')
+TOKEN_URL = os.environ.get('YOUTUBE_TOKEN_URL', 'https://oauth2.googleapis.com/token')
+THUMB = os.environ.get('YOUTUBE_THUMB_BASE', 'https://i.ytimg.com/vi')
+SEARCH_COST = 100
+FIELDS = ['id', 'title', 'channel', 'channel_id', 'published', 'duration_s', 'views', 'likes', 'comments',
+          'subscribers', 'views_per_day', 'outlier', 'thumb', 'queries']
+
+
+class ApiError(Exception):
+    def __init__(self, msg, code):
+        super().__init__(msg)
+        self.code = code
+
+
+def die(msg, code=2):
+    print('thumbnail-dataset: ' + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def get(url, headers=None, data=None):
+    req = urllib.request.Request(url, data=data, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+
+def access_token():
+    t = os.environ.get('YOUTUBE_ACCESS_TOKEN')
+    if t:
+        return t
+    need = ['YOUTUBE_CLIENT_ID', 'YOUTUBE_CLIENT_SECRET', 'YOUTUBE_REFRESH_TOKEN']
+    if not all(os.environ.get(k) for k in need):
+        die('set YOUTUBE_ACCESS_TOKEN, or %s' % ', '.join(need))
+    body = urllib.parse.urlencode({'client_id': os.environ[need[0]], 'client_secret': os.environ[need[1]],
+                                   'refresh_token': os.environ[need[2]], 'grant_type': 'refresh_token'}).encode()
+    try:
+        return json.loads(get(TOKEN_URL, data=body))['access_token']
+    except (urllib.error.URLError, KeyError, ValueError) as e:
+        die('token refresh failed: %s' % e)
+
+
+def api(token, path, **params):
+    url = '%s/%s?%s' % (API, path, urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}))
+    for attempt in range(3):
+        try:
+            return json.loads(get(url, {'Authorization': 'Bearer ' + token}))
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode('utf8', 'replace')[:300]
+            if e.code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise ApiError('YouTube API %s on %s: %s' % (e.code, path, msg), 1 if e.code == 403 and 'quota' in msg.lower() else 2)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise ApiError('network error on %s: %s' % (path, e), 2)
+    return {}
+
+
+def seconds(iso):
+    """ISO 8601 duration in seconds, or None when it is missing, unparseable or zero (live)."""
+    m = re.fullmatch(r'P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?', iso or '')
+    if not m:
+        return None
+    w, d, h, mi, s = [int(x or 0) for x in m.groups()]
+    total = w * 604800 + d * 86400 + h * 3600 + mi * 60 + s
+    return total or None
+
+
+def chunks(xs, n):
+    for i in range(0, len(xs), n):
+        yield xs[i:i + n]
+
+
+def download(vid, out):
+    for name in ('maxresdefault', 'hqdefault'):  # maxres is missing on older videos
+        try:
+            data = get('%s/%s/%s.jpg' % (THUMB, vid, name))
+            if len(data) > 2000:
+                tmp = out + '.part'
+                open(tmp, 'wb').write(data)
+                os.replace(tmp, out)
+                return name
+        except Exception:  # URLError, timeouts, resets, short reads, disk errors: try the next size, then give up
+            pass
+    return None
+
+
+def read_rows(path):
+    rows = {}
+    if os.path.exists(path):
+        for l in open(path, encoding='utf-8'):
+            try:
+                r = json.loads(l)
+                rows[r['id']] = r
+            except (ValueError, KeyError, TypeError):
+                pass  # a line cut short by an earlier kill: that video is fetched again
+    return rows
+
+
+def atomic(path, write, **kw):
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8', **kw) as f:
+        write(f)
+    os.replace(tmp, path)
+
+
+def write_all(out, rows, seen_short, gone):
+    for name, ids in (('skipped.txt', seen_short), ('gone.txt', gone)):
+        if ids:
+            atomic(os.path.join(out, name), lambda f, ids=ids: f.write('\n'.join(sorted(ids)) + '\n'))
+    atomic(os.path.join(out, 'dataset.jsonl'), lambda f: [f.write(json.dumps(r, ensure_ascii=False) + '\n') for r in rows.values()])
+    def csv_out(f):
+        w = csv.DictWriter(f, FIELDS, extrasaction='ignore')
+        w.writeheader()
+        for r in rows.values():
+            w.writerow(dict(r, queries='|'.join(r.get('queries') or [])))
+    atomic(os.path.join(out, 'dataset.csv'), csv_out, newline='')
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--out', required=True)
+    ap.add_argument('--query', action='append', default=[])
+    ap.add_argument('--queries-file')
+    ap.add_argument('--max', type=int, default=25)
+    ap.add_argument('--published-after')
+    ap.add_argument('--order', default='viewCount', choices=['viewCount', 'relevance', 'date'])
+    ap.add_argument('--region', default='US')
+    ap.add_argument('--language', default='en')
+    ap.add_argument('--keep-shorts', action='store_true')
+    ap.add_argument('--short-max', type=int, default=60)
+    ap.add_argument('--no-images', action='store_true')
+    ap.add_argument('--refresh-searches', action='store_true')
+    ap.add_argument('--dry-run', action='store_true')
+    a = ap.parse_args()
+    qs = list(a.query)
+    if a.queries_file:
+        qs += [l.strip() for l in open(a.queries_file, encoding='utf-8') if l.strip() and not l.strip().startswith('#')]
+    qs = list(dict.fromkeys(q.strip() for q in qs if q.strip()))  # no blank or repeated query: each costs 100 units
+    if not qs or not 1 <= a.max <= 50:
+        die('give --query or --queries-file, and --max from 1 to 50')
+    if a.published_after and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', a.published_after):
+        die('--published-after is YYYY-MM-DD')
+    est = len(qs) * SEARCH_COST + 2 * math.ceil(len(qs) * a.max / 50)
+    if a.dry_run:
+        print(json.dumps({'queries': len(qs), 'estimated_quota_units': est, 'daily_default': 10000}))
+        return
+    token = access_token()
+    os.makedirs(os.path.join(a.out, 'thumbs'), exist_ok=True)
+    rows = read_rows(os.path.join(a.out, 'dataset.jsonl'))
+    ids_file = lambda name: set(open(os.path.join(a.out, name)).read().split()) if os.path.exists(os.path.join(a.out, name)) else set()
+    seen_short = set() if a.keep_shorts else ids_file('skipped.txt')  # Shorts already seen
+    gone = ids_file('gone.txt')  # ids the API no longer returns (deleted or private)
+    cache_path = os.path.join(a.out, 'searches.json')  # finished searches, so a rerun after a quota stop only pays for the rest
+    try:
+        cache = {} if a.refresh_searches else json.load(open(cache_path))
+    except (OSError, ValueError):
+        cache = {}
+    cache = cache if isinstance(cache, dict) else {}
+    err, found, failed, skipped, bad_items, unresolved = None, {}, [], 0, 0, 0
+    now = dt.datetime.now(dt.timezone.utc)
+    vids = {}
+    try:
+        try:
+            for q in qs:
+                key = '|'.join([q, a.order, a.region, a.language, a.published_after or '', str(a.max)])
+                if key not in cache:
+                    res = api(token, 'search', part='id', type='video', q=q, maxResults=a.max, order=a.order, regionCode=a.region,
+                              relevanceLanguage=a.language,
+                              publishedAfter=a.published_after + 'T00:00:00Z' if a.published_after else None)
+                    cache[key] = [it['id']['videoId'] for it in res.get('items') or []
+                                  if isinstance(it, dict) and isinstance(it.get('id'), dict) and VID.fullmatch(str(it['id'].get('videoId')))]
+                    atomic(cache_path, lambda f: json.dump(cache, f))
+                for vid in cache[key]:
+                    found.setdefault(vid, []).append(q)
+        except ApiError as e:
+            err = e  # keep the searches that worked and go on with them
+        new = []
+        for vid, q in found.items():
+            if vid in rows:
+                rows[vid]['queries'] = sorted(set(rows[vid].get('queries') or []) | set(q))
+            elif vid not in seen_short and vid not in gone:
+                new.append(vid)
+        subs = {}
+        try:
+            for ch in chunks(new, 50):
+                got = {v['id']: v for v in api(token, 'videos', part='snippet,statistics,contentDetails', id=','.join(ch)).get('items') or []
+                       if isinstance(v, dict) and v.get('id') in ch}
+                vids.update(got)
+                gone.update(i for i in ch if i not in got)
+        except ApiError as e:
+            err = err or e  # still look up the channels of the videos we did get
+        try:
+            for ch in chunks(sorted({(v.get('snippet') or {}).get('channelId') for v in vids.values()} - {None}), 50):
+                for c in api(token, 'channels', part='statistics', id=','.join(ch)).get('items') or []:
+                    if not isinstance(c, dict) or 'id' not in c:
+                        continue
+                    st = c.get('statistics') or {}
+                    subs[c['id']] = None if st.get('hiddenSubscriberCount') or 'subscriberCount' not in st else int(st['subscriberCount'])
+        except ApiError as e:
+            err = err or e
+        for vid, v in vids.items():
+            try:
+                sn, st = v['snippet'], v.get('statistics') or {}
+                if sn['channelId'] not in subs:
+                    unresolved += 1
+                    continue  # channel lookup failed: leave it out, so a rerun fetches it with its subscriber count
+                dur = seconds(v.get('contentDetails', {}).get('duration'))
+                if dur is not None and dur <= a.short_max and not a.keep_shorts:
+                    skipped += 1
+                    seen_short.add(vid)
+                    continue
+                views = int(st.get('viewCount', 0))
+                pub = dt.datetime.fromisoformat(re.sub(r'\.\d+', '', sn['publishedAt']).replace('Z', '+00:00'))
+                days = max(1.0, (now - pub).total_seconds() / 86400)
+                sc = subs[sn['channelId']]
+                rows[vid] = {'id': vid, 'title': sn['title'], 'channel': sn.get('channelTitle', ''), 'channel_id': sn['channelId'],
+                             'published': sn['publishedAt'], 'duration_s': dur, 'views': views,
+                             'likes': int(st['likeCount']) if 'likeCount' in st else None,
+                             'comments': int(st['commentCount']) if 'commentCount' in st else None,
+                             'subscribers': sc, 'views_per_day': round(views / days, 1),
+                             'outlier': round(views / sc, 2) if sc and sc >= 1000 else None,
+                             'thumb': None, 'thumb_tries': 0, 'queries': sorted(set(found[vid]))}
+            except (KeyError, ValueError, TypeError):
+                bad_items += 1  # a malformed item: skip it, keep the run
+        if not a.no_images:  # also fetches thumbnails missed by an earlier --no-images run; a failed one is tried 3 times in all
+            for vid, r in rows.items():
+                if (not r.get('thumb') or not os.path.exists(os.path.join(a.out, 'thumbs', vid + '.jpg'))) and r.get('thumb_tries', 0) < 3:
+                    r['thumb'] = download(vid, os.path.join(a.out, 'thumbs', vid + '.jpg'))
+                    r['thumb_tries'] = r.get('thumb_tries', 0) + (0 if r['thumb'] else 1)
+                    if not r['thumb']:
+                        failed.append(vid)
+    except Exception as e:  # odd data or a disk error: save, say so, and do not exit 1 (that means quota)
+        err = err or ApiError('unexpected %s: %s' % (type(e).__name__, e), 2)
+    finally:
+        write_all(a.out, rows, seen_short, gone)  # always saved, also after an API error, a crash or Ctrl-C
+    print(json.dumps({'total': len(rows), 'new': len(vids) - skipped - bad_items - unresolved, 'shorts_skipped': skipped, 'malformed_items': bad_items, 'unresolved': unresolved,
+                      'download_failed': failed, 'quota_units_estimate': est, 'error': str(err) if err else None}))
+    if err:
+        print('thumbnail-dataset: stopped early, saved what was gathered: %s' % err, file=sys.stderr)
+        sys.exit(err.code)
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        die('interrupted; what was gathered is saved', 130)
+    except Exception as e:  # a usage or disk error outside the guarded block: never exit 1 (quota)
+        die('%s: %s' % (type(e).__name__, e))
