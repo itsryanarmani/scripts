@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""youtube-thumbnail-set - set a custom thumbnail on many YouTube videos.
+
+    youtube-thumbnail-set --map FILE --dir DIR [--only VIDEO_ID ...]
+                          [--dry-run | --yes] [--api-base URL]
+
+--map   JSON list of {"item": N, "video": "<video id>"}. The image for each entry
+        is DIR/NN-<video id>.jpg (NN = item, two digits).
+--dry-run lists video id and file and checks the files exist. A run that changes
+        public pages needs --yes.
+Auth: YOUTUBE_ACCESS_TOKEN, or YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET and
+YOUTUBE_REFRESH_TOKEN (refreshed here). The scope youtube.upload is enough for
+thumbnails.set; it is not enough to edit titles or privacy.
+Prints one JSON line per video: {"video", "ok", "detail"}. Stops at the first 401,
+403 or 429 (a quota or scope error repeats on every video). A file over 2 MB is
+refused before any upload. A duplicate video id in the map is an error. Exit 0 all ok, 1 any failed,
+2 usage error. The channel must be verified for custom thumbnails.
+"""
+import argparse, json, os, sys, urllib.error, urllib.parse, urllib.request
+
+API = 'https://www.googleapis.com'
+TOKEN_URL = 'https://oauth2.googleapis.com/token'
+
+
+def die(msg):
+    print('youtube-thumbnail-set: ' + msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def access_token(token_url):
+    t = os.environ.get('YOUTUBE_ACCESS_TOKEN')
+    if t:
+        return t
+    need = ['YOUTUBE_CLIENT_ID', 'YOUTUBE_CLIENT_SECRET', 'YOUTUBE_REFRESH_TOKEN']
+    miss = [n for n in need if not os.environ.get(n)]
+    if miss:
+        die('set YOUTUBE_ACCESS_TOKEN, or ' + ', '.join(miss))
+    body = urllib.parse.urlencode({'client_id': os.environ[need[0]], 'client_secret': os.environ[need[1]],
+                                   'refresh_token': os.environ[need[2]], 'grant_type': 'refresh_token'}).encode()
+    return json.load(urllib.request.urlopen(urllib.request.Request(token_url, body), timeout=30))['access_token']
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--map', required=True)
+    ap.add_argument('--dir', required=True)
+    ap.add_argument('--only', nargs='*', default=[])
+    ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--yes', action='store_true')
+    ap.add_argument('--api-base', default=API)
+    args = ap.parse_args()
+    try:
+        allitems = json.load(open(args.map))
+        ids = [x['video'] for x in allitems]
+        [int(x['item']) for x in allitems]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        die(f'cannot read the map: {e}')
+    if len(set(ids)) != len(ids):
+        die('the map has a video id twice')
+    unknown = [v for v in args.only if v not in ids]
+    if unknown:
+        die('--only names a video that is not in the map: ' + unknown[0])
+    items = [x for x in allitems if not args.only or x['video'] in args.only]
+    if not items:
+        die('no videos selected')
+    files = {x['video']: os.path.join(args.dir, '%02d-%s.jpg' % (x['item'], x['video'])) for x in items}
+    missing = [f for f in files.values() if not os.path.isfile(f)]
+    if missing:
+        die('missing image: ' + missing[0])
+    big = [f for f in files.values() if os.path.getsize(f) > 2_000_000]
+    if big:
+        die('image over 2 MB: ' + big[0])
+    if args.dry_run:
+        for v, f in files.items():
+            print(json.dumps({'video': v, 'file': f}))
+        return
+    if not args.yes:
+        die(f'this changes {len(items)} public video pages: add --yes (or --dry-run)')
+    base = args.api_base.rstrip('/')
+    token = access_token(base + '/token' if base != API else TOKEN_URL)
+    bad = False
+    for v, f in files.items():
+        url = f'{base}/upload/youtube/v3/thumbnails/set?videoId={urllib.parse.quote(v)}'
+        req = urllib.request.Request(url, open(f, 'rb').read(), {'Authorization': 'Bearer ' + token,
+                                     'Content-Type': 'image/jpeg'}, method='POST')
+        try:
+            r = json.load(urllib.request.urlopen(req, timeout=60))
+            first = (r.get('items') or [{}])[0]
+            print(json.dumps({'video': v, 'ok': True, 'detail': first.get('default', {}).get('url')}), flush=True)
+        except urllib.error.HTTPError as e:
+            bad = True
+            print(json.dumps({'video': v, 'ok': False, 'detail': f'{e.code} {e.read()[:200].decode("utf8", "ignore")}'}), flush=True)
+            if e.code in (401, 403, 429):
+                break
+        except (urllib.error.URLError, TimeoutError, ValueError) as e:
+            bad = True
+            print(json.dumps({'video': v, 'ok': False, 'detail': type(e).__name__}), flush=True)
+    sys.exit(1 if bad else 0)
+
+
+if __name__ == '__main__':
+    main()
